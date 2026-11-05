@@ -155,7 +155,16 @@ export default function Appearance() {
               { value: 'image', label: t('photo'), icon: 'image' },
             ]}
           />
-          <input ref={file} type="file" accept="image/*" className="hidden" onChange={(e) => onFile(e.target.files?.[0])} />
+          <input
+            ref={file}
+            type="file"
+            accept="image/*"
+            className="hidden"
+            onChange={(e) => {
+              void onFile(e.target.files?.[0]);
+              e.target.value = '';
+            }}
+          />
           <div key={a.bgMode} className="anim-in mt-4">
             {a.bgMode === 'dynamic' && (
               <Segmented

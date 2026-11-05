@@ -57,8 +57,18 @@ export const ui = createStore({
   npDrawer: false,
   dialog: null as Dialog | null,
   snack: null as Snack | null,
+  foldYtMusic: false,
+  foldSoundCloud: false,
+  foldLocal: false,
 });
-persist('lyra.ui.v1', ui, (s) => ({ sidebar: s.sidebar, panel: s.panel, tab: s.tab }));
+persist('lyra.ui.v1', ui, (s) => ({
+  sidebar: s.sidebar,
+  panel: s.panel,
+  tab: s.tab,
+  foldYtMusic: s.foldYtMusic,
+  foldSoundCloud: s.foldSoundCloud,
+  foldLocal: s.foldLocal,
+}));
 
 window.addEventListener('hashchange', () => ui.set({ route: parse(), drawer: false }));
 

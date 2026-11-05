@@ -32,9 +32,9 @@ const cache = new Map<string, { ease: string; dur: number }>();
 
 export function applyMotion(mode: MotionMode) {
   const root = document.documentElement;
-  const reduced = mode === 'reduced' || matchMedia('(prefers-reduced-motion: reduce)').matches;
+  const reduced = mode === 'reduced';
   root.dataset.motion = reduced ? 'reduced' : mode;
-  const set = SETS[mode === 'expressive' && !reduced ? 'expressive' : 'standard'];
+  const set = SETS[mode === 'expressive' ? 'expressive' : 'standard'];
   for (const [name, sp] of Object.entries(set)) {
     const key = sp.join();
     let s = cache.get(key);

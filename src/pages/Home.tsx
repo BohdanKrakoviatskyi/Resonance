@@ -32,12 +32,11 @@ function YtMusicCoverCard({ playlistId, title, trackCount, artworkUrl, index }: 
   );
 }
 
-import { go, openDialog } from '../state/ui';
+import { go } from '../state/ui';
 import type { Track } from '../types';
 
 export default function Home() {
   const recent = useStore(library, (s) => s.recent);
-  const playlists = useStore(library, (s) => s.playlists);
   const soundcloudLiked = useStore(library, (s) => s.soundcloudLiked);
   const soundcloudPlaylists = useStore(library, (s) => s.soundcloudPlaylists);
   const soundcloudLibraryLoading = useStore(library, (s) => s.soundcloudLibraryLoading);
@@ -45,8 +44,6 @@ export default function Home() {
   const ytmusicPlaylists = useStore(library, (s) => s.ytmusicPlaylists);
   const ytmusicLiked = useStore(library, (s) => s.ytmusicLiked);
   const ytmusicConnected = useStore(library, (s) => s.ytmusicAuthorized);
-  const ytmusicLibraryLoading = useStore(library, (s) => s.ytmusicLibraryLoading);
-  const ytmusicLibraryError = useStore(library, (s) => s.ytmusicLibraryError);
 
   const h = new Date().getHours();
   const greet = h < 5 ? 'goodNight' : h < 12 ? 'goodMorning' : h < 18 ? 'goodAfternoon' : 'goodEvening';
@@ -62,58 +59,11 @@ export default function Home() {
         <p className="mt-2 text-lg text-on-surface-variant">{t('homeSubtitle')}</p>
       </header>
 
-      <Section title={t('yourPlaylists')} i={1}>
-        <HRow labels={arrows} cw={180}>
-          {soundcloudPlaylists.map((p, i) => (
-            <button
-              key={`soundcloud:${p.id}`}
-              type="button"
-              data-ripple
-              className="mcard sl anim-in"
-              style={{ '--i': i } as Vars}
-              onClick={() => go({ name: 'playlist', id: soundcloudPlaylistId(p.id) })}
-            >
-              <PlaylistCover p={{ id: p.id, name: p.name, ids: [], created: 0, artworkUrl: p.artworkUrl }} className="mcard-cover" />
-              <span className="mcard-title">{p.name}</span>
-              <span className="mcard-sub">{tracksLabel(p.trackCount)}</span>
-            </button>
-          ))}
-          {playlists.map((p, i) => (
-            <button
-              key={p.id}
-              type="button"
-              data-ripple
-              className="mcard sl anim-in"
-              style={{ '--i': i } as Vars}
-              onClick={() => go({ name: 'playlist', id: p.id })}
-            >
-              <PlaylistCover p={p} className="mcard-cover" />
-              <span className="mcard-title">{p.name}</span>
-              <span className="mcard-sub">{tracksLabel(p.ids.length)}</span>
-            </button>
-          ))}
-          {ytmusicPlaylists.map((p, i) => (
-            <YtMusicCoverCard key={`ytmusic:${p.playlistId}`} playlistId={p.playlistId} title={p.title} trackCount={p.trackCount} artworkUrl={p.artworkUrl} index={i} />
-          ))}
-          {soundcloudLibraryLoading && <span className="px-3 py-2 text-sm text-on-surface-variant">{t('soundcloudLoading')}</span>}
-          {!soundcloudLibraryLoading && soundcloudLibraryError && <span className="px-3 py-2 text-sm text-error">{soundcloudLibraryError}</span>}
-          {ytmusicConnected && ytmusicLibraryLoading && <span className="px-3 py-2 text-sm text-on-surface-variant">{t('ytmusicLoading')}</span>}
-          {ytmusicConnected && !ytmusicLibraryLoading && ytmusicLibraryError && <span className="px-3 py-2 text-sm text-error">{ytmusicLibraryError}</span>}
-          <button type="button" data-ripple className="mcard sl anim-in" onClick={() => openDialog({ kind: 'create' })}>
-            <span className="mcard-cover grid place-items-center !shadow-none outline-2 -outline-offset-2 outline-dashed outline-outline-variant">
-              <Icon name="add" size={40} className="text-primary" />
-            </span>
-            <span className="mcard-title">{t('newPlaylist')}</span>
-          </button>
-        </HRow>
-      </Section>
-
       {hasSoundCloudLibrary && (
         <Section
           title={t('soundcloudLibrary')}
           subtitle={t('soundcloudLibrarySub')}
           i={2}
-          action={<Icon name="graphic_eq" className="text-primary" size={28} />}
         >
           <HRow labels={arrows} cw={180}>
             <button
@@ -149,7 +99,6 @@ export default function Home() {
           title={t('ytmusicLibrary')}
           subtitle={t('ytmusicLibrarySub')}
           i={3}
-          action={<Icon name="music_note" className="text-primary" size={28} />}
         >
           <HRow labels={arrows} cw={180}>
             <button

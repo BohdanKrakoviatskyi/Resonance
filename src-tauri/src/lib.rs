@@ -84,7 +84,10 @@ fn has_secure_papisid(cookie_header: &str) -> bool {
 }
 
 #[tauri::command]
-fn start_soundcloud_login(app: AppHandle) -> Result<(), String> {
+async fn start_soundcloud_login(app: AppHandle) -> Result<(), String> {
+    if let Some(existing) = app.get_webview_window("soundcloud-login") {
+        let _ = existing.close();
+    }
     let state = uuid::Uuid::new_v4().to_string();
     let login_script = SOUNDCLOUD_LOGIN_SCRIPT.replace("__LOGIN_STATE__", &state);
     let callback_app = app.clone();
@@ -93,13 +96,14 @@ fn start_soundcloud_login(app: AppHandle) -> Result<(), String> {
         &app,
         "soundcloud-login",
         WebviewUrl::External(
-            "https://soundcloud.com/"
+            "https://soundcloud.com/signin"
                 .parse()
                 .map_err(|error| format!("invalid SoundCloud URL: {error}"))?,
         ),
     )
     .title("Sign in to SoundCloud")
     .inner_size(1000.0, 760.0)
+    .center()
     .initialization_script(&login_script)
     .on_navigation(move |url| {
         if url.scheme() != "resonance" || url.host_str() != Some("soundcloud-login") {
@@ -128,7 +132,7 @@ fn start_soundcloud_login(app: AppHandle) -> Result<(), String> {
 }
 
 #[tauri::command]
-fn start_ytmusic_login(app: AppHandle, state: State<'_, YtMusicLoginState>) -> Result<(), String> {
+async fn start_ytmusic_login(app: AppHandle, state: State<'_, YtMusicLoginState>) -> Result<(), String> {
     // Closing a previous attempt must not look like the user cancelled the new one.
     if let Ok(mut nonce) = state.nonce.lock() {
         *nonce = None;
@@ -149,6 +153,7 @@ fn start_ytmusic_login(app: AppHandle, state: State<'_, YtMusicLoginState>) -> R
     WebviewWindowBuilder::new(&app, "ytmusic-login", WebviewUrl::External(library_url()?))
         .title("Sign in to YouTube Music")
         .inner_size(1040.0, 820.0)
+        .center()
         .build()
         .map_err(|error| format!("could not open YouTube Music login: {error}"))?;
 

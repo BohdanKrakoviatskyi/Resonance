@@ -40,7 +40,7 @@ function useRemote(q: string) {
   return { items: fresh ? st.items : null, error: fresh && st.error, loading: !!q && (!fresh || st.items === null), retry: () => setRetry((r) => r + 1) };
 }
 
-function Results({ title, icon, r, i }: { title: string; icon: 'graphic_eq' | 'music_note'; r: ReturnType<typeof useRemote>; i: number }) {
+function Results({ title, r, i }: { title: string; r: ReturnType<typeof useRemote>; i: number }) {
   const [all, setAll] = useState(false);
   const ids = useMemo(() => (r.items ?? []).map((x) => x.id), [r.items]);
   if (r.items && !r.items.length && !r.error) return null;
@@ -53,9 +53,7 @@ function Results({ title, icon, r, i }: { title: string; icon: 'graphic_eq' | 'm
           <Button variant="text" onClick={() => setAll((a) => !a)}>
             {all ? t('showLess') : t('showAll')}
           </Button>
-        ) : (
-          <Icon name={icon} className="text-primary" />
-        )
+        ) : undefined
       }
     >
       {r.error ? (
@@ -155,7 +153,7 @@ export default function Search({ q }: { q: string }) {
               <TrackList ids={local} />
             </Section>
           )}
-          <Results title={t('soundcloudTracks')} icon="graphic_eq" r={remote} i={1} />
+          <Results title={t('soundcloudTracks')} r={remote} i={1} />
         </div>
       )}
     </div>
