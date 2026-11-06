@@ -164,7 +164,7 @@ export function Sidebar({ mode }: { mode: 'inline' | 'drawer' }) {
           <>
             <ProviderGroupHeader
               label="YouTube Music"
-              logo={soundcloudLogo}
+              logo={youtubeMusicLogo}
               open={!foldYtMusic}
               expanded={expanded}
               onToggle={() => ui.set({ foldYtMusic: !foldYtMusic })}
@@ -175,7 +175,7 @@ export function Sidebar({ mode }: { mode: 'inline' | 'drawer' }) {
                   k={'pl:' + YTMUSIC_LIKED_ID}
                   icon="favorite"
                   label={t('ytmusicLiked')}
-                  labelPrefix={<img src={soundcloudLogo} alt="" aria-hidden="true" />}
+                  labelPrefix={<img src={youtubeMusicLogo} alt="" aria-hidden="true" />}
                   sub={tracksLabel(ytmusicLiked.length)}
                   active={active === 'pl:' + YTMUSIC_LIKED_ID}
                   expanded={expanded}
@@ -187,7 +187,7 @@ export function Sidebar({ mode }: { mode: 'inline' | 'drawer' }) {
                     key={`yt:${p.playlistId}`}
                     k={'pl:' + ytmusicPlaylistId(p.playlistId)}
                     label={p.title}
-                    labelPrefix={<img src={soundcloudLogo} alt="" aria-hidden="true" />}
+                    labelPrefix={<img src={youtubeMusicLogo} alt="" aria-hidden="true" />}
                     sub={tracksLabel(p.trackCount)}
                     active={active === 'pl:' + ytmusicPlaylistId(p.playlistId)}
                     expanded={expanded}
@@ -204,7 +204,7 @@ export function Sidebar({ mode }: { mode: 'inline' | 'drawer' }) {
           <>
             <ProviderGroupHeader
               label="SoundCloud"
-              logo={youtubeMusicLogo}
+              logo={soundcloudLogo}
               open={!foldSoundCloud}
               expanded={expanded}
               onToggle={() => ui.set({ foldSoundCloud: !foldSoundCloud })}
@@ -215,7 +215,7 @@ export function Sidebar({ mode }: { mode: 'inline' | 'drawer' }) {
                   k={'pl:' + SOUNDCLOUD_LIKED_ID}
                   icon="favorite"
                   label={t('soundcloudLiked')}
-                  labelPrefix={<img src={youtubeMusicLogo} alt="" aria-hidden="true" />}
+                  labelPrefix={<img src={soundcloudLogo} alt="" aria-hidden="true" />}
                   sub={tracksLabel(soundcloudLiked.length)}
                   active={active === 'pl:' + SOUNDCLOUD_LIKED_ID}
                   expanded={expanded}
@@ -227,7 +227,7 @@ export function Sidebar({ mode }: { mode: 'inline' | 'drawer' }) {
                     key={`sc:${p.id}`}
                     k={'pl:scpl:' + p.id}
                     label={p.name}
-                    labelPrefix={<img src={youtubeMusicLogo} alt="" aria-hidden="true" />}
+                    labelPrefix={<img src={soundcloudLogo} alt="" aria-hidden="true" />}
                     sub={tracksLabel(p.trackCount)}
                     active={active === 'pl:scpl:' + p.id}
                     expanded={expanded}
