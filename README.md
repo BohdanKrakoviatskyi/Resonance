@@ -2,11 +2,12 @@
 
 Music player in Material 3 Expressive style.
 
-![screenshot1](https://i.ysn.lol/ifritov/screenshot-from-2026-11-06-19-00-32.png)
-![screenshot2](https://i.ysn.lol/ifritov/screenshot-from-2026-11-06-19-00-42.png)
+<img width="1920" height="1015" alt="Screenshot From 2026-11-06 19-00-32" src="https://github.com/user-attachments/assets/4909b9ff-cc0d-4db8-ab16-808fdb403096" />
+<img width="1920" height="1015" alt="Screenshot From 2026-11-06 19-00-42" src="https://github.com/user-attachments/assets/8cbfe81a-0bea-4cec-a30e-0c62669c9dca" />
 
 ## Run in development
 ```bash
+
 npm install
 npm run dev
 ```
