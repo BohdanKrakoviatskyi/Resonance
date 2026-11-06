@@ -92,11 +92,9 @@ export default function Collection({ kind, id }: { kind: 'favorites' | 'playlist
   }, [ytPlaylistId, cachedYtTracks]);
 
   const ids = useMemo(() => {
-    const sourceIds = kind === 'favorites'
-      ? [...new Set([...soundcloudLiked.map((track) => track.id), ...liked])]
-      : pl?.ids ?? [];
+    const sourceIds = kind === 'favorites' ? liked : pl?.ids ?? [];
     return sourceIds.filter((trackId) => !!getTrack(trackId));
-  }, [kind, liked, soundcloudLiked, pl, cache]);
+  }, [kind, liked, pl, cache]);
   const playingHere = useStore(player, (s) => s.playing && ids.includes(s.queue[s.index]));
 
   const virtualCollection = ytCollection?.kind === 'liked';
