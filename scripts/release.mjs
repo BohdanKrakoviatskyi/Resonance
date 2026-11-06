@@ -32,13 +32,14 @@ const edit = (file, fn) => writeFileSync(file, fn(readFileSync(file, 'utf8')));
 edit('package.json', (s) => s.replace(/"version": "[^"]+"/, `"version": "${next}"`));
 edit('src-tauri/tauri.conf.json', (s) => s.replace(/"version": "[^"]+"/, `"version": "${next}"`));
 edit('src-tauri/Cargo.toml', (s) => s.replace(/^version = "[^"]+"/m, `version = "${next}"`));
+edit('api/main.go', (s) => s.replace(/appVersion = "[^"]+"/, `appVersion = "${next}"`));
 try {
   run('cargo update -p app --offline --manifest-path src-tauri/Cargo.toml');
 } catch {
   /* Cargo.lock is refreshed by the build anyway */
 }
 
-run('git add package.json src-tauri/tauri.conf.json src-tauri/Cargo.toml src-tauri/Cargo.lock');
+run('git add package.json src-tauri/tauri.conf.json src-tauri/Cargo.toml src-tauri/Cargo.lock api/main.go');
 run(`git commit -m "release: ${tag}"`);
 run(`git tag ${tag}`);
 run('git push');

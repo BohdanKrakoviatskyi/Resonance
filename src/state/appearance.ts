@@ -113,20 +113,35 @@ void loadBgFromDb()
   .catch(() => {});
 
 /** Returns false if the image couldn't be persisted (it still applies for this session). */
-export function setBgImage(data: string | null): boolean {
-  try {
-    if (data && data.length < 3_500_000) localStorage.setItem(IMG_KEY, data);
-    else localStorage.removeItem(IMG_KEY);
-  } catch {
+export async function setBgImage(data: string | null): Promise<boolean> {
+  let stored = false;
+  if (data && data.length < 3_500_000) {
+    try {
+      localStorage.setItem(IMG_KEY, data);
+      stored = true;
+    } catch {
+      try {
+        localStorage.removeItem(IMG_KEY);
+      } catch {
+        /* ignore */
+      }
+    }
+  } else if (!data) {
     try {
       localStorage.removeItem(IMG_KEY);
+      stored = true;
     } catch {
       /* ignore */
     }
   }
-  void saveBgToDb(data).catch(() => {});
+  try {
+    await saveBgToDb(data);
+    stored = true;
+  } catch {
+    /* IndexedDB unavailable; localStorage may still hold a small image */
+  }
   appearance.set({ bgImage: data, bgMode: data ? 'image' : appearance.get().bgMode === 'image' ? 'dynamic' : appearance.get().bgMode });
-  return true;
+  return stored;
 }
 
 function readAsDataUrl(file: Blob): Promise<string> {
@@ -149,6 +164,7 @@ export async function processImage(file: File): Promise<string> {
     name.endsWith('.webp') ||
     name.endsWith('.apng');
   if (isAnimatedFormat) {
+    if (file.size > 8 * 1024 * 1024) throw new Error('photoTooLarge');
     return readAsDataUrl(file);
   }
   const url = URL.createObjectURL(file);

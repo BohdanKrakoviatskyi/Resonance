@@ -41,7 +41,7 @@ export function useStore<T, S>(store: Store<T>, sel: (s: T) => S): S {
   return useSyncExternalStore(store.subscribe, snap, snap);
 }
 
-export function persist<T extends object>(key: string, store: Store<T>, pick: (s: T) => Partial<T>, delay = 350) {
+export function persist<T extends object>(key: string, store: Store<T>, pick: (s: T) => Partial<T>, delay = 350, onError?: () => void) {
   try {
     const raw = localStorage.getItem(key);
     if (raw) store.set(JSON.parse(raw));
@@ -53,7 +53,7 @@ export function persist<T extends object>(key: string, store: Store<T>, pick: (s
     try {
       localStorage.setItem(key, JSON.stringify(pick(store.get())));
     } catch {
-      /* quota exceeded */
+      onError?.();
     }
   };
   store.subscribe(() => {

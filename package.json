@@ -7,6 +7,7 @@
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",
+    "test": "node --test src/lib/*.test.mjs",
     "tauri": "tauri",
     "release": "node scripts/release.mjs"
   },

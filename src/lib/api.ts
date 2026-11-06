@@ -145,7 +145,14 @@ export function getLyrics(t: Track): Promise<LyricsData | null> {
   if (t.lyrics) return Promise.resolve({ synced: t.lyrics });
   let p = lyricsCache.get(t.id);
   if (!p) {
-    p = (t.source === 'soundcloud' ? fetchSoundCloudLyrics(t) : fetchLyrics(t)).catch(() => null);
+    p = (t.source === 'soundcloud' ? fetchSoundCloudLyrics(t) : fetchLyrics(t))
+      .catch(() => null)
+      .then((value) => {
+        // A miss is only remembered by the Go cache for five minutes. Caching it for the
+        // whole session would hide lyrics that appear after a transient network error.
+        if (!value) lyricsCache.delete(t.id);
+        return value;
+      });
     lyricsCache.set(t.id, p);
   }
   return p;

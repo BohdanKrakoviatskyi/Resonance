@@ -110,9 +110,9 @@ export default function Appearance() {
     if (!f) return;
     try {
       const data = await processImage(f);
-      if (!setBgImage(data)) snack(t('photoError'));
-    } catch {
-      snack(t('photoError'));
+      if (!(await setBgImage(data))) snack(t('photoError'));
+    } catch (error) {
+      snack(error instanceof Error && error.message === 'photoTooLarge' ? t('photoTooLarge') : t('photoError'));
     }
   };
 
@@ -187,7 +187,7 @@ export default function Appearance() {
                     {a.bgImage ? t('changePhoto') : t('uploadPhoto')}
                   </Button>
                   {a.bgImage && (
-                    <Button variant="outlined" icon="delete" onClick={() => setBgImage(null)}>
+                    <Button variant="outlined" icon="delete" onClick={() => { void setBgImage(null); }}>
                       {t('removePhoto')}
                     </Button>
                   )}
@@ -294,7 +294,7 @@ export default function Appearance() {
             variant="outlined"
             icon="refresh"
             onClick={() => {
-              setBgImage(null);
+              void setBgImage(null);
               set({ ...DEFAULTS, lang: a.lang });
             }}
           >

@@ -11,6 +11,7 @@ import { t } from '../lib/i18n';
 import { player, next } from './player';
 
 const volatile = new Map<string, Track>();
+let librarySaveErrorShown = false;
 
 export const library = createStore({
   liked: [] as string[],
@@ -47,17 +48,17 @@ function pruned(s: ReturnType<typeof library.get>) {
 }
 persist('lyra.lib.v1', library, (s) => ({
   liked: s.liked, disliked: s.disliked, playlists: s.playlists, cache: pruned(s), recent: s.recent,
-  soundcloudLiked: s.soundcloudLiked,
   soundcloudPlaylists: s.soundcloudPlaylists,
-  soundcloudPlaylistTracks: s.soundcloudPlaylistTracks,
-  ytmusicLiked: s.ytmusicLiked,
   ytmusicPlaylists: s.ytmusicPlaylists,
   ytmusicPlaylistArt: s.ytmusicPlaylistArt,
-  ytmusicPlaylistTracks: s.ytmusicPlaylistTracks,
   ytmusicAuthorized: s.ytmusicAuthorized,
   ytmusicProfile: s.ytmusicProfile,
   _libraryCachedAt: Date.now(),
-}));
+}), 350, () => {
+  if (librarySaveErrorShown) return;
+  librarySaveErrorShown = true;
+  snack(t('librarySaveError'));
+});
 
 const storedLibrary = library.get();
 const keepTrack = (id: string) => !id.startsWith('sp:');
@@ -186,10 +187,11 @@ export function loadYtMusicLibrary(force = false): Promise<void> {
   if (ytmusicLoad) return force ? ytmusicLoad.then(() => loadYtMusicLibrary(true)) : ytmusicLoad;
   const cached = library.get();
   if (!force && cached.ytmusicLiked.length > 0 && cached.ytmusicPlaylists.length > 0) {
+    const epoch = ytmusicEpoch;
     return (async () => {
       try {
         const auth = await ytMusicAuthStatus();
-        if (ytmusicEpoch !== ytmusicEpoch) return;
+        if (ytmusicEpoch !== epoch) return;
         if (!auth.authorized) {
           clearYtMusicLibrary();
           return;

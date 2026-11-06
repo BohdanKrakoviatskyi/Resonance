@@ -23,7 +23,7 @@ import (
 
 const (
 	appName    = "Resonance"
-	appVersion = "0.1.0"
+	appVersion = "0.4.1"
 	// legacyAppName is where this sidecar kept its files before the rename to Resonance. Only
 	// migrateLegacyDataDir reads it, and only to move those files once; it is not a second
 	// supported location, and nothing writes to it again.
@@ -373,25 +373,15 @@ type cachedLyrics struct {
 }
 
 type service struct {
-	mu           sync.Mutex
+	mu           sync.RWMutex
 	settingsPath string
 	settings     settings
 	authPath     string
 	auth         authState
-	// YouTube Music keeps its own token file so signing out never touches SoundCloud.
-	youtubePath string
-	youtubeAuth youtubeAuthState
-	// Where the home page rows are cached. Search results go stale, and YouTube gives search.list a
-	// separate budget of 100 calls a day, so a set refetched on every launch would spend that in
-	// twenty-five launches. Refetched only once the stored set is older than the TTL.
-	youtubeDiscoverPath string
-	// Fields so tests can point at a stub.
-	youtubeAPIBase string
-	youtubeAuthURL string
-	historyPath    string
-	history        []soundcloudTrackCard
-	apiBase        string
-	httpClient     *http.Client
+	historyPath  string
+	history      []soundcloudTrackCard
+	apiBase      string
+	httpClient   *http.Client
 	// Lyrics are cached separately from everything else and behind their own lock: mu is held
 	// across disk writes and settings updates, so borrowing it for a cache that outlives an HTTP
 	// lookup would queue unrelated work behind the network.
@@ -429,17 +419,10 @@ func run(input io.Reader, output io.Writer) error {
 		settingsPath: filepath.Join(dataDir, "settings.json"),
 		settings:     defaultSettings(),
 		authPath:     filepath.Join(dataDir, "auth.json"),
-
-		youtubePath: filepath.Join(dataDir, "youtube.json"),
-		// 0600 like auth.json rather than the 0644 a plain cache would get: the rows name tracks and
-		// channels the user looked at, and this file sits beside the token files.
-		youtubeDiscoverPath: filepath.Join(dataDir, "youtube-discover.json"),
-		youtubeAPIBase:      youtubeDefaultAPIBase,
-		youtubeAuthURL:      youtubeDefaultAuthURL,
-		historyPath:         filepath.Join(dataDir, "history.json"),
-		apiBase:             apiBase(),
-		httpClient:          &http.Client{Timeout: 15 * time.Second},
-		lyricsCache:         make(map[int64]cachedLyrics),
+		historyPath:  filepath.Join(dataDir, "history.json"),
+		apiBase:      apiBase(),
+		httpClient:   &http.Client{Timeout: 15 * time.Second},
+		lyricsCache:  make(map[int64]cachedLyrics),
 	}
 	audioMgr := newYTAudioManager(filepath.Join(dataDir, "yt-audio-cache"), svc.httpClient)
 	if err := audioMgr.start(); err != nil {
@@ -449,11 +432,6 @@ func run(input io.Reader, output io.Writer) error {
 	}
 	if err := svc.loadSettings(); err != nil {
 		return err
-	}
-	// Повреждённое или нечитаемое хранилище токена не должно мешать запуску:
-	// работаем как неавторизованные, диагностика уходит в stderr.
-	if err := svc.loadYoutubeAuth(); err != nil {
-		log.Printf("youtube.auth stage=load_failed error=%q", err.Error())
 	}
 	if err := svc.loadAuth(); err != nil {
 		fmt.Fprintln(os.Stderr, "local backend: auth state ignored:", err)
@@ -467,40 +445,68 @@ func run(input io.Reader, output io.Writer) error {
 	// arrives; Scanner allocates more as it reads rather than up front.
 	scanner.Buffer(make([]byte, 64*1024), maxRequestBytes)
 	writer := bufio.NewWriter(output)
+	var writeMu sync.Mutex
+	var inFlight sync.WaitGroup
+	write := func(res response) {
+		writeMu.Lock()
+		err := writeResponse(writer, res)
+		writeMu.Unlock()
+		if err != nil {
+			log.Printf("write response: %v", err)
+		}
+	}
 	for scanner.Scan() {
 		var req request
 		if err := json.Unmarshal(scanner.Bytes(), &req); err != nil {
-			if err := writeResponse(writer, response{Error: "invalid request"}); err != nil {
-				return err
-			}
+			write(response{Error: "invalid request"})
 			continue
 		}
 
-		result, callErr := svc.call(req.Method, req.Params)
-		res := response{ID: req.ID, Result: result}
-		if callErr != nil {
-			res.Result = nil
-			res.Error = callErr.Error()
-		}
-		if err := writeResponse(writer, res); err != nil {
-			return err
-		}
+		// One goroutine per request: a slow network call must not queue playback
+		// or settings behind it. The response carries the request id, so the
+		// client matches out-of-order replies.
+		inFlight.Add(1)
+		go func(req request) {
+			defer inFlight.Done()
+			result, callErr := svc.call(req.Method, req.Params)
+			res := response{ID: req.ID, Result: result}
+			if callErr != nil {
+				res.Result = nil
+				res.Error = callErr.Error()
+			}
+			write(res)
+		}(req)
 	}
+	inFlight.Wait()
 	return scanner.Err()
 }
 
-var rpcNoGlobalLock = map[string]bool{
-	"yt.dlp.search": true,
-	"yt.dlp.stream": true,
+// rpcWriteLocked names the methods that mutate in-memory state (settings,
+// auth, history) and so need an exclusive lock. Everything else takes a read
+// lock and can run concurrently: a slow SoundCloud fetch no longer freezes
+// playback or lyrics.
+var rpcWriteLocked = map[string]bool{
+	"settings.update": true,
+	"settings.clear":  true,
+	"history.record":  true,
+	"history.clear":   true,
+	"auth.login":      true,
+	"auth.refresh":    true,
+	"auth.logout":     true,
+}
+
+// rpcSelfLocked methods manage their own locking. tracks.mine reads auth under
+// a short read lock, does its paging without a lock, and takes a write lock
+// only when it has to refresh a rejected token.
+var rpcSelfLocked = map[string]bool{
+	"tracks.mine": true,
 }
 
 func (s *service) call(method string, params json.RawMessage) (any, error) {
-	s.mu.Lock()
 	startedAt := time.Now()
 	log.Printf("rpc stage=received method=%q params_bytes=%d", method, len(params))
 	spec, ok := rpcMethods()[method]
 	if !ok {
-		s.mu.Unlock()
 		log.Printf("rpc stage=dispatch_error method=%q error=%q", method, "unknown method")
 		return nil, errors.New("unknown method")
 	}
@@ -509,29 +515,26 @@ func (s *service) call(method string, params json.RawMessage) (any, error) {
 		params = json.RawMessage(`{}`)
 	}
 	if err := json.Unmarshal(params, paramsValue.Interface()); err != nil {
-		s.mu.Unlock()
 		wrapped := fmt.Errorf("invalid %s payload: %w", method, err)
 		log.Printf("rpc stage=decode_error method=%q params_type=%s error=%q", method, spec.params, wrapped.Error())
 		return nil, wrapped
 	}
 	methodValue := reflect.ValueOf(s).MethodByName(spec.goName)
 	if !methodValue.IsValid() {
-		s.mu.Unlock()
 		log.Printf("rpc stage=dispatch_error method=%q go_method=%q error=%q", method, spec.goName, "method disappeared after discovery")
 		return nil, errors.New("unknown method")
 	}
-	if rpcNoGlobalLock[method] {
-		s.mu.Unlock()
-		outputs := methodValue.Call([]reflect.Value{paramsValue.Elem()})
-		if !outputs[1].IsNil() {
-			err := outputs[1].Interface().(error)
-			log.Printf("rpc stage=handler_error method=%q go_method=%q elapsed_ms=%d error=%q", method, spec.goName, time.Since(startedAt).Milliseconds(), err.Error())
-			return nil, err
-		}
-		log.Printf("rpc stage=complete method=%q result_type=%s elapsed_ms=%d", method, spec.result, time.Since(startedAt).Milliseconds())
-		return outputs[0].Interface(), nil
+
+	switch {
+	case rpcSelfLocked[method]:
+	case rpcWriteLocked[method]:
+		s.mu.Lock()
+		defer s.mu.Unlock()
+	default:
+		s.mu.RLock()
+		defer s.mu.RUnlock()
 	}
-	defer s.mu.Unlock()
+
 	outputs := methodValue.Call([]reflect.Value{paramsValue.Elem()})
 	if !outputs[1].IsNil() {
 		err := outputs[1].Interface().(error)
@@ -737,16 +740,24 @@ func (s *service) RPCAuthLogout(_ emptyParams) (authStatus, error) {
 }
 
 func (s *service) RPCTracksMine(_ emptyParams) ([]soundcloudTrackCard, error) {
-	if s.auth.Token == "" {
+	s.mu.RLock()
+	token, userID := s.auth.Token, s.auth.Profile.ID
+	s.mu.RUnlock()
+	if token == "" {
 		return nil, errors.New("сначала подключите аккаунт SoundCloud")
 	}
-	tracks, err := s.fetchMyTracks(s.auth.Token, s.auth.Profile.ID)
+	tracks, err := s.fetchMyTracks(token, userID)
 	if err != nil && errors.Is(err, errTokenRejected) {
 		// Токен отклонён двумя хостами (web и official) — сессия устарела.
 		// Пробуем ре-валидацию профиля; если и он не проходит — явно
-		// сообщаем о необходимости повторного логина.
-		if revalidated, refreshErr := s.RPCAuthRefresh(emptyParams{}); refreshErr == nil && revalidated.Authorized {
-			retried, retryErr := s.fetchMyTracks(s.auth.Token, s.auth.Profile.ID)
+		// сообщаем о необходимости повторного логина. The write lock is held
+		// only for the refresh, not for the paging above.
+		s.mu.Lock()
+		revalidated, refreshErr := s.RPCAuthRefresh(emptyParams{})
+		if refreshErr == nil && revalidated.Authorized {
+			token, userID = s.auth.Token, s.auth.Profile.ID
+			s.mu.Unlock()
+			retried, retryErr := s.fetchMyTracks(token, userID)
 			if retryErr == nil {
 				return retried, nil
 			}
@@ -754,6 +765,7 @@ func (s *service) RPCTracksMine(_ emptyParams) ([]soundcloudTrackCard, error) {
 		}
 		s.auth = authState{}
 		_ = s.clearAuth()
+		s.mu.Unlock()
 		return nil, errors.New("сессия SoundCloud устарела — войдите снова")
 	}
 	return tracks, err
@@ -2091,7 +2103,7 @@ func (s *service) fetchMyTracks(token string, userID int64) ([]soundcloudTrackCa
 				// пробуем следующий базовый URL; иначе сообщаем.
 				// 401/403: токен отклонён этим хостом. На первой странице —
 				// пробуем следующий базовый URL; дальше — сообщаем.
-				if (resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden) && pageCount == 0 {
+				if (resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden) && pageCount == 1 {
 					lastErr = errTokenRejected
 				} else {
 					lastErr = fmt.Errorf("SoundCloud вернул HTTP %d при загрузке страницы лайков %d", resp.StatusCode, pageCount)
@@ -2206,10 +2218,15 @@ func (s *service) loadSettings() error {
 	}
 	loaded := defaultSettings()
 	if err := json.Unmarshal(data, &loaded); err != nil {
-		return fmt.Errorf("parse settings: %w", err)
+		// Corrupt file must not stop the app. Back it up and use defaults.
+		_ = os.Rename(s.settingsPath, s.settingsPath+".bak")
+		s.settings = defaultSettings()
+		return s.saveSettings(s.settings)
 	}
 	if !validAccent(loaded.Accent) || loaded.Volume < 0 || loaded.Volume > 100 || (loaded.ClientID != "" && !validSoundCloudClientID(loaded.ClientID)) || !validBackgroundImage(loaded.BackgroundImage) || loaded.BackgroundBlur < 0 || loaded.BackgroundBlur > 24 {
-		return errors.New("сохранённые настройки повреждены")
+		_ = os.Rename(s.settingsPath, s.settingsPath+".bak")
+		s.settings = defaultSettings()
+		return s.saveSettings(s.settings)
 	}
 	s.settings = loaded
 	return nil

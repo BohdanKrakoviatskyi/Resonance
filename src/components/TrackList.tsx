@@ -107,7 +107,7 @@ export function TrackMenu({ track, anchor, onClose, playlistId }: { track: Track
 
 export function SourcePill({ track }: { track: Track }) {
   const label = track.source === 'soundcloud' ? 'SoundCloud' : 'YouTube Music';
-  const logo = track.source === 'soundcloud' ? youtubeMusicLogo : soundcloudLogo;
+  const logo = track.source === 'soundcloud' ? soundcloudLogo : youtubeMusicLogo;
   return <img className="provider-logo" src={logo} alt={label} title={label} />;
 }
 

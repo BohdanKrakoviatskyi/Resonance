@@ -392,6 +392,10 @@ function step(dir: 1 | -1, auto: boolean) {
     if (i < 0) i = n - 1;
     if (!isDisliked(s.queue[i])) break;
   }
+  if (isDisliked(s.queue[i])) {
+    player.set({ playing: false });
+    return;
+  }
   load(i, true);
 }
 

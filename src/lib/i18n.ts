@@ -151,6 +151,8 @@ const S = {
   currentScheme: ['Текущая схема', 'Current scheme'],
   dynamicHint: ['Цвета меняются под обложку каждого играющего трека', 'Colors follow the artwork of every track you play'],
   photoError: ['Фото применено, но не сохранится после перезагрузки', 'Photo applied, but it won\'t persist after reload'],
+  photoTooLarge: ['Анимированное изображение больше 8 МБ — выберите меньше', 'Animated image is over 8 MB — pick a smaller one'],
+  librarySaveError: ['Не удалось сохранить библиотеку: хранилище заполнено', 'Couldn\'t save your library: storage is full'],
   shortcuts: ['Горячие клавиши', 'Keyboard shortcuts'],
   kbPlay: ['Пауза / воспроизведение', 'Play / pause'],
   kbSeek: ['Перемотка ±5 сек', 'Seek ±5s'],

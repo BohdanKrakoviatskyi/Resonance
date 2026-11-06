@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"net"
 	"net/http"
@@ -13,6 +14,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -32,9 +34,87 @@ type ytAudioManager struct {
 	active   map[string]*ytAudioActive
 }
 
+// ytAudioActive is one in-flight download plus everything a reader needs to
+// follow the growing file. Readers do not wait for the whole download: they
+// block only until the bytes they asked for have been written, which lets a
+// seek mid-download resume from the requested offset.
 type ytAudioActive struct {
 	done chan struct{}
-	err  error
+
+	mu          sync.Mutex
+	changed     chan struct{} // closed and replaced on every state change
+	size        int64         // bytes written so far
+	total       int64         // expected final size, 0 when unknown
+	path        string
+	contentType string
+	metaKnown   bool
+	finished    bool
+	err         error
+}
+
+func newYTAudioActive() *ytAudioActive {
+	return &ytAudioActive{
+		done:    make(chan struct{}),
+		changed: make(chan struct{}),
+	}
+}
+
+func (a *ytAudioActive) notifyLocked() {
+	close(a.changed)
+	a.changed = make(chan struct{})
+}
+
+func (a *ytAudioActive) setMeta(total int64) {
+	a.mu.Lock()
+	if total > 0 {
+		a.total = total
+	}
+	a.metaKnown = true
+	a.notifyLocked()
+	a.mu.Unlock()
+}
+
+func (a *ytAudioActive) setContentType(path, contentType string) {
+	a.mu.Lock()
+	a.path = path
+	a.contentType = contentType
+	a.notifyLocked()
+	a.mu.Unlock()
+}
+
+func (a *ytAudioActive) addSize(n int64) {
+	a.mu.Lock()
+	a.size += n
+	a.notifyLocked()
+	a.mu.Unlock()
+}
+
+func (a *ytAudioActive) finish(err error) {
+	a.mu.Lock()
+	a.err = err
+	a.finished = true
+	a.notifyLocked()
+	a.mu.Unlock()
+	close(a.done)
+}
+
+// waitReady blocks until the first audio chunk has been sniffed (so the
+// container type and the intended total size are known), or the download ends.
+func (a *ytAudioActive) waitReady(ctx context.Context) bool {
+	for {
+		a.mu.Lock()
+		ready := (a.metaKnown && a.path != "" && a.contentType != "") || a.finished
+		changed := a.changed
+		a.mu.Unlock()
+		if ready {
+			return true
+		}
+		select {
+		case <-changed:
+		case <-ctx.Done():
+			return false
+		}
+	}
 }
 
 func newYTAudioManager(cacheDir string, client *http.Client) *ytAudioManager {
@@ -86,43 +166,64 @@ func (m *ytAudioManager) ensureCached(videoID string) {
 	if !validYouTubeVideoID(videoID) {
 		return
 	}
+	m.acquire(videoID)
+}
+
+// acquire returns the active download for id, starting one if needed, or nil
+// when the file is already fully cached.
+func (m *ytAudioManager) acquire(videoID string) *ytAudioActive {
 	if _, ok := m.cachedPath(videoID); ok {
-		return
+		return nil
 	}
 	m.mu.Lock()
-	if _, ok := m.active[videoID]; ok {
-		m.mu.Unlock()
-		return
+	defer m.mu.Unlock()
+	// Re-check under the lock: two callers can both miss the fast path above.
+	if _, ok := m.cachedPath(videoID); ok {
+		return nil
 	}
-	active := &ytAudioActive{done: make(chan struct{})}
+	if active, ok := m.active[videoID]; ok {
+		return active
+	}
+	active := newYTAudioActive()
 	m.active[videoID] = active
-	cachePath := filepath.Join(m.cacheDir, videoID+".m4a")
-	tmpPath := cachePath + ".part"
-	m.mu.Unlock()
-
 	go func() {
-		err := m.downloadToCache(videoID, tmpPath, cachePath, nil)
+		err := m.downloadToCache(videoID, active)
 		m.mu.Lock()
 		delete(m.active, videoID)
-		active.err = err
 		m.mu.Unlock()
-		close(active.done)
+		active.finish(err)
 		if err != nil {
-			log.Printf("yt audio prefetch/download error id=%s: %v", videoID, err)
-			_ = os.Remove(tmpPath)
+			log.Printf("yt audio download error id=%s: %v", videoID, err)
+			active.mu.Lock()
+			path := active.path
+			active.mu.Unlock()
+			if path != "" {
+				// Leave no partial file behind for cachedPath to trip over.
+				_ = os.Remove(path)
+			}
 		}
 	}()
+	return active
 }
 
 func (m *ytAudioManager) cachedPath(videoID string) (string, bool) {
-	// Prefer m4a, then webm/opus containers that yt-dlp may produce.
+	// A file counts only with its .done marker, so a truncated download
+	// (>64 KB but incomplete) is not mistaken for a complete cache.
 	for _, ext := range []string{".m4a", ".webm", ".opus", ".mp3", ".ogg"} {
 		path := filepath.Join(m.cacheDir, videoID+ext)
+		if _, err := os.Stat(path + ".done"); err != nil {
+			continue
+		}
 		if info, err := os.Stat(path); err == nil && !info.IsDir() && info.Size() > 64*1024 {
 			return path, true
 		}
 	}
 	return "", false
+}
+
+func (m *ytAudioManager) serveCached(w http.ResponseWriter, r *http.Request, path string) {
+	w.Header().Set("Cache-Control", "private, max-age=31536000, immutable")
+	http.ServeFile(w, r, path)
 }
 
 func (m *ytAudioManager) handleAudio(w http.ResponseWriter, r *http.Request) {
@@ -137,8 +238,7 @@ func (m *ytAudioManager) handleAudio(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if path, ok := m.cachedPath(id); ok {
-		w.Header().Set("Cache-Control", "private, max-age=31536000, immutable")
-		http.ServeFile(w, r, path)
+		m.serveCached(w, r, path)
 		return
 	}
 
@@ -149,51 +249,140 @@ func (m *ytAudioManager) handleAudio(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	m.serveAndCache(w, r, id)
-}
-
-func (m *ytAudioManager) serveAndCache(w http.ResponseWriter, r *http.Request, id string) {
-	// If a download is already active (e.g. background prefetch), wait for it
-	// to finish, then serve the completed cache with Range/seeking support.
-	m.mu.Lock()
-	if active, ok := m.active[id]; ok {
-		done := active.done
-		m.mu.Unlock()
-		select {
-		case <-done:
-		case <-r.Context().Done():
-			return
-		}
+	active := m.acquire(id)
+	if active == nil {
 		if path, ok := m.cachedPath(id); ok {
-			w.Header().Set("Cache-Control", "private, max-age=31536000, immutable")
-			http.ServeFile(w, r, path)
+			m.serveCached(w, r, path)
 			return
 		}
-		m.mu.Lock()
+		http.Error(w, "audio unavailable", http.StatusInternalServerError)
+		return
 	}
-	active := &ytAudioActive{done: make(chan struct{})}
-	m.active[id] = active
-	cachePath := filepath.Join(m.cacheDir, id+".m4a")
-	tmpPath := cachePath + ".part"
-	m.mu.Unlock()
-
-	err := m.downloadToCache(id, tmpPath, cachePath, &httpStreamTarget{w: w, r: r})
-
-	m.mu.Lock()
-	delete(m.active, id)
-	active.err = err
-	m.mu.Unlock()
-	close(active.done)
-
-	if err != nil {
-		log.Printf("yt audio cache miss/download error id=%s: %v", id, err)
-		_ = os.Remove(tmpPath)
+	if !active.waitReady(r.Context()) {
+		return
 	}
+
+	active.mu.Lock()
+	total, path, contentType := active.total, active.path, active.contentType
+	finished, err := active.finished, active.err
+	active.mu.Unlock()
+	if path == "" || contentType == "" {
+		http.Error(w, "audio stream unavailable", http.StatusBadGateway)
+		return
+	}
+
+	// Without a known final size a Range response cannot be honest, so wait
+	// for the download to finish and let ServeFile answer with its real size.
+	if total <= 0 {
+		if !finished {
+			select {
+			case <-active.done:
+			case <-r.Context().Done():
+				return
+			}
+		}
+		if cached, ok := m.cachedPath(id); ok {
+			m.serveCached(w, r, cached)
+			return
+		}
+		http.Error(w, "audio stream unavailable", http.StatusBadGateway)
+		return
+	}
+	if finished && err != nil {
+		http.Error(w, "audio stream unavailable", http.StatusBadGateway)
+		return
+	}
+
+	file, openErr := os.Open(path)
+	if openErr != nil {
+		// The download may have completed and finalized between the checks.
+		if cached, ok := m.cachedPath(id); ok {
+			m.serveCached(w, r, cached)
+			return
+		}
+		http.Error(w, "audio stream unavailable", http.StatusBadGateway)
+		return
+	}
+	defer file.Close()
+
+	w.Header().Set("Content-Type", contentType)
+	w.Header().Set("Cache-Control", "private, no-store")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	// ServeContent implements Range/If-Range/416, but asks the reader for its
+	// final size. growingFile answers with the size yt-dlp reported, then
+	// blocks reads until the on-disk file has caught up.
+	http.ServeContent(w, r, "", time.Time{}, &ytGrowingFile{file: file, active: active, ctx: r.Context()})
 }
 
-type httpStreamTarget struct {
-	w http.ResponseWriter
-	r *http.Request
+// ytGrowingFile is an io.ReadSeeker over a file that another goroutine is
+// still appending to. Read waits for the requested offset to be written.
+type ytGrowingFile struct {
+	file   *os.File
+	active *ytAudioActive
+	ctx    context.Context
+	pos    int64
+}
+
+func (g *ytGrowingFile) Seek(offset int64, whence int) (int64, error) {
+	switch whence {
+	case io.SeekStart:
+		g.pos = offset
+	case io.SeekCurrent:
+		g.pos += offset
+	case io.SeekEnd:
+		g.active.mu.Lock()
+		total := g.active.total
+		g.active.mu.Unlock()
+		g.pos = total + offset
+	default:
+		return 0, errors.New("invalid whence")
+	}
+	if g.pos < 0 {
+		return 0, errors.New("negative seek position")
+	}
+	return g.pos, nil
+}
+
+func (g *ytGrowingFile) Read(p []byte) (int, error) {
+	for {
+		g.active.mu.Lock()
+		size, total := g.active.size, g.active.total
+		finished, err := g.active.finished, g.active.err
+		changed := g.active.changed
+		g.active.mu.Unlock()
+
+		if total > 0 && g.pos >= total {
+			return 0, io.EOF
+		}
+		if g.pos < size {
+			want := int64(len(p))
+			if size-g.pos < want {
+				want = size - g.pos
+			}
+			if total > 0 && total-g.pos < want {
+				want = total - g.pos
+			}
+			read, readErr := g.file.ReadAt(p[:int(want)], g.pos)
+			g.pos += int64(read)
+			if read > 0 {
+				return read, nil
+			}
+			if readErr != nil && !errors.Is(readErr, io.EOF) {
+				return 0, readErr
+			}
+		}
+		if finished {
+			if err != nil {
+				return 0, err
+			}
+			return 0, io.EOF
+		}
+		select {
+		case <-changed:
+		case <-g.ctx.Done():
+			return 0, g.ctx.Err()
+		}
+	}
 }
 
 func sniffAudioType(chunk []byte) (ext, contentType string) {
@@ -215,38 +404,37 @@ func sniffAudioType(chunk []byte) (ext, contentType string) {
 	return ".m4a", "audio/mp4"
 }
 
-func (m *ytAudioManager) downloadToCache(id, tmpPath, finalPath string, target *httpStreamTarget) error {
+// readYtDlpSize parses the byte count yt-dlp writes before downloading. The
+// file appears before the first media byte, so a short retry is enough.
+func readYtDlpSize(path string) int64 {
+	for attempt := 0; attempt < 20; attempt++ {
+		if data, err := os.ReadFile(path); err == nil {
+			text := strings.TrimSpace(string(data))
+			if text != "" {
+				total, err := strconv.ParseInt(text, 10, 64)
+				if err == nil && total > 0 {
+					return total
+				}
+				return 0
+			}
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	return 0
+}
+
+func (m *ytAudioManager) downloadToCache(id string, active *ytAudioActive) error {
 	binary, err := findYtDlp()
 	if err != nil {
-		if target != nil {
-			http.Error(target.w, err.Error(), http.StatusBadGateway)
-		}
 		return err
 	}
 	if err := os.MkdirAll(m.cacheDir, 0o700); err != nil {
-		if target != nil {
-			http.Error(target.w, err.Error(), http.StatusInternalServerError)
-		}
 		return err
 	}
 	m.enforceCacheLimit(0)
 
-	file, err := os.OpenFile(tmpPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
-	if err != nil {
-		if target != nil {
-			http.Error(target.w, err.Error(), http.StatusInternalServerError)
-		}
-		return err
-	}
-	fileClosed := false
-	closeFile := func() {
-		if !fileClosed {
-			fileClosed = true
-			_ = file.Sync()
-			_ = file.Close()
-		}
-	}
-	defer closeFile()
+	metaPath := filepath.Join(m.cacheDir, id+"."+randomHex(8)+".meta")
+	defer os.Remove(metaPath)
 
 	// Background context so client disconnects don't kill caching.
 	dlCtx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
@@ -256,32 +444,32 @@ func (m *ytAudioManager) downloadToCache(id, tmpPath, finalPath string, target *
 	cmd := exec.CommandContext(dlCtx, binary,
 		"--no-warnings", "--no-progress", "--no-playlist",
 		"--extractor-retries", "2", "--socket-timeout", "15",
+		"--no-simulate", "--print-to-file", "%(filesize)s", metaPath,
 		"--format", "bestaudio[ext=m4a]/bestaudio[ext=webm]/bestaudio",
 		"-o", "-",
 		videoURL,
 	)
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
-		if target != nil {
-			http.Error(target.w, err.Error(), http.StatusInternalServerError)
-		}
 		return err
 	}
 	var stderrBuf strings.Builder
 	cmd.Stderr = &stderrBuf
 	if err := cmd.Start(); err != nil {
-		if target != nil {
-			http.Error(target.w, err.Error(), http.StatusBadGateway)
-		}
 		return err
 	}
 
-	var flusher http.Flusher
-	clientCtx := context.Background()
-	clientGone := target == nil
-	headersSent := false
-	ext := ".m4a"
-	contentType := "audio/mp4"
+	var file *os.File
+	var path string
+	fileClosed := false
+	closeFile := func() {
+		if file != nil && !fileClosed {
+			fileClosed = true
+			_ = file.Sync()
+			_ = file.Close()
+		}
+	}
+	defer closeFile()
 
 	buf := make([]byte, 32*1024)
 	var total int64
@@ -289,34 +477,21 @@ func (m *ytAudioManager) downloadToCache(id, tmpPath, finalPath string, target *
 		n, readErr := stdout.Read(buf)
 		if n > 0 {
 			chunk := buf[:n]
-			if !headersSent {
-				ext, contentType = sniffAudioType(chunk)
-				if target != nil {
-					target.w.Header().Set("Content-Type", contentType)
-					target.w.Header().Set("Cache-Control", "private, no-store")
-					target.w.Header().Set("X-Content-Type-Options", "nosniff")
-					target.w.WriteHeader(http.StatusOK)
-					flusher, _ = target.w.(http.Flusher)
-					clientCtx = target.r.Context()
+			if file == nil {
+				total = readYtDlpSize(metaPath)
+				active.setMeta(total)
+				ext, contentType := sniffAudioType(chunk)
+				path = filepath.Join(m.cacheDir, id+ext)
+				file, err = os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
+				if err != nil {
+					return err
 				}
-				headersSent = true
+				active.setContentType(path, contentType)
 			}
 			if _, werr := file.Write(chunk); werr != nil {
-				log.Printf("yt audio cache write error id=%s: %v", id, werr)
+				return fmt.Errorf("write cache file: %w", werr)
 			}
-			total += int64(n)
-			if !clientGone && target != nil {
-				select {
-				case <-clientCtx.Done():
-					clientGone = true
-				default:
-					if _, cerr := target.w.Write(chunk); cerr != nil {
-						clientGone = true
-					} else if flusher != nil && total%(128*1024) < int64(n) {
-						flusher.Flush()
-					}
-				}
-			}
+			active.addSize(int64(n))
 		}
 		if readErr != nil {
 			break
@@ -329,28 +504,30 @@ func (m *ytAudioManager) downloadToCache(id, tmpPath, finalPath string, target *
 		if len(msg) > 400 {
 			msg = msg[:400]
 		}
-		if target != nil && !headersSent {
-			if msg != "" {
-				http.Error(target.w, "yt-dlp: "+msg, http.StatusBadGateway)
-			} else {
-				http.Error(target.w, "yt-dlp failed", http.StatusBadGateway)
-			}
-		}
 		if msg != "" {
 			return fmt.Errorf("yt-dlp: %s", msg)
 		}
 		return fmt.Errorf("yt-dlp: %w", waitErr)
 	}
-	if total < 64*1024 {
+
+	active.mu.Lock()
+	written := active.size
+	active.mu.Unlock()
+	if written < 64*1024 {
 		return errors.New("yt-dlp produced too little audio data")
 	}
-	closeFile()
-	actualFinal := filepath.Join(m.cacheDir, id+ext)
-	if err := os.Rename(tmpPath, actualFinal); err != nil {
-		return fmt.Errorf("finalize cache: %w", err)
+	if total > 0 && written != total {
+		// The stream is still usable; only a reader that was promised the
+		// reported length would stop early. Record it so the cause is obvious.
+		log.Printf("yt audio size mismatch id=%s expected=%d actual=%d", id, total, written)
 	}
-	_ = os.Chtimes(actualFinal, time.Now(), time.Now())
-	_ = finalPath // determined by sniffing
+
+	closeFile()
+	_ = os.Chtimes(path, time.Now(), time.Now())
+	// Marker so a truncated file is never mistaken for a complete cache.
+	if err := os.WriteFile(path+".done", []byte("ok"), 0o600); err != nil {
+		return fmt.Errorf("mark cache complete: %w", err)
+	}
 	m.enforceCacheLimit(0)
 	return nil
 }
@@ -370,7 +547,7 @@ func (m *ytAudioManager) enforceCacheLimit(extra int64) {
 	var items []item
 	var total int64
 	for _, e := range entries {
-		if e.IsDir() || strings.HasSuffix(e.Name(), ".part") {
+		if e.IsDir() || strings.HasSuffix(e.Name(), ".part") || strings.HasSuffix(e.Name(), ".done") || strings.HasSuffix(e.Name(), ".meta") {
 			continue
 		}
 		info, err := e.Info()
