@@ -2,6 +2,9 @@
 
 Music player in Material 3 Expressive style.
 
+![screenshot1](https://i.ysn.lol/ifritov/screenshot-from-2026-11-06-19-00-32.png)
+![screenshot2](https://i.ysn.lol/ifritov/screenshot-from-2026-11-06-19-00-42.png)
+
 ## Run in development
 ```bash
 npm install
