@@ -63,17 +63,26 @@ export function Segmented<T extends string>({ value, options, onChange, size, cl
   );
 }
 
-export function Slider({ value, min = 0, max = 1, step = 0, onChange, label, className, disabled, size }: {
-  value: number; min?: number; max?: number; step?: number; onChange: (v: number) => void; label: string; className?: string; disabled?: boolean; size?: 'sm';
+export function Slider({ value, min = 0, max = 1, step = 0, onChange, label, className, disabled, size, valueText, onDoubleClick }: {
+  value: number; min?: number; max?: number; step?: number; onChange: (v: number) => void; label: string; className?: string; disabled?: boolean; size?: 'sm'; valueText?: string; onDoubleClick?: () => void;
 }) {
   const ref = useRef<HTMLDivElement>(null);
+  const anchor = useRef<{ x: number; v: number } | null>(null);
   const [drag, setDrag] = useState(false);
   const f = clamp((value - min) / (max - min || 1), 0, 1);
-  const from = (x: number) => {
-    const r = ref.current!.getBoundingClientRect();
-    let v = min + clamp((x - r.left) / r.width, 0, 1) * (max - min);
+  const emit = (v: number) => {
     if (step) v = Math.round(v / step) * step;
     onChange(clamp(v, min, max));
+  };
+  const from = (x: number, fine: boolean) => {
+    const r = ref.current!.getBoundingClientRect();
+    // Holding Shift slows the drag ~6× so a narrow track can be set
+    // precisely (crucial in the quiet range of the volume curve).
+    if (fine && anchor.current) {
+      emit(anchor.current.v + ((x - anchor.current.x) / r.width) * (max - min) * 0.15);
+      return;
+    }
+    emit(min + clamp((x - r.left) / r.width, 0, 1) * (max - min));
   };
   return (
     <div
@@ -84,21 +93,38 @@ export function Slider({ value, min = 0, max = 1, step = 0, onChange, label, cla
       aria-valuemin={min}
       aria-valuemax={max}
       aria-valuenow={Math.round(value * 100) / 100}
+      aria-valuetext={valueText}
       className={cx('slider', size === 'sm' && 'slider-sm', drag && 'dragging', disabled && 'disabled', className)}
       style={{ '--f': f } as Vars}
       onPointerDown={(e) => {
+        if (disabled) return;
         e.currentTarget.setPointerCapture(e.pointerId);
+        anchor.current = { x: e.clientX, v: value };
         setDrag(true);
-        from(e.clientX);
+        from(e.clientX, e.shiftKey);
       }}
-      onPointerMove={(e) => drag && from(e.clientX)}
-      onPointerUp={() => setDrag(false)}
-      onPointerCancel={() => setDrag(false)}
+      onPointerMove={(e) => drag && from(e.clientX, e.shiftKey)}
+      onPointerUp={() => {
+        setDrag(false);
+        anchor.current = null;
+      }}
+      onPointerCancel={() => {
+        setDrag(false);
+        anchor.current = null;
+      }}
+      onDoubleClick={onDoubleClick}
       onKeyDown={(e) => {
-        const d = step || (max - min) / 20;
-        if (e.key === 'ArrowRight' || e.key === 'ArrowUp') onChange(clamp(value + d, min, max));
-        else if (e.key === 'ArrowLeft' || e.key === 'ArrowDown') onChange(clamp(value - d, min, max));
+        const base = step || (max - min) / 100;
+        const d = base * (e.shiftKey ? 5 : 1);
+        let v: number;
+        if (e.key === 'ArrowRight' || e.key === 'ArrowUp') v = value + d;
+        else if (e.key === 'ArrowLeft' || e.key === 'ArrowDown') v = value - d;
+        else if (e.key === 'PageUp') v = value + base * 10;
+        else if (e.key === 'PageDown') v = value - base * 10;
+        else if (e.key === 'Home') v = min;
+        else if (e.key === 'End') v = max;
         else return;
+        emit(v);
         e.preventDefault();
         e.stopPropagation();
       }}

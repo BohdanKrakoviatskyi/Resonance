@@ -3,7 +3,7 @@ import { Icon } from './Icon';
 import { IconButton, Slider, type Vars } from './ui';
 import { clamp, cx, fmtTime, useStore } from '../lib/util';
 import { t } from '../lib/i18n';
-import { cycleRepeat, dur, next, onFrame, player, prev, seek, seekBy, setVolume, toggle, toggleMute, toggleShuffle, useSecond } from '../state/player';
+import { adjustVolumePos, cycleRepeat, dur, next, onFrame, player, prev, seek, seekBy, setVolumePos, volumeToPos, toggle, toggleMute, toggleShuffle, useSecond } from '../state/player';
 
 /** M3 Expressive wavy progress: the played part is a travelling sine wave that flattens when paused. */
 export function Seek({ big }: { big?: boolean }) {
@@ -173,14 +173,34 @@ export function Controls({ size }: { size?: 'lg' }) {
 export function Volume({ className }: { className?: string }) {
   const v = useStore(player, (s) => s.volume);
   const m = useStore(player, (s) => s.muted);
-  const icon = m || v === 0 ? 'volume_off' : v < 0.5 ? 'volume_down' : 'volume_up';
+  // The slider works in perceptual position space (cube root of the gain,
+  // see player.volumeToPos) so the quiet range gets most of the track.
+  const p = volumeToPos(m ? 0 : v);
+  const icon = m || v === 0 ? 'volume_off' : v < 0.25 ? 'volume_down' : 'volume_up';
+  const pct = Math.round(v * 100);
+  const db = v <= 0 ? '−∞' : `${(20 * Math.log10(v)).toFixed(1)} dB`;
   return (
     <div
       className={cx('flex min-w-0 items-center gap-1', className)}
-      onWheel={(e) => setVolume(v - Math.sign(e.deltaY) * 0.05)}
+      onWheel={(e) => {
+        // Steps in position space, scaled by the actual delta so trackpad
+        // flicks don't race; Shift makes it a fine adjustment.
+        const lines = e.deltaMode === 1 ? 33 : 1;
+        const step = clamp((-e.deltaY * lines) / 100, -1, 1) * (e.shiftKey ? 0.005 : 0.02);
+        if (step) adjustVolumePos(step);
+      }}
     >
       <IconButton icon={icon} label={t('mute')} onClick={toggleMute} size="sm" fill />
-      <Slider value={m ? 0 : v} onChange={setVolume} label={t('volume')} size="sm" className="hide-md w-20" />
+      <Slider
+        value={p}
+        step={0.01}
+        onChange={setVolumePos}
+        onDoubleClick={() => setVolumePos(volumeToPos(0.8))}
+        valueText={m ? '0%' : `${pct}% (${db})`}
+        label={t('volume')}
+        size="sm"
+        className="hide-md w-28"
+      />
     </div>
   );
 }

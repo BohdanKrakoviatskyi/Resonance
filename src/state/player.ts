@@ -426,8 +426,33 @@ export function seek(sec: number) {
 }
 export const seekBy = (d: number) => seek(curTime() + d);
 
+/**
+ * Perceptual (cubic) volume curve.
+ *
+ * `audio.volume` is a linear amplitude, but loudness grows roughly
+ * logarithmically, so a linear slider jumps by huge dB amounts near zero
+ * and barely moves near full volume — the low end is almost impossible to
+ * set precisely. Mapping slider position `p` to gain `p³` (and back with
+ * the cube root) spreads the quiet range over most of the track: equal
+ * moves of the handle sound like roughly equal loudness steps everywhere.
+ * The stored `volume` (linear gain) is unchanged, so old values persist.
+ */
+export const volumeToPos = (v: number) => Math.cbrt(clamp(v, 0, 1));
+export const posToVolume = (p: number) => {
+  const c = clamp(p, 0, 1);
+  return c * c * c;
+};
+export function setVolumePos(p: number) {
+  setVolume(posToVolume(p));
+}
+export function adjustVolumePos(d: number) {
+  setVolumePos(volumeToPos(player.get().volume) + d);
+}
+
 export function setVolume(v: number) {
-  v = clamp(v, 0, 1);
+  // Quantize to 0.1% so a specific value (e.g. exactly 5%) is reachable
+  // and cube/cube-root round-trips don't accumulate float noise.
+  v = Math.round(clamp(v, 0, 1) * 1000) / 1000;
   audio.volume = v;
   if (usesProviderPlayback(currentTrack())) providerCommand('setVolume', v);
   audio.muted = false;
