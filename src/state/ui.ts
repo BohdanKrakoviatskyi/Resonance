@@ -60,6 +60,7 @@ export const ui = createStore({
   foldYtMusic: false,
   foldSoundCloud: false,
   foldLocal: false,
+  favProvider: 'soundcloud' as 'soundcloud' | 'youtube',
 });
 persist('lyra.ui.v1', ui, (s) => ({
   sidebar: s.sidebar,
@@ -68,6 +69,7 @@ persist('lyra.ui.v1', ui, (s) => ({
   foldYtMusic: s.foldYtMusic,
   foldSoundCloud: s.foldSoundCloud,
   foldLocal: s.foldLocal,
+  favProvider: s.favProvider,
 }));
 
 window.addEventListener('hashchange', () => ui.set({ route: parse(), drawer: false }));

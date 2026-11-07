@@ -12,7 +12,12 @@ import soundcloudLogo from '../assets/soundcloud.svg';
 import youtubeMusicLogo from '../assets/youtube-music.svg';
 
 export function LikeButton({ id, size = 'md', variant, className }: { id: string; size?: 'sm' | 'md' | 'lg'; variant?: 'tonal'; className?: string }) {
-  const liked = useStore(library, (s) => s.liked.includes(id));
+  const liked = useStore(
+    library,
+    (s) =>
+      !s.disliked.includes(id) &&
+      (s.liked.includes(id) || s.soundcloudLiked.some((t) => t.id === id) || s.ytmusicLiked.some((t) => t.id === id)),
+  );
   const [burst, setBurst] = useState(0);
   const label = t(liked ? 'unlike' : 'like');
   return (

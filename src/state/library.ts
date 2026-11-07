@@ -48,7 +48,9 @@ function pruned(s: ReturnType<typeof library.get>) {
 }
 persist('lyra.lib.v1', library, (s) => ({
   liked: s.liked, disliked: s.disliked, playlists: s.playlists, cache: pruned(s), recent: s.recent,
+  soundcloudLiked: s.soundcloudLiked,
   soundcloudPlaylists: s.soundcloudPlaylists,
+  ytmusicLiked: s.ytmusicLiked,
   ytmusicPlaylists: s.ytmusicPlaylists,
   ytmusicPlaylistArt: s.ytmusicPlaylistArt,
   ytmusicAuthorized: s.ytmusicAuthorized,
@@ -310,15 +312,25 @@ export function ensureCached(id: string) {
   if (tr) library.set((s) => ({ cache: { ...s.cache, [id]: tr } }));
 }
 
+export const isLiked = (id: string) => {
+  const s = library.get();
+  if (s.disliked.includes(id)) return false;
+  if (s.liked.includes(id)) return true;
+  return s.soundcloudLiked.some((t) => t.id === id) || s.ytmusicLiked.some((t) => t.id === id);
+};
+
 export const isDisliked = (id: string) => library.get().disliked.includes(id);
 
 export function toggleLike(id: string): boolean {
   ensureCached(id);
   const s = library.get();
-  const on = !s.liked.includes(id);
+  const currentlyLiked = isLiked(id);
+  const on = !currentlyLiked;
   library.set({
-    liked: on ? [id, ...s.liked] : s.liked.filter((x) => x !== id),
+    liked: on ? [id, ...s.liked.filter((x) => x !== id)] : s.liked.filter((x) => x !== id),
     disliked: on ? s.disliked.filter((x) => x !== id) : s.disliked,
+    soundcloudLiked: on ? s.soundcloudLiked : s.soundcloudLiked.filter((t) => t.id !== id),
+    ytmusicLiked: on ? s.ytmusicLiked : s.ytmusicLiked.filter((t) => t.id !== id),
   });
   snack(t(on ? 'addedFav' : 'removedFav'));
   return on;
@@ -374,7 +386,10 @@ export function pushRecent(id: string) {
 
 export function searchLocal(q: string): string[] {
   const n = q.toLowerCase();
-  const all = new Map<string, Track>(Object.entries(library.get().cache));
+  const s = library.get();
+  const all = new Map<string, Track>(Object.entries(s.cache));
+  for (const tr of s.soundcloudLiked) all.set(tr.id, tr);
+  for (const tr of s.ytmusicLiked) all.set(tr.id, tr);
   return [...all.values()]
     .filter((x) => `${x.title} ${x.artist} ${x.album ?? ''}`.toLowerCase().includes(n))
     .slice(0, 8)
