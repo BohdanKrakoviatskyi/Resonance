@@ -9,9 +9,11 @@ import {
   reloadSoundCloudPlaylistTracks, reloadYtMusicPlaylistTracks,
 } from '../state/library';
 import { player, playQueue, shufflePlay, toggle } from '../state/player';
-import { go, openDialog } from '../state/ui';
+import { go, openDialog, ui } from '../state/ui';
 import { parseSoundCloudCollectionId } from '../lib/soundcloud-library';
 import { parseYtMusicCollectionId } from '../lib/ytmusic-library';
+import soundcloudLogo from '../assets/soundcloud.svg';
+import youtubeMusicLogo from '../assets/youtube-music.svg';
 
 export default function Collection({ kind, id }: { kind: 'favorites' | 'playlist'; id?: string }) {
   const liked = useStore(library, (s) => s.liked);
@@ -91,16 +93,33 @@ export default function Collection({ kind, id }: { kind: 'favorites' | 'playlist
     return () => { alive = false; };
   }, [ytPlaylistId, cachedYtTracks]);
 
+  const disliked = useStore(library, (s) => s.disliked);
+  const favProvider = useStore(ui, (s) => s.favProvider);
   const ids = useMemo(() => {
-    const sourceIds = kind === 'favorites' ? liked : pl?.ids ?? [];
+    if (kind === 'favorites') {
+      const seen = new Set<string>();
+      const out: string[] = [];
+      const providerLiked = favProvider === 'soundcloud' ? soundcloudLiked : ytmusicLiked;
+      for (const trackId of [...liked, ...providerLiked.map((t) => t.id)]) {
+        const track = getTrack(trackId);
+        if (!seen.has(trackId) && !disliked.includes(trackId) && track && track.source === favProvider) {
+          seen.add(trackId);
+          out.push(trackId);
+        }
+      }
+      return out;
+    }
+    const sourceIds = pl?.ids ?? [];
     return sourceIds.filter((trackId) => !!getTrack(trackId));
-  }, [kind, liked, pl, cache]);
+  }, [kind, liked, soundcloudLiked, ytmusicLiked, disliked, favProvider, pl, cache]);
   const playingHere = useStore(player, (s) => s.playing && ids.includes(s.queue[s.index]));
 
   const virtualCollection = ytCollection?.kind === 'liked';
+  const favProviderLoading = favProvider === 'soundcloud' ? soundcloudLibraryLoading : ytmusicLibraryLoading;
   const loading = remoteLoading || ytLoading
     || Boolean(ytPlaylistId && !cachedYtTracks && !ytError)
-    || Boolean(virtualCollection && ytmusicLibraryLoading && !ids.length);
+    || Boolean(virtualCollection && ytmusicLibraryLoading && !ids.length)
+    || Boolean(kind === 'favorites' && favProviderLoading && !ids.length);
   const providerError = remoteError || ytError
     || (virtualCollection && !ids.length ? ytmusicLibraryError : '');
 
@@ -141,7 +160,31 @@ export default function Collection({ kind, id }: { kind: 'favorites' | 'playlist
 
   return (
     <div className="page">
-      <header className="anim-in mb-8 mt-2 flex flex-col items-center gap-6 text-center @2xl:flex-row @2xl:items-end @2xl:text-left">
+      <header className="anim-in relative mb-8 mt-2 flex flex-col items-center gap-6 text-center @2xl:flex-row @2xl:items-end @2xl:text-left">
+        {kind === 'favorites' && (
+          <div className="seg seg-sm self-end @2xl:absolute @2xl:right-0 @2xl:top-0" role="group" aria-label={t('providers')}>
+            <button
+              type="button"
+              data-ripple
+              className="sl"
+              aria-pressed={favProvider === 'soundcloud'}
+              onClick={() => ui.set({ favProvider: 'soundcloud' })}
+            >
+              <img src={soundcloudLogo} alt="" aria-hidden="true" className="provider-logo" />
+              <span>SoundCloud</span>
+            </button>
+            <button
+              type="button"
+              data-ripple
+              className="sl"
+              aria-pressed={favProvider === 'youtube'}
+              onClick={() => ui.set({ favProvider: 'youtube' })}
+            >
+              <img src={youtubeMusicLogo} alt="" aria-hidden="true" className="provider-logo" />
+              <span>YouTube Music</span>
+            </button>
+          </div>
+        )}
         {kind === 'favorites' ? (
           <FavCover size={220} className="h-[220px] w-[220px] rounded-[36px] shadow-2xl" />
         ) : (
