@@ -9,6 +9,7 @@ import { library, loadYtMusicPlaylistArtwork } from '../state/library';
 import { player } from '../state/player';
 import { ytmusicPlaylistId } from '../lib/ytmusic-library';
 import { appearance } from '../state/appearance';
+import { updater } from '../state/updater';
 import { go, openDialog, routeKey, ui, type Route } from '../state/ui';
 import soundcloudLogo from '../assets/soundcloud.svg';
 import youtubeMusicLogo from '../assets/youtube-music.svg';
@@ -22,8 +23,8 @@ function YtMusicPlaylistCover({ playlistId, title, artworkUrl }: { playlistId: s
   return <PlaylistCover p={{ id: playlistId, name: title, ids: [], created: 0, artworkUrl: art ?? artworkUrl ?? undefined }} className="h-10 w-10 rounded-[12px]" />;
 }
 
-function NavItem({ k, active, expanded, label, labelPrefix, sub, icon, art, onClick, playing, className }: {
-  k: string; active: boolean; expanded: boolean; label: string; labelPrefix?: ReactNode; sub?: string; icon?: IconName; art?: ReactNode; onClick: () => void; playing?: boolean; className?: string;
+function NavItem({ k, active, expanded, label, labelPrefix, sub, icon, art, badge, onClick, playing, className }: {
+  k: string; active: boolean; expanded: boolean; label: string; labelPrefix?: ReactNode; sub?: string; icon?: IconName; art?: ReactNode; badge?: boolean; onClick: () => void; playing?: boolean; className?: string;
 }) {
   return (
     <button
@@ -36,11 +37,15 @@ function NavItem({ k, active, expanded, label, labelPrefix, sub, icon, art, onCl
       data-tip-pos="right"
       onClick={onClick}
     >
-      <span className="nav-ic">{art ?? (icon && <Icon name={icon} />)}</span>
+      <span className="nav-ic relative">
+        {art ?? (icon && <Icon name={icon} />)}
+        {badge && <span className="absolute right-3.5 top-3 h-2.5 w-2.5 rounded-full bg-[#ff3b30] ring-2 ring-[var(--md-surface-container-low)]" aria-hidden="true" />}
+      </span>
       <span className="nav-label fade-x">
         <span className="nav-label-main">
           {labelPrefix && <span className="nav-label-prefix">{labelPrefix}</span>}
           <span className="truncate">{label}</span>
+          {badge && <span className="ml-auto h-2.5 w-2.5 shrink-0 rounded-full bg-[#ff3b30]" aria-hidden="true" />}
         </span>
         {sub && <span className="nav-sub">{sub}</span>}
       </span>
@@ -107,6 +112,8 @@ export function Sidebar({ mode }: { mode: 'inline' | 'drawer' }) {
   const ytmusicConnected = useStore(library, (s) => s.ytmusicAuthorized);
   const playing = useStore(player, (s) => s.playing);
   const curId = useStore(player, (s) => s.queue[s.index] ?? null);
+  const updateAvailable = useStore(updater, (s) => s.available);
+  const latestVersion = useStore(updater, (s) => s.latestVersion);
   const listRef = useRef<HTMLDivElement>(null);
   const [ind, setInd] = useState<{ y: number; h: number } | null>(null);
   const active = routeKey(route);
@@ -237,8 +244,24 @@ export function Sidebar({ mode }: { mode: 'inline' | 'drawer' }) {
         )}
       </div>
       <div className="side-bottom">
-        <NavItem k="providers" icon="music_note" label={t('providers')} active={active === 'providers'} expanded={expanded} onClick={() => nav({ name: 'providers' })} />
-        <NavItem k="appearance" icon="palette" label={t('appearance')} active={active === 'appearance'} expanded={expanded} onClick={() => nav({ name: 'appearance' })} />
+        <NavItem
+          k="updates"
+          icon="download"
+          label={t('updates')}
+          sub={updateAvailable ? `v${latestVersion}` : undefined}
+          badge={updateAvailable}
+          active={false}
+          expanded={expanded}
+          onClick={() => openDialog({ kind: 'update' })}
+        />
+        <NavItem
+          k="settings"
+          icon="settings"
+          label={t('settings')}
+          active={active === 'settings' || active === 'appearance' || active === 'providers'}
+          expanded={expanded}
+          onClick={() => nav({ name: 'settings' })}
+        />
       </div>
     </nav>
   );

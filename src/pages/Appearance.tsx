@@ -2,13 +2,13 @@ import { useMemo, useRef, type ReactNode } from 'react';
 import { hexFromArgb } from '@material/material-color-utilities';
 import { Icon, type IconName } from '../components/Icon';
 import { ShortcutSettings } from '../components/ShortcutSettings';
-import { Button, Segmented, Slider, type Vars } from '../components/ui';
+import { Button, IconButton, Segmented, Slider, type Vars } from '../components/ui';
 import { cx, useStore } from '../lib/util';
 import { t, type Key } from '../lib/i18n';
 import { buildScheme, VARIANTS, type Role } from '../lib/color';
 import { appearance, DEFAULTS, processImage, setBgImage, type Appearance as A, type GlassMode } from '../state/appearance';
 import { theme } from '../state/theme';
-import { snack } from '../state/ui';
+import { go, snack } from '../state/ui';
 
 const set = (p: Partial<A>) => appearance.set(p);
 
@@ -119,6 +119,10 @@ export default function Appearance() {
   return (
     <div className="page max-w-[980px]">
       <header className="anim-in mb-6 mt-2">
+        <div className="mb-3 flex items-center gap-2">
+          <IconButton icon="arrow_back" label={t('back')} variant="tonal" size="sm" onClick={() => go({ name: 'settings' })} />
+          <span className="text-sm font-semibold text-on-surface-variant">{t('settings')}</span>
+        </div>
         <h1 className="display text-[clamp(32px,5.5cqw,54px)]">{t('appearance')}</h1>
         <p className="mt-2 text-lg text-on-surface-variant">{t('appearanceSub')}</p>
       </header>

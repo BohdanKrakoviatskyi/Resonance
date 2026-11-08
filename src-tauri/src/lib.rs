@@ -264,6 +264,52 @@ fn capture_ytmusic_session(app: &AppHandle, window: &WebviewWindow, nonce: &str)
     true
 }
 
+#[tauri::command]
+async fn uninstall_app(app: AppHandle) -> Result<(), String> {
+    #[cfg(target_os = "windows")]
+    {
+        if let Ok(exe) = std::env::current_exe() {
+            if let Some(dir) = exe.parent() {
+                for candidate in ["uninstall.exe", "unins000.exe"] {
+                    let uninstaller = dir.join(candidate);
+                    if uninstaller.exists() {
+                        std::process::Command::new(&uninstaller)
+                            .current_dir(dir)
+                            .spawn()
+                            .map_err(|error| format!("could not launch uninstaller: {error}"))?;
+                        app.exit(0);
+                        return Ok(());
+                    }
+                }
+            }
+        }
+        let ps_script = r#"
+$paths = @(
+  'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\*',
+  'HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall\*',
+  'HKLM:\Software\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*'
+)
+$item = Get-ItemProperty $paths -ErrorAction SilentlyContinue | Where-Object { $_.DisplayName -like 'Resonance*' -and $_.UninstallString } | Select-Object -First 1
+if ($item) {
+  Start-Process cmd.exe -ArgumentList '/c', $item.UninstallString
+} else {
+  Start-Process 'ms-settings:appsfeatures'
+}
+"#;
+        let _ = std::process::Command::new("powershell")
+            .args(["-NoProfile", "-WindowStyle", "Hidden", "-Command", ps_script])
+            .spawn();
+        app.exit(0);
+        return Ok(());
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = app;
+        Err("Uninstaller is only supported on desktop builds.".to_string())
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -292,7 +338,8 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             start_soundcloud_login,
-            start_ytmusic_login
+            start_ytmusic_login,
+            uninstall_app
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

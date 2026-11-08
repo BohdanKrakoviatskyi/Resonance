@@ -6,10 +6,17 @@ export type Route =
   | { name: 'search'; q: string }
   | { name: 'favorites' }
   | { name: 'playlist'; id: string }
+  | { name: 'settings' }
   | { name: 'appearance' }
   | { name: 'providers' };
 
-export type Dialog = { kind: 'create'; trackId?: string } | { kind: 'rename'; id: string } | { kind: 'delete'; id: string };
+export type Dialog =
+  | { kind: 'create'; trackId?: string }
+  | { kind: 'rename'; id: string }
+  | { kind: 'delete'; id: string }
+  | { kind: 'update' }
+  | { kind: 'update-uninstall' }
+  | { kind: 'uninstall' };
 export interface Snack { id: number; text: string; action?: { label: string; run: () => void } }
 
 function parse(): Route {
@@ -23,6 +30,8 @@ function parse(): Route {
       return { name: 'favorites' };
     case 'playlist':
       return seg[1] ? { name: 'playlist', id: decodeURIComponent(seg[1]) } : { name: 'home' };
+    case 'settings':
+      return { name: 'settings' };
     case 'appearance':
       return { name: 'appearance' };
     case 'providers':

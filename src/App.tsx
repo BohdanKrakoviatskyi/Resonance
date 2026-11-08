@@ -10,11 +10,13 @@ import { IconButton } from './components/ui';
 import { MD, useMedia, useStore, XL } from './lib/util';
 import { t, useLang } from './lib/i18n';
 import { loadSoundCloudLibrary, loadYtMusicLibrary } from './state/library';
+import { checkForUpdates } from './state/updater';
 import { handleWindowShortcut } from './state/shortcut-runtime';
 import { routeKey, ui, type Route } from './state/ui';
 import Home from './pages/Home';
 import Search from './pages/Search';
 import Collection from './pages/Collection';
+import Settings from './pages/Settings';
 import Appearance from './pages/Appearance';
 import Providers from './pages/Providers';
 
@@ -26,6 +28,8 @@ function Page({ route }: { route: Route }) {
       return <Collection kind="favorites" />;
     case 'playlist':
       return <Collection kind="playlist" id={route.id} />;
+    case 'settings':
+      return <Settings />;
     case 'appearance':
       return <Appearance />;
     case 'providers':
@@ -76,6 +80,9 @@ export default function App() {
   useEffect(() => {
     void loadSoundCloudLibrary();
     void loadYtMusicLibrary();
+    void checkForUpdates(true);
+    const timer = window.setInterval(() => void checkForUpdates(), 30 * 60 * 1000);
+    return () => window.clearInterval(timer);
   }, []);
 
   useEffect(() => {

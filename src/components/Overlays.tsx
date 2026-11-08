@@ -1,10 +1,12 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
-import { Button, IconButton, usePresence } from './ui';
-import { useStore } from '../lib/util';
+import { Icon } from './Icon';
+import { Button, IconButton, Loader, usePresence } from './ui';
+import { cx, useStore } from '../lib/util';
 import { t } from '../lib/i18n';
 import { createPlaylist, deletePlaylist, library, renamePlaylist } from '../state/library';
-import { go, ui, type Dialog, type Snack } from '../state/ui';
+import { checkForUpdates, runAppUninstall, startInstallNewVersion, updater } from '../state/updater';
+import { go, openDialog, ui, type Dialog, type Snack } from '../state/ui';
 
 export function Drawer({ open, onClose, side, children }: { open: boolean; onClose: () => void; side: 'left' | 'right'; children: ReactNode }) {
   const { mounted, visible } = usePresence(open, 450);
@@ -91,6 +93,132 @@ function DeleteDialog({ id }: { id: string }) {
   );
 }
 
+function UpdateDialog() {
+  const st = useStore(updater, (s) => s);
+  const [installing, setInstalling] = useState(false);
+
+  useEffect(() => {
+    void checkForUpdates();
+  }, []);
+
+  const onInstall = async () => {
+    setInstalling(true);
+    try {
+      await startInstallNewVersion();
+      openDialog({ kind: 'update-uninstall' });
+    } finally {
+      setInstalling(false);
+    }
+  };
+
+  return (
+    <div>
+      <h2 className="headline mb-3 text-2xl">{st.available ? t('updateAvailable') : t('updates')}</h2>
+      {st.checking ? (
+        <div className="my-6 flex items-center gap-3 text-on-surface-variant">
+          <Loader size={28} />
+          <span>{t('updateChecking')}</span>
+        </div>
+      ) : (
+        <div className="space-y-2 text-sm">
+          <div className="flex justify-between rounded-2xl bg-sc-low px-4 py-2.5">
+            <span className="text-on-surface-variant">{t('updateCurrentVer')}</span>
+            <span className="font-semibold">v{st.currentVersion}</span>
+          </div>
+          <div className="flex justify-between rounded-2xl bg-sc-low px-4 py-2.5">
+            <span className="text-on-surface-variant">{t('updateLatestVer')}</span>
+            <span className={cx('font-semibold', st.available && 'text-primary')}>v{st.latestVersion}</span>
+          </div>
+          {!st.available && !st.error && (
+            <p className="pt-2 text-on-surface-variant">{t('updateUpToDate')}</p>
+          )}
+          {st.error && (
+            <p className="pt-2 text-error">{st.error}</p>
+          )}
+        </div>
+      )}
+      <div className="mt-6 flex flex-wrap justify-end gap-2">
+        <Button variant="text" onClick={closeDialog}>
+          {t('closeBtn')}
+        </Button>
+        {st.available ? (
+          <Button icon="download" disabled={installing || st.checking} onClick={() => void onInstall()}>
+            {t('updateInstallBtn')}
+          </Button>
+        ) : (
+          <Button variant="tonal" icon="refresh" disabled={st.checking} onClick={() => void checkForUpdates(true)}>
+            {t('updateCheckAgainBtn')}
+          </Button>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function UpdateUninstallDialog() {
+  const [busy, setBusy] = useState(false);
+  return (
+    <div>
+      <h2 className="headline mb-3 text-2xl">{t('updateStartedTitle')}</h2>
+      <p className="text-sm leading-relaxed text-on-surface-variant">{t('updateStartedText')}</p>
+      <div className="mt-6 flex flex-wrap justify-end gap-2">
+        <Button variant="text" onClick={closeDialog}>
+          {t('closeBtn')}
+        </Button>
+        <Button
+          icon="delete"
+          disabled={busy}
+          className="!bg-error !text-[#fff]"
+          onClick={() => {
+            setBusy(true);
+            void runAppUninstall().finally(() => setBusy(false));
+          }}
+        >
+          {t('uninstallBtn')}
+        </Button>
+      </div>
+    </div>
+  );
+}
+
+function UninstallDialog() {
+  const [confirmed, setConfirmed] = useState(false);
+  const [busy, setBusy] = useState(false);
+  return (
+    <div>
+      <h2 className="headline mb-3 text-2xl">{t('uninstallTitle')}</h2>
+      <p className="text-sm leading-relaxed text-on-surface-variant">{t('uninstallText')}</p>
+      <button
+        type="button"
+        data-ripple
+        className="sl mt-4 flex w-full items-center gap-3 rounded-2xl bg-sc-low px-4 py-3 text-left text-sm font-semibold"
+        onClick={() => setConfirmed((v) => !v)}
+      >
+        <span className={cx('check', confirmed && 'on')}>
+          <Icon name="check" />
+        </span>
+        <span className="flex-1">{t('uninstallConfirmCheck')}</span>
+      </button>
+      <div className="mt-6 flex justify-end gap-2">
+        <Button variant="text" onClick={closeDialog}>
+          {t('cancel')}
+        </Button>
+        <Button
+          icon="delete"
+          disabled={!confirmed || busy}
+          className="!bg-error !text-[#fff]"
+          onClick={() => {
+            setBusy(true);
+            void runAppUninstall().finally(() => setBusy(false));
+          }}
+        >
+          {t('uninstallBtn')}
+        </Button>
+      </div>
+    </div>
+  );
+}
+
 function DialogHost() {
   const d = useStore(ui, (s) => s.dialog);
   const [last, setLast] = useState<Dialog | null>(d);
@@ -107,7 +235,17 @@ function DialogHost() {
     <div className="dialog-root" data-open={visible}>
       <div className="scrim" onClick={closeDialog} />
       <div className="dialog" role="dialog" aria-modal="true">
-        {last.kind === 'delete' ? <DeleteDialog id={last.id} /> : <NameDialog key={JSON.stringify(last)} d={last} />}
+        {last.kind === 'delete' ? (
+          <DeleteDialog id={last.id} />
+        ) : last.kind === 'update' ? (
+          <UpdateDialog />
+        ) : last.kind === 'update-uninstall' ? (
+          <UpdateUninstallDialog />
+        ) : last.kind === 'uninstall' ? (
+          <UninstallDialog />
+        ) : (
+          <NameDialog key={JSON.stringify(last)} d={last} />
+        )}
       </div>
     </div>,
     document.body,

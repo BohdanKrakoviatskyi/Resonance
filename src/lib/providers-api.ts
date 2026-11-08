@@ -168,3 +168,11 @@ export function searchYtDlpTracks(query: string, signal?: AbortSignal): Promise<
 export function ytDlpTrackStream(videoId: string, signal?: AbortSignal): Promise<{ url: string }> {
   return rpc('yt.dlp.stream', { videoId }, signal);
 }
+
+export function backupFrontendState(entries: Record<string, string>, signal?: AbortSignal): Promise<Record<string, string>> {
+  return rpc('frontend.backup', { entries }, signal);
+}
+
+export function restoreFrontendState(signal?: AbortSignal): Promise<Record<string, string>> {
+  return rpc('frontend.restore', {}, signal);
+}
