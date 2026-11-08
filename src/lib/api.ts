@@ -155,6 +155,7 @@ export interface ManualLyricsChoice {
 const MANUAL_LYRICS_STORAGE_KEY = 'resonance.manual_lyrics.v1';
 const lyricsCache = new Map<string, Promise<LyricsData | null>>();
 let lyricsOverrides: Record<string, ManualLyricsChoice> | null = null;
+let lyricsOverridesRestored: Promise<void> | null = null;
 
 function loadLyricsOverrides(): Record<string, ManualLyricsChoice> {
   if (lyricsOverrides) return lyricsOverrides;
@@ -167,6 +168,28 @@ function loadLyricsOverrides(): Record<string, ManualLyricsChoice> {
   return lyricsOverrides;
 }
 
+function ensureLyricsOverridesRestored(): Promise<void> {
+  if (lyricsOverridesRestored) return lyricsOverridesRestored;
+  lyricsOverridesRestored = import('./providers-api')
+    .then(({ restoreFrontendState }) => restoreFrontendState())
+    .then((entries) => {
+      const raw = entries?.[MANUAL_LYRICS_STORAGE_KEY];
+      if (!raw) return;
+      const restored = JSON.parse(raw) as Record<string, ManualLyricsChoice>;
+      if (!restored || typeof restored !== 'object') return;
+      const current = loadLyricsOverrides();
+      const merged = { ...restored, ...current };
+      lyricsOverrides = merged;
+      try {
+        localStorage.setItem(MANUAL_LYRICS_STORAGE_KEY, JSON.stringify(merged));
+      } catch {
+        /* ignore */
+      }
+    })
+    .catch(() => {});
+  return lyricsOverridesRestored;
+}
+
 function saveLyricsOverrides(map: Record<string, ManualLyricsChoice>) {
   lyricsOverrides = map;
   try {
@@ -174,6 +197,9 @@ function saveLyricsOverrides(map: Record<string, ManualLyricsChoice>) {
   } catch {
     /* ignore quota errors */
   }
+  void import('./util')
+    .then(({ flushFrontendStateBackup }) => flushFrontendStateBackup())
+    .catch(() => {});
 }
 
 export function lyricsDataFromRecord(rec: LyricsCandidate): LyricsData | null {
@@ -233,12 +259,15 @@ export async function searchLyricsManual(query: string, signal?: AbortSignal): P
     }));
 }
 
-export function getLyrics(t: Track, forceRefresh = false): Promise<LyricsData | null> {
-  if (t.lyrics) return Promise.resolve({ synced: t.lyrics });
+export async function getLyrics(t: Track, forceRefresh = false): Promise<LyricsData | null> {
+  if (t.lyrics) return { synced: t.lyrics };
+  if (!loadLyricsOverrides()[t.id]) {
+    await ensureLyricsOverridesRestored();
+  }
   const override = loadLyricsOverrides()[t.id];
   if (override) {
     const overriddenData = lyricsDataFromRecord(override);
-    if (overriddenData) return Promise.resolve(overriddenData);
+    if (overriddenData) return overriddenData;
   }
   if (forceRefresh) lyricsCache.delete(t.id);
   let p = lyricsCache.get(t.id);

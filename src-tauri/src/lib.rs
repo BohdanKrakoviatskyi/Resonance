@@ -322,6 +322,32 @@ async fn finish_splash(app: AppHandle) -> Result<(), String> {
     Ok(())
 }
 
+#[tauri::command]
+async fn restart_app(app: AppHandle) -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    {
+        if let Ok(exe) = std::env::current_exe() {
+            let app_bundle = exe
+                .ancestors()
+                .find(|p| p.extension().and_then(|e| e.to_str()) == Some("app"))
+                .map(|p| p.to_path_buf());
+
+            if let Some(bundle_path) = app_bundle {
+                let _ = std::process::Command::new("/bin/sh")
+                    .arg("-c")
+                    .arg("sleep 0.7 && open -a \"$1\"")
+                    .arg("sh")
+                    .arg(&bundle_path)
+                    .spawn();
+                app.exit(0);
+                return Ok(());
+            }
+        }
+    }
+
+    app.restart();
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -362,7 +388,8 @@ pub fn run() {
             start_soundcloud_login,
             start_ytmusic_login,
             uninstall_app,
-            finish_splash
+            finish_splash,
+            restart_app
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

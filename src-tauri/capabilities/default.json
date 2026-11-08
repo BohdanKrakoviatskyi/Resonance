@@ -17,6 +17,7 @@
     "allow-start-ytmusic-login",
     "allow-uninstall-app",
     "allow-finish-splash",
+    "allow-restart-app",
     {
       "identifier": "shell:allow-spawn",
       "allow": [
