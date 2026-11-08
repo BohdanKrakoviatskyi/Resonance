@@ -24,6 +24,12 @@ export default function Settings() {
       subtitle: t('appearanceSub'),
     },
     {
+      route: { name: 'audio' },
+      icon: 'graphic_eq',
+      title: t('audioSettings'),
+      subtitle: t('audioSettingsSub'),
+    },
+    {
       route: { name: 'providers' },
       icon: 'music_note',
       title: t('providers'),

@@ -5,8 +5,10 @@ import { cx } from '../lib/util';
 import { getTrack } from '../state/library';
 import type { Playlist } from '../types';
 
+const loadedCoverUrls = new Set<string>();
+
 export function Cover({ src, className, style, icon = 'music_note' }: { src?: string; className?: string; style?: CSSProperties; icon?: IconName }) {
-  const [okSrc, setOk] = useState<string | null>(null);
+  const [okSrc, setOk] = useState<string | null>(() => (src && loadedCoverUrls.has(src) ? src : null));
   const [errSrc, setErr] = useState<string | null>(null);
   return (
     <div className={cx('cover', className)} style={style}>
@@ -19,11 +21,17 @@ export function Cover({ src, className, style, icon = 'music_note' }: { src?: st
           loading="lazy"
           decoding="async"
           draggable={false}
-          className={okSrc === src ? 'ok' : ''}
+          className={okSrc === src || loadedCoverUrls.has(src) ? 'ok' : ''}
           ref={(el) => {
-            if (el?.complete && el.naturalWidth) setOk(src);
+            if (el?.complete && el.naturalWidth) {
+              loadedCoverUrls.add(src);
+              if (okSrc !== src) setOk(src);
+            }
           }}
-          onLoad={() => setOk(src)}
+          onLoad={() => {
+            loadedCoverUrls.add(src);
+            setOk(src);
+          }}
           onError={() => setErr(src)}
         />
       )}

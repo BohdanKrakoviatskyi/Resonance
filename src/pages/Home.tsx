@@ -42,8 +42,7 @@ export default function Home() {
   const ytmusicConnected = useStore(library, (s) => s.ytmusicAuthorized);
   const searchOpen = useStore(ui, (s) => s.searchOpen);
   const storedQ = useStore(ui, (s) => s.searchQ);
-  const searchUi = usePresence(searchOpen, 300);
-  const homeUi = usePresence(!searchOpen, 140);
+  const searchUi = usePresence(searchOpen, 420);
 
   const [text, setText] = useState(storedQ);
   const [q, setQ] = useState(storedQ);
@@ -155,100 +154,98 @@ export default function Home() {
         </div>
       )}
 
-      {homeUi.mounted && (
-        <div className="home-pane home-pane-main" data-open={homeUi.visible} aria-hidden={!homeUi.visible}>
-          <div className="home-top">
-            <header className="min-w-0">
-              <h1 className="display text-[clamp(34px,6cqw,60px)]">{t(greet)}</h1>
-              <p className="mt-2 text-lg text-on-surface-variant">{t('homeSubtitle')}</p>
-            </header>
-            <div className="home-search-dock">
-              <label className="search-bar search-bar-dock">
-                <Icon name="search" className="shrink-0 text-on-surface-variant" />
-                <input
-                  ref={dockRef}
-                  value={text}
-                  onChange={(e) => {
-                    setText(e.target.value);
-                    openSearch(e.target.value);
-                  }}
-                  onFocus={() => openSearch(text || storedQ)}
-                  placeholder={t('searchPlaceholder')}
-                  aria-label={t('search')}
-                  enterKeyHint="search"
-                  tabIndex={homeUi.visible ? 0 : -1}
-                />
-                {text && (
-                  <IconButton
-                    icon="close"
-                    label={t('cancel')}
-                    tip={false}
-                    tabIndex={homeUi.visible ? 0 : -1}
-                    onClick={close}
-                  />
-                )}
-              </label>
-              <IconButton
-                icon="search"
-                label={t('search')}
-                variant="tonal"
-                className="home-search-trigger"
-                tabIndex={homeUi.visible ? 0 : -1}
-                onClick={() => openSearch('')}
+      <div className="home-pane home-pane-main" data-open={!searchOpen} aria-hidden={searchOpen}>
+        <div className="home-top">
+          <header className="min-w-0">
+            <h1 className="display text-[clamp(34px,6cqw,60px)]">{t(greet)}</h1>
+            <p className="mt-2 text-lg text-on-surface-variant">{t('homeSubtitle')}</p>
+          </header>
+          <div className="home-search-dock">
+            <label className="search-bar search-bar-dock">
+              <Icon name="search" className="shrink-0 text-on-surface-variant" />
+              <input
+                ref={dockRef}
+                value={text}
+                onChange={(e) => {
+                  setText(e.target.value);
+                  openSearch(e.target.value);
+                }}
+                onFocus={() => openSearch(text || storedQ)}
+                placeholder={t('searchPlaceholder')}
+                aria-label={t('search')}
+                enterKeyHint="search"
+                tabIndex={!searchOpen ? 0 : -1}
               />
-            </div>
+              {text && (
+                <IconButton
+                  icon="close"
+                  label={t('cancel')}
+                  tip={false}
+                  tabIndex={!searchOpen ? 0 : -1}
+                  onClick={close}
+                />
+              )}
+            </label>
+            <IconButton
+              icon="search"
+              label={t('search')}
+              variant="tonal"
+              className="home-search-trigger"
+              tabIndex={!searchOpen ? 0 : -1}
+              onClick={() => openSearch('')}
+            />
           </div>
-
-          {hasSoundCloudLibrary && (
-            <Section
-              title={t('soundcloudLibrary')}
-              subtitle={t('soundcloudLibrarySub')}
-              i={2}
-            >
-              <HRow labels={arrows} cw={180}>
-                {soundcloudPlaylists.map((p, i) => (
-                  <button
-                    key={`sclib:${p.id}`}
-                    type="button"
-                    data-ripple
-                    className="mcard sl anim-in"
-                    style={{ '--i': i } as Vars}
-                    onClick={() => go({ name: 'playlist', id: soundcloudPlaylistId(p.id) })}
-                  >
-                    <PlaylistCover p={{ id: p.id, name: p.name, ids: [], created: 0, artworkUrl: p.artworkUrl }} className="mcard-cover" />
-                    <span className="mcard-title">{p.name}</span>
-                    <span className="mcard-sub">{tracksLabel(p.trackCount)}</span>
-                  </button>
-                ))}
-              </HRow>
-            </Section>
-          )}
-
-          {ytmusicConnected && ytmusicPlaylists.length > 0 && (
-            <Section
-              title={t('ytmusicLibrary')}
-              subtitle={t('ytmusicLibrarySub')}
-              i={3}
-            >
-              <HRow labels={arrows} cw={180}>
-                {ytmusicPlaylists.map((p, i) => (
-                  <YtMusicCoverCard key={`ytmusic-pl:${p.playlistId}`} playlistId={p.playlistId} title={p.title} trackCount={p.trackCount} artworkUrl={p.artworkUrl} index={i} />
-                ))}
-              </HRow>
-            </Section>
-          )}
-
-          {recentTracks.length > 0 && (
-            <Section title={t('recent')} i={4} action={<Icon name="history" className="text-on-surface-variant" size={26} />}>
-              <HRow labels={arrows}>
-                {recentTracks.map((tr, i) => (
-                  <MediaCard key={tr.id} track={tr} list={recentIds} index={i} />
-                ))}
-              </HRow>
-            </Section>
-          )}
         </div>
-      )}
+
+        {hasSoundCloudLibrary && (
+          <Section
+            title={t('soundcloudLibrary')}
+            subtitle={t('soundcloudLibrarySub')}
+            i={2}
+          >
+            <HRow labels={arrows} cw={180}>
+              {soundcloudPlaylists.map((p, i) => (
+                <button
+                  key={`sclib:${p.id}`}
+                  type="button"
+                  data-ripple
+                  className="mcard sl anim-in"
+                  style={{ '--i': i } as Vars}
+                  onClick={() => go({ name: 'playlist', id: soundcloudPlaylistId(p.id) })}
+                >
+                  <PlaylistCover p={{ id: p.id, name: p.name, ids: [], created: 0, artworkUrl: p.artworkUrl }} className="mcard-cover" />
+                  <span className="mcard-title">{p.name}</span>
+                  <span className="mcard-sub">{tracksLabel(p.trackCount)}</span>
+                </button>
+              ))}
+            </HRow>
+          </Section>
+        )}
+
+        {ytmusicConnected && ytmusicPlaylists.length > 0 && (
+          <Section
+            title={t('ytmusicLibrary')}
+            subtitle={t('ytmusicLibrarySub')}
+            i={3}
+          >
+            <HRow labels={arrows} cw={180}>
+              {ytmusicPlaylists.map((p, i) => (
+                <YtMusicCoverCard key={`ytmusic-pl:${p.playlistId}`} playlistId={p.playlistId} title={p.title} trackCount={p.trackCount} artworkUrl={p.artworkUrl} index={i} />
+              ))}
+            </HRow>
+          </Section>
+        )}
+
+        {recentTracks.length > 0 && (
+          <Section title={t('recent')} i={4} action={<Icon name="history" className="text-on-surface-variant" size={26} />}>
+            <HRow labels={arrows}>
+              {recentTracks.map((tr, i) => (
+                <MediaCard key={tr.id} track={tr} list={recentIds} index={i} />
+              ))}
+            </HRow>
+          </Section>
+        )}
+      </div>
     </div>
   );
 }

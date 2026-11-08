@@ -19,6 +19,7 @@ import Settings from './pages/Settings';
 import Appearance from './pages/Appearance';
 import Providers from './pages/Providers';
 import Shortcuts from './pages/Shortcuts';
+import AudioSettings from './pages/AudioSettings';
 
 function Page({ route }: { route: Route }) {
   switch (route.name) {
@@ -34,6 +35,8 @@ function Page({ route }: { route: Route }) {
       return <Providers />;
     case 'shortcuts':
       return <Shortcuts />;
+    case 'audio':
+      return <AudioSettings />;
     default:
       return <Home />;
   }

@@ -11,30 +11,46 @@ import { onProviderState, providerCommand } from '../lib/provider-player';
 import type { Track } from '../types';
 
 export type Repeat = 'off' | 'all' | 'one';
+export type NormalizationTarget = 'quiet' | 'normal' | 'loud';
+export type CrossfadeCurve = 'linear' | 'equalPower' | 'sCurve';
 
 export const DEFAULT_CROSSFADE_DURATION = 4;
 const MANUAL_CROSSFADE_SECONDS = 0.8;
 const PRELOAD_AHEAD_SECONDS = 14;
 
 type DeckId = 0 | 1;
+interface DeckDsp {
+  ctx: AudioContext;
+  source: MediaElementAudioSourceNode;
+  preGain: GainNode;
+  compressor: DynamicsCompressorNode;
+  limiter: DynamicsCompressorNode;
+  channelGain: GainNode;
+}
+
 interface Deck {
   readonly id: DeckId;
   readonly el: HTMLAudioElement;
   hls?: Hls;
+  dsp?: DeckDsp;
   fadeMultiplier: number;
   trackId: string | null;
   queueIndex: number;
   preloadedForLoadId?: number;
 }
 
+function createAudioElement(): HTMLAudioElement {
+  const el = new Audio();
+  el.preload = 'auto';
+  el.loop = false;
+  el.crossOrigin = 'anonymous';
+  return el;
+}
+
 const decks: [Deck, Deck] = [
-  { id: 0, el: new Audio(), fadeMultiplier: 1, trackId: null, queueIndex: -1 },
-  { id: 1, el: new Audio(), fadeMultiplier: 0, trackId: null, queueIndex: -1 },
+  { id: 0, el: createAudioElement(), fadeMultiplier: 1, trackId: null, queueIndex: -1 },
+  { id: 1, el: createAudioElement(), fadeMultiplier: 0, trackId: null, queueIndex: -1 },
 ];
-decks[0].el.preload = 'auto';
-decks[1].el.preload = 'auto';
-decks[0].el.loop = false;
-decks[1].el.loop = false;
 
 let activeDeckIdx: DeckId = 0;
 export let audio: HTMLAudioElement = decks[0].el;
@@ -53,7 +69,14 @@ export const player = createStore({
   shuffle: false,
   repeat: 'off' as Repeat,
   pos: 0,
+  // Audio Normalization settings
+  normalizationEnabled: false,
+  normalizationTarget: 'normal' as NormalizationTarget,
+  // Crossfade settings
+  crossfadeEnabled: true,
   crossfadeDuration: DEFAULT_CROSSFADE_DURATION,
+  crossfadeCurve: 'equalPower' as CrossfadeCurve,
+  // Runtime crossfade progress state
   isCrossfading: false,
   fadeProgress: 0,
 });
@@ -91,21 +114,187 @@ const usesProviderPlayback = (track: Track | null | undefined) => !!track && tra
 
 const YT_STREAM_PREFETCH_AHEAD = 3;
 
-/* ---------------- S-Curve + Equal-Power math ---------------- */
+/* ---------------- Web Audio API DSP Normalization + Brickwall Limiter ---------------- */
+let sharedAudioCtx: AudioContext | null = null;
+
+interface NormalizationPresetSpec {
+  lufsLabel: string;
+  preGainLinear: number;
+  compThresholdDb: number;
+  compKneeDb: number;
+  compRatio: number;
+  makeupLinear: number;
+}
+
+const NORMALIZATION_PRESETS: Record<NormalizationTarget, NormalizationPresetSpec> = {
+  // -18 LUFS (Quiet): gentle dynamic leveling, preserves wide dynamic range
+  quiet: {
+    lufsLabel: '-18 LUFS',
+    preGainLinear: 0.78,
+    compThresholdDb: -24,
+    compKneeDb: 24,
+    compRatio: 2.5,
+    makeupLinear: 0.85,
+  },
+  // -14 LUFS (Standard streaming loudness): balanced leveling + makeup gain
+  normal: {
+    lufsLabel: '-14 LUFS',
+    preGainLinear: 1.18,
+    compThresholdDb: -21,
+    compKneeDb: 20,
+    compRatio: 3.5,
+    makeupLinear: 1.0,
+  },
+  // -11 LUFS (Loud): stronger upward boost for quiet tracks, protected by brickwall limiter
+  loud: {
+    lufsLabel: '-11 LUFS',
+    preGainLinear: 1.55,
+    compThresholdDb: -18,
+    compKneeDb: 16,
+    compRatio: 5.0,
+    makeupLinear: 1.0,
+  },
+};
+
+function ensureDeckDsp(deck: Deck): DeckDsp | undefined {
+  if (deck.dsp) return deck.dsp;
+  try {
+    const Ctx = window.AudioContext || (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
+    if (!Ctx) return undefined;
+    if (!sharedAudioCtx) sharedAudioCtx = new Ctx();
+    const ctx = sharedAudioCtx;
+
+    const source = ctx.createMediaElementSource(deck.el);
+    const preGain = ctx.createGain();
+    const compressor = ctx.createDynamicsCompressor();
+    const limiter = ctx.createDynamicsCompressor();
+    const channelGain = ctx.createGain();
+
+    // Brickwall safety limiter at -1.0 dBFS to guarantee zero clipping even when preGain > 1.0
+    limiter.threshold.value = -1.0;
+    limiter.knee.value = 0;
+    limiter.ratio.value = 20;
+    limiter.attack.value = 0.001;
+    limiter.release.value = 0.08;
+
+    deck.dsp = { ctx, source, preGain, compressor, limiter, channelGain };
+    configureDeckDspChain(deck);
+    return deck.dsp;
+  } catch {
+    return undefined;
+  }
+}
+
+function configureDeckDspChain(deck: Deck) {
+  const dsp = deck.dsp;
+  if (!dsp) return;
+  const { normalizationEnabled, normalizationTarget } = player.get();
+  const preset = NORMALIZATION_PRESETS[normalizationTarget] ?? NORMALIZATION_PRESETS.normal;
+  const now = dsp.ctx.currentTime;
+
+  try {
+    dsp.source.disconnect();
+    dsp.preGain.disconnect();
+    dsp.compressor.disconnect();
+    dsp.limiter.disconnect();
+    dsp.channelGain.disconnect();
+  } catch {
+    /* ignore */
+  }
+
+  if (normalizationEnabled) {
+    dsp.preGain.gain.setTargetAtTime(preset.preGainLinear, now, 0.015);
+    dsp.compressor.threshold.setTargetAtTime(preset.compThresholdDb, now, 0.015);
+    dsp.compressor.knee.setTargetAtTime(preset.compKneeDb, now, 0.015);
+    dsp.compressor.ratio.setTargetAtTime(preset.compRatio, now, 0.015);
+    dsp.compressor.attack.setTargetAtTime(0.008, now, 0.015);
+    dsp.compressor.release.setTargetAtTime(0.22, now, 0.015);
+
+    dsp.source.connect(dsp.preGain);
+    dsp.preGain.connect(dsp.compressor);
+    dsp.compressor.connect(dsp.limiter);
+    dsp.limiter.connect(dsp.channelGain);
+    dsp.channelGain.connect(dsp.ctx.destination);
+  } else {
+    dsp.preGain.gain.setTargetAtTime(1.0, now, 0.015);
+    dsp.source.connect(dsp.channelGain);
+    dsp.channelGain.connect(dsp.ctx.destination);
+  }
+}
+
+function resumeAudioContextIfNeeded() {
+  if (sharedAudioCtx && sharedAudioCtx.state === 'suspended') {
+    void sharedAudioCtx.resume().catch(() => {});
+  }
+}
+
+/* ---------------- Crossfade mathematical curves ---------------- */
 /** Smooth S-curve (`easeInOutSine`) mapping 0..1 -> 0..1 with zero-slope endpoints. */
 export const easeInOutSine = (x: number): number => {
   const c = clamp(x, 0, 1);
   return -(Math.cos(Math.PI * c) - 1) / 2;
 };
 
-/* ---------------- volume & equal-power crossfade ---------------- */
-function syncDeckVolumes() {
-  const { volume, muted } = player.get();
-  const master = clamp(volume, 0, 1);
-  for (const deck of decks) {
-    deck.el.muted = muted;
-    deck.el.volume = clamp(master * clamp(deck.fadeMultiplier, 0, 1), 0, 1);
+/**
+ * Computes `[fadeOutMultiplier, fadeInMultiplier]` for progress `t` in `[0, 1]`
+ * according to the user's selected transition curve:
+ * - `linear`: `volA = 1 - t`, `volB = t`
+ * - `equalPower`: `volA = cos(t * 0.5 * PI)`, `volB = sin(t * 0.5 * PI)` (eliminates -3 dB midpoint dip)
+ * - `sCurve`: S-shaped `easeInOutSine` fed into equal-power cosine/sine for imperceptible start & end
+ */
+export function computeCrossfadePair(progress: number, curve: CrossfadeCurve): [number, number] {
+  const t = clamp(progress, 0, 1);
+  if (curve === 'linear') {
+    return [1 - t, t];
   }
+  if (curve === 'equalPower') {
+    const angle = t * 0.5 * Math.PI;
+    return [Math.cos(angle), Math.sin(angle)];
+  }
+  const shaped = easeInOutSine(t);
+  const angle = shaped * 0.5 * Math.PI;
+  return [Math.cos(angle), Math.sin(angle)];
+}
+
+/* ---------------- Master Volume + Normalization + Crossfade Gain Sync ---------------- */
+function syncDeckVolumes() {
+  const { volume, muted, normalizationEnabled, normalizationTarget } = player.get();
+  const master = clamp(volume, 0, 1);
+  const preset = NORMALIZATION_PRESETS[normalizationTarget] ?? NORMALIZATION_PRESETS.normal;
+  const fallbackNormGain = normalizationEnabled ? preset.makeupLinear : 1.0;
+
+  for (const deck of decks) {
+    const fade = clamp(deck.fadeMultiplier, 0, 1);
+    deck.el.muted = muted;
+
+    if (deck.dsp && deck.dsp.ctx.state !== 'closed') {
+      // When routed through Web Audio DSP, keep HTMLAudioElement at unity (1.0) so the compressor
+      // sees consistent input levels regardless of the master volume slider, and apply
+      // `MasterVolume * MakeupGain * CrossfadeMultiplier` at the final `channelGain` stage!
+      deck.el.volume = 1;
+      const finalGain = muted ? 0 : clamp(master * preset.makeupLinear * fade, 0, 1);
+      deck.dsp.channelGain.gain.setTargetAtTime(finalGain, deck.dsp.ctx.currentTime, 0.008);
+    } else {
+      // Fallback path when Web Audio graph isn't active: clamp to [0, 1] to prevent distortion
+      deck.el.volume = muted ? 0 : clamp(master * fallbackNormGain * fade, 0, 1);
+    }
+  }
+}
+
+function refreshAllDspChains() {
+  const { normalizationEnabled } = player.get();
+  for (const deck of decks) {
+    if (normalizationEnabled && !deck.dsp) {
+      ensureDeckDsp(deck);
+    }
+    if (deck.dsp) {
+      configureDeckDspChain(deck);
+    }
+  }
+  if (normalizationEnabled) {
+    resumeAudioContextIfNeeded();
+  }
+  syncDeckVolumes();
 }
 
 function stopAndResetDeck(deck: Deck) {
@@ -172,12 +361,11 @@ export function cancelCrossfade(stopOutgoing = true) {
   }
 }
 
-function applyEqualPowerGains(fromDeck: Deck, toDeck: Deck, progress: number) {
-  // Smooth S-curve shaping fed into Equal-Power (cos/sin) so start/end are imperceptible and midpoint has 0 dB dip
-  const shaped = easeInOutSine(progress);
-  const angle = shaped * 0.5 * Math.PI;
-  fromDeck.fadeMultiplier = Math.cos(angle);
-  toDeck.fadeMultiplier = Math.sin(angle);
+function applyCrossfadeGains(fromDeck: Deck, toDeck: Deck, progress: number) {
+  const curve = player.get().crossfadeCurve;
+  const [outGain, inGain] = computeCrossfadePair(progress, curve);
+  fromDeck.fadeMultiplier = outGain;
+  toDeck.fadeMultiplier = inGain;
   syncDeckVolumes();
 }
 
@@ -191,9 +379,8 @@ function stepCrossfadeFrame(now: number) {
   session.lastTs = now;
 
   const progress = session.durationSec > 0 ? clamp(session.elapsedSec / session.durationSec, 0, 1) : 1;
-  applyEqualPowerGains(session.fromDeck, session.toDeck, progress);
+  applyCrossfadeGains(session.fromDeck, session.toDeck, progress);
 
-  // Keep target endFadeFraction synced with real duration of the incoming track once metadata arrives
   const toDur = dur();
   if (toDur > 0) {
     session.endFadeFraction = clamp(session.durationSec / toDur, 0, 0.95);
@@ -246,7 +433,7 @@ function startCrossfadeRamp(
   }
   const safeStart = clamp(startFadeFraction, 0, 1);
   const safeEnd = nextTrackDuration > 0 ? clamp(durationSec / nextTrackDuration, 0, Math.max(0, safeStart)) : 0;
-  applyEqualPowerGains(fromDeck, toDeck, 0);
+  applyCrossfadeGains(fromDeck, toDeck, 0);
   const session: CrossfadeSession = {
     id: ++crossfadeEpoch,
     fromDeck,
@@ -296,23 +483,56 @@ function resumeCrossfadeIfPaused() {
   }
 }
 
-/** Port for configuring crossfade duration (0 disables crossfade, capped at 12s). */
-export function setCrossfadeDuration(seconds: number) {
-  const nextSec = Math.round(clamp(seconds, 0, 12) * 10) / 10;
-  player.set({ crossfadeDuration: nextSec });
-  if (nextSec <= 0 && crossfadeSession) {
+/* ---------------- Public Audio Settings API ---------------- */
+export function setNormalizationEnabled(enabled: boolean) {
+  player.set({ normalizationEnabled: Boolean(enabled) });
+  refreshAllDspChains();
+}
+
+export function setNormalizationTarget(target: NormalizationTarget) {
+  player.set({ normalizationTarget: target });
+  refreshAllDspChains();
+}
+
+export function setCrossfadeEnabled(enabled: boolean) {
+  const on = Boolean(enabled);
+  player.set({ crossfadeEnabled: on });
+  if (!on && crossfadeSession) {
     cancelCrossfade(true);
   }
 }
 
-export const getCrossfadeDuration = (): number => player.get().crossfadeDuration;
+export function setCrossfadeDuration(seconds: number) {
+  if (seconds <= 0) {
+    setCrossfadeEnabled(false);
+    return;
+  }
+  const nextSec = Math.round(clamp(seconds, 1, 12) * 2) / 2;
+  player.set({ crossfadeDuration: nextSec, crossfadeEnabled: true });
+}
+
+export function setCrossfadeCurve(curve: CrossfadeCurve) {
+  player.set({ crossfadeCurve: curve });
+  if (crossfadeSession) {
+    const progress =
+      crossfadeSession.durationSec > 0
+        ? clamp(crossfadeSession.elapsedSec / crossfadeSession.durationSec, 0, 1)
+        : 1;
+    applyCrossfadeGains(crossfadeSession.fromDeck, crossfadeSession.toDeck, progress);
+  }
+}
+
+export const getCrossfadeDuration = (): number => {
+  const s = player.get();
+  return s.crossfadeEnabled ? s.crossfadeDuration : 0;
+};
 
 function effectiveAutoCrossfadeSeconds(trackDuration: number): number {
-  const configured = player.get().crossfadeDuration;
-  if (configured <= 0 || !isFinite(trackDuration) || trackDuration <= 0) return 0;
-  // Requirement 6: If track is shorter than or equal to crossfadeDuration * 2, do not enable auto-crossfade
-  if (trackDuration <= configured * 2) return 0;
-  return configured;
+  const s = player.get();
+  if (!s.crossfadeEnabled || s.crossfadeDuration <= 0 || !isFinite(trackDuration) || trackDuration <= 0) return 0;
+  // If track is shorter than or equal to crossfadeDuration * 2, disable auto-crossfade
+  if (trackDuration <= s.crossfadeDuration * 2) return 0;
+  return s.crossfadeDuration;
 }
 
 function resolveNextQueueIndex(dir: 1 | -1, auto: boolean): number | 'repeat-one' | 'end-shuffle' | null {
@@ -499,6 +719,10 @@ async function resolvePlayableStream(tr: Track): Promise<{ url: string; hls: boo
 }
 
 async function attachStreamToDeck(deck: Deck, stream: { url: string; hls: boolean }) {
+  if (player.get().normalizationEnabled) {
+    ensureDeckDsp(deck);
+    resumeAudioContextIfNeeded();
+  }
   if (deck.hls) {
     try {
       deck.hls.destroy();
@@ -508,6 +732,7 @@ async function attachStreamToDeck(deck: Deck, stream: { url: string; hls: boolea
     deck.hls = undefined;
   }
   deck.el.loop = false;
+  deck.el.crossOrigin = 'anonymous';
   if (stream.hls && !deck.el.canPlayType('application/vnd.apple.mpegurl')) {
     if (!Hls.isSupported()) throw new Error('This device cannot play the SoundCloud HLS stream.');
     const instance = new Hls();
@@ -623,7 +848,6 @@ interface LoadOptions {
 }
 
 async function load(i: number, autoplay: boolean, opts?: LoadOptions) {
-  // Capture visual progress fraction before cancelling any active crossfade so manual skip rolls back from current visual position
   const priorVisualFraction = displayedProgressFraction();
   const generation = ++loadId;
   const s = player.get();
@@ -634,6 +858,7 @@ async function load(i: number, autoplay: boolean, opts?: LoadOptions) {
   const currentDeck = getActiveDeck();
   const canCrossfadeFromCurrent =
     autoplay &&
+    s.crossfadeEnabled &&
     (opts?.crossfadeSec ?? 0) > 0 &&
     !usesProviderPlayback(tr) &&
     Boolean(currentDeck.el.src) &&
@@ -686,6 +911,7 @@ async function load(i: number, autoplay: boolean, opts?: LoadOptions) {
         stopAndResetDeck(fromDeck);
         return;
       }
+      resumeAudioContextIfNeeded();
       await toDeck.el.play();
       if (generation !== loadId) {
         stopAndResetDeck(fromDeck);
@@ -756,6 +982,7 @@ async function load(i: number, autoplay: boolean, opts?: LoadOptions) {
     await attachStreamToDeck(deck, stream);
     if (autoplay) {
       try {
+        resumeAudioContextIfNeeded();
         await deck.el.play();
       } catch {
         player.set({ loading: false, playing: false });
@@ -858,6 +1085,7 @@ async function startAutoCrossfade() {
     const nextDur = (isFinite(toDeck.el.duration) && toDeck.el.duration > 0 ? toDeck.el.duration : nextTr.duration) || 0;
     player.set({ index: nextIdx, duration: nextDur || nextTr.duration, loading: false, playing: true, pos: 0 });
 
+    resumeAudioContextIfNeeded();
     await toDeck.el.play();
     if (generation !== loadId) {
       stopAndResetDeck(fromDeck);
@@ -888,7 +1116,7 @@ export function playQueue(ids: string[], start = 0, shuffle?: boolean) {
     idx = 0;
   } else original = null;
   player.set({ queue: q, shuffle: sh });
-  const manualFade = player.get().crossfadeDuration > 0 ? MANUAL_CROSSFADE_SECONDS : 0;
+  const manualFade = getCrossfadeDuration() > 0 ? MANUAL_CROSSFADE_SECONDS : 0;
   void load(idx, true, { crossfadeSec: manualFade });
 }
 
@@ -978,6 +1206,7 @@ export function toggle() {
     return;
   }
   if (activeEl.paused) {
+    resumeAudioContextIfNeeded();
     resumeCrossfadeIfPaused();
     activeEl.play().catch(() => player.set({ playing: false }));
   } else {
@@ -990,15 +1219,15 @@ function step(dir: 1 | -1, auto: boolean) {
   const s = player.get();
   const n = s.queue.length;
   if (!n) return;
+  const activeFadeSec = getCrossfadeDuration();
   if (auto && s.repeat === 'one') {
     if (usesProviderPlayback(currentTrack())) {
       providerCommand('seek', 0);
       providerCommand('play');
       return;
     }
-    // If crossfade is enabled (> 0), repeat-one crossfades onto the second deck; otherwise loop from 0
-    if (s.crossfadeDuration > 0 && dur() > s.crossfadeDuration * 2) {
-      void load(s.index, true, { crossfadeSec: s.crossfadeDuration });
+    if (activeFadeSec > 0 && dur() > activeFadeSec * 2) {
+      void load(s.index, true, { crossfadeSec: activeFadeSec });
       return;
     }
     const el = getActiveDeck().el;
@@ -1016,7 +1245,7 @@ function step(dir: 1 | -1, auto: boolean) {
     player.set({ playing: false });
     return;
   }
-  const manualFade = !auto && s.crossfadeDuration > 0 ? MANUAL_CROSSFADE_SECONDS : 0;
+  const manualFade = !auto && activeFadeSec > 0 ? MANUAL_CROSSFADE_SECONDS : 0;
   void load(target, true, { crossfadeSec: manualFade });
 }
 
@@ -1026,7 +1255,7 @@ export function prev() {
   else step(-1, false);
 }
 export const jumpTo = (i: number) => {
-  const manualFade = player.get().crossfadeDuration > 0 ? MANUAL_CROSSFADE_SECONDS : 0;
+  const manualFade = getCrossfadeDuration() > 0 ? MANUAL_CROSSFADE_SECONDS : 0;
   return load(i, true, { crossfadeSec: manualFade });
 };
 
@@ -1035,8 +1264,6 @@ export function seek(sec: number) {
   const activeEl = active.el;
   const totalDur = dur();
 
-  // Requirement 4.2: Seeking during crossfade/rollback immediately cancels crossfade,
-  // unloads the outgoing track, gives the incoming track 100% masterVolume, and seeks it to `sec`.
   if (crossfadeSession) {
     cancelCrossfade(true);
   }
@@ -1186,12 +1413,7 @@ function bindDeckEvents(deck: Deck) {
 
   el.addEventListener('ended', () => {
     if (deck !== getActiveDeck()) {
-      // Outgoing deck finished playing its tail: stop & clean up without advancing queue or touching UI
-      if (crossfadeSession && crossfadeSession.fromDeck === deck) {
-        stopAndResetDeck(deck);
-      } else {
-        stopAndResetDeck(deck);
-      }
+      stopAndResetDeck(deck);
       return;
     }
     next(true);
@@ -1218,9 +1440,6 @@ function bindDeckEvents(deck: Deck) {
 
   el.addEventListener('timeupdate', () => {
     if (deck !== getActiveDeck()) return;
-
-    // Requirement 4.1: While crossfading, do NOT let timeupdate overwrite visual progress or jitter the thumb.
-    // The unified requestAnimationFrame loop (`stepCrossfadeFrame`) owns visual progress during crossfade.
     if (crossfadeSession) return;
 
     const track = currentTrack();
@@ -1233,7 +1452,6 @@ function bindDeckEvents(deck: Deck) {
 
     const fadeSec = effectiveAutoCrossfadeSeconds(duration);
     if (fadeSec > 0 && duration > 0 && !el.paused && el.currentTime >= 1) {
-      // Requirement 6: Preload next track (or same track on Repeat One) 10-15s before the end
       if (
         preloadingNextForLoadId !== loadId &&
         remaining > fadeSec + 0.5 &&
@@ -1241,7 +1459,6 @@ function bindDeckEvents(deck: Deck) {
       ) {
         void preloadNextTrackIntoInactiveDeck();
       }
-      // Start crossfade when entering the crossfade window
       if (autoCrossfadePreparingForLoadId !== loadId && remaining > 0.25 && remaining <= fadeSec + 0.25) {
         void startAutoCrossfade();
         return;
@@ -1294,7 +1511,11 @@ export function initPlayer() {
     repeat: s.repeat,
     pos: s.pos,
     duration: s.duration,
+    normalizationEnabled: s.normalizationEnabled,
+    normalizationTarget: s.normalizationTarget,
+    crossfadeEnabled: s.crossfadeEnabled,
     crossfadeDuration: s.crossfadeDuration,
+    crossfadeCurve: s.crossfadeCurve,
   }));
   const s = player.get();
   const curId = s.queue[s.index];
@@ -1306,10 +1527,11 @@ export function initPlayer() {
     playing: false,
     loading: false,
     pos: idx >= 0 ? s.pos : 0,
+    crossfadeDuration: clamp(s.crossfadeDuration || DEFAULT_CROSSFADE_DURATION, 1, 12),
     isCrossfading: false,
     fadeProgress: 0,
   });
-  syncDeckVolumes();
+  refreshAllDspChains();
   pendingSeek = idx >= 0 && q[idx] ? createPendingAudioSeek(q[idx], s.pos) : null;
   const cur = currentTrack();
   if (cur) mediaMeta(cur);
