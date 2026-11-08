@@ -171,6 +171,15 @@ html[data-theme=light] { color-scheme: light; }
   .sidebar { width: 272px; flex-shrink: 0; display: flex; flex-direction: column; transition: width var(--sp-def-d) var(--sp-def); }
   .sidebar[data-expanded=false] { width: 88px; }
   .side-brand { height: 76px; display: flex; align-items: center; gap: 10px; padding: 0 24px; flex-shrink: 0; }
+  .brand-toggle { position: relative; display: grid; place-items: center; flex-shrink: 0; }
+  .brand-toggle > button { transition: opacity .2s, transform var(--sp-fast-d) var(--sp-fast); }
+  .brand-toggle-logo { position: absolute; inset: 0; display: grid; place-items: center; pointer-events: none; opacity: 0; transform: scale(.6); transition: opacity .2s, transform var(--sp-fast-d) var(--sp-fast); }
+  .sidebar[data-expanded=false] .brand-toggle-logo { opacity: 1; transform: scale(1); }
+  .sidebar[data-expanded=false] .brand-toggle > button { opacity: 0; transform: scale(.6) rotate(-45deg); }
+  .sidebar[data-expanded=false] .brand-toggle:hover > button,
+  .sidebar[data-expanded=false] .brand-toggle:focus-within > button { opacity: 1; transform: none; }
+  .sidebar[data-expanded=false] .brand-toggle:hover .brand-toggle-logo,
+  .sidebar[data-expanded=false] .brand-toggle:focus-within .brand-toggle-logo { opacity: 0; transform: scale(.6) rotate(45deg); }
   .side-scroll { flex: 1 1 auto; position: relative; overflow-y: auto; overflow-x: hidden; display: flex; flex-direction: column; padding: 2px 0 14px; scrollbar-width: none; min-height: 0; }
   .side-scroll::-webkit-scrollbar { display: none; }
   .side-bottom { flex: 0 0 auto; display: flex; flex-direction: column; padding: 6px 0 12px; border-top: 1px solid color-mix(in oklab, var(--md-outline-variant) 35%, transparent); }
