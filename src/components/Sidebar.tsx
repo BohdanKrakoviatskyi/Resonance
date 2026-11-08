@@ -186,7 +186,12 @@ export function Sidebar({ mode }: { mode: 'inline' | 'drawer' }) {
     <nav className="panel panel-side sidebar" data-expanded={expanded} aria-label="Resonance">
       <div className="side-brand">
         {mode === 'inline' ? (
-          <IconButton icon={expanded ? 'menu_open' : 'menu'} label={expanded ? t('collapse') : t('expand')} tip="right" onClick={toggleExpanded} />
+          <span className="brand-toggle">
+            <IconButton icon={expanded ? 'menu_open' : 'menu'} label={expanded ? t('collapse') : t('expand')} tip="right" onClick={toggleExpanded} />
+            <span className="brand-toggle-logo" aria-hidden="true">
+              <Logo />
+            </span>
+          </span>
         ) : (
           <Logo />
         )}
