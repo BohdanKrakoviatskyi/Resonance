@@ -11,3 +11,4 @@ __pycache__/
 *.pyc
 .venv/
 api/local-api
+api/local-api.exe

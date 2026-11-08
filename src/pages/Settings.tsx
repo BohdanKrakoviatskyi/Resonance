@@ -1,6 +1,8 @@
 import { Icon, type IconName } from '../components/Icon';
-import { type Vars } from '../components/ui';
+import { Segmented, type Vars } from '../components/ui';
 import { t } from '../lib/i18n';
+import { useStore } from '../lib/util';
+import { appearance } from '../state/appearance';
 import { go, openDialog, type Route } from '../state/ui';
 
 type SettingItem = {
@@ -12,6 +14,8 @@ type SettingItem = {
 };
 
 export default function Settings() {
+  const lang = useStore(appearance, (s) => s.lang);
+
   const items: SettingItem[] = [
     {
       route: { name: 'appearance' },
@@ -24,6 +28,12 @@ export default function Settings() {
       icon: 'music_note',
       title: t('providers'),
       subtitle: t('providersSub'),
+    },
+    {
+      route: { name: 'shortcuts' },
+      icon: 'keyboard',
+      title: t('shortcuts'),
+      subtitle: t('shortcutsSub'),
     },
   ];
 
@@ -61,7 +71,26 @@ export default function Settings() {
           </button>
         ))}
 
-        <div className="anim-in mt-1 flex justify-end" style={{ '--i': items.length + 1 } as Vars}>
+        <section className="card anim-in" style={{ '--i': items.length + 1 } as Vars}>
+          <div className="mb-4 flex items-center gap-3">
+            <span className="grid h-12 w-12 shrink-0 place-items-center rounded-[16px] bg-secondary-container text-on-secondary-container">
+              <Icon name="translate" fill size={24} />
+            </span>
+            <div className="min-w-0">
+              <h2 className="headline text-lg leading-tight">{t('language')}</h2>
+            </div>
+          </div>
+          <Segmented
+            value={lang}
+            onChange={(v) => appearance.set({ lang: v })}
+            options={[
+              { value: 'ru', label: 'Русский' },
+              { value: 'en', label: 'English' },
+            ]}
+          />
+        </section>
+
+        <div className="anim-in mt-1 flex justify-end" style={{ '--i': items.length + 2 } as Vars}>
           <button
             type="button"
             data-ripple

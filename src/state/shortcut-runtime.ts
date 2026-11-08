@@ -7,6 +7,7 @@ import {
   DEFAULT_SHORTCUTS,
   SHORTCUTS,
   normalizeShortcut,
+  shortcutForEvent,
   shortcuts,
   type ShortcutId,
 } from './shortcuts';
@@ -67,8 +68,9 @@ export function initializeShortcutRuntime() {
       await registerGlobal(binding);
       globalRegistered = binding;
       shortcuts.set({ error: null });
-    } catch (error) {
-      shortcuts.set({ error: errorMessage(error) });
+    } catch {
+      // If Windows blocks a single-key global hook or another app holds it, fall back to window-level handling without blocking UI.
+      globalRegistered = null;
     }
   });
 }
@@ -90,27 +92,22 @@ export function updateShortcut(id: ShortcutId, binding: string): Promise<boolean
   }
 
   registrationQueue = registrationQueue.catch(() => undefined).then(async () => {
-    if (globalRegistered === nextBinding) {
-      shortcuts.set({ bindings: { ...shortcuts.get().bindings, mute: nextBinding }, error: null });
-      return;
+    const previous = globalRegistered;
+    if (previous && previous !== nextBinding) {
+      await unregister(toNativeShortcut(previous)).catch(() => undefined);
+      globalRegistered = null;
     }
 
-    const previous = globalRegistered;
-    try {
-      await registerGlobal(nextBinding);
-      if (previous) {
-        try {
-          await unregister(toNativeShortcut(previous));
-        } catch (error) {
-          await unregister(toNativeShortcut(nextBinding)).catch(() => undefined);
-          throw error;
-        }
+    shortcuts.set({ bindings: { ...shortcuts.get().bindings, mute: nextBinding }, error: null });
+
+    if (globalRegistered !== nextBinding) {
+      try {
+        await registerGlobal(nextBinding);
+        globalRegistered = nextBinding;
+      } catch {
+        // Still allow the binding to work inside the window on Windows even if OS-wide hook was rejected.
+        globalRegistered = null;
       }
-      globalRegistered = nextBinding;
-      shortcuts.set({ bindings: { ...shortcuts.get().bindings, mute: nextBinding }, error: null });
-    } catch (error) {
-      shortcuts.set({ error: errorMessage(error) });
-      throw error;
     }
   });
 
@@ -126,11 +123,14 @@ export function handleWindowShortcut(event: KeyboardEvent) {
   const target = event.target;
   if (target instanceof HTMLElement && target.closest('input, textarea, select, [contenteditable="true"]')) return;
 
-  const normalizedEvent = eventShortcut(event);
+  const normalizedEvent = shortcutForEvent(event);
   if (!normalizedEvent) return;
-  const action = SHORTCUTS.find(
-    ({ id, scope }) => scope === 'window' && normalizeShortcut(shortcuts.get().bindings[id]) === normalizedEvent,
-  );
+  const action = SHORTCUTS.find(({ id, scope }) => {
+    if (normalizeShortcut(shortcuts.get().bindings[id]) !== normalizedEvent) return false;
+    if (scope === 'window') return true;
+    // Also handle 'mute' at window level when global registration isn't active on Windows.
+    return id === 'mute' && !globalRegistered;
+  });
   if (!action) return;
 
   if (action.id === 'playPause' && target instanceof HTMLElement && target.closest('button, [role=slider]')) return;
@@ -138,26 +138,25 @@ export function handleWindowShortcut(event: KeyboardEvent) {
   dispatchShortcut(action.id);
 }
 
-function eventShortcut(event: KeyboardEvent): string | null {
-  if (['Control', 'Alt', 'Shift', 'Meta'].includes(event.key)) return null;
-  const key = event.key === ' ' ? 'Space' : event.key.length === 1 ? event.key.toUpperCase() : event.key;
-  const modifiers: string[] = [];
-  if (event.ctrlKey) modifiers.push('Ctrl');
-  if (event.altKey) modifiers.push('Alt');
-  if (event.shiftKey && event.key !== '/') modifiers.push('Shift');
-  if (event.metaKey) modifiers.push('Meta');
-  return normalizeShortcut([...modifiers, key].join('+'));
-}
+const NATIVE_KEY_MAP: Record<string, string> = {
+  '[': 'BracketLeft',
+  ']': 'BracketRight',
+  '\\': 'Backslash',
+  ';': 'Semicolon',
+  "'": 'Quote',
+  '`': 'Backquote',
+  ',': 'Comma',
+  '.': 'Period',
+  '/': 'Slash',
+  '-': 'Minus',
+  '=': 'Equal',
+};
 
 function toNativeShortcut(binding: string): string {
   const isMac = /Mac|iPhone|iPad/.test(navigator.platform);
   return normalizeShortcut(binding).split('+').map((part) => {
     if (part === 'Ctrl') return 'Control';
     if (part === 'Meta') return isMac ? 'CommandOrControl' : 'Super';
-    return part;
+    return NATIVE_KEY_MAP[part] ?? part;
   }).join('+');
-}
-
-function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
 }

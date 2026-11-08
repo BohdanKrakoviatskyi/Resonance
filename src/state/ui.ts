@@ -8,7 +8,8 @@ export type Route =
   | { name: 'playlist'; id: string }
   | { name: 'settings' }
   | { name: 'appearance' }
-  | { name: 'providers' };
+  | { name: 'providers' }
+  | { name: 'shortcuts' };
 
 export type Dialog =
   | { kind: 'create'; trackId?: string }
@@ -36,6 +37,8 @@ function parse(): Route {
       return { name: 'appearance' };
     case 'providers':
       return { name: 'providers' };
+    case 'shortcuts':
+      return { name: 'shortcuts' };
     default:
       return { name: 'home' };
   }

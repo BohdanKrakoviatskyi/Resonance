@@ -197,6 +197,7 @@ const S = {
   photoTooLarge: ['Анимированное изображение больше 8 МБ — выберите меньше', 'Animated image is over 8 MB — pick a smaller one'],
   librarySaveError: ['Не удалось сохранить библиотеку: хранилище заполнено', 'Couldn\'t save your library: storage is full'],
   shortcuts: ['Горячие клавиши', 'Keyboard shortcuts'],
+  shortcutsSub: ['Управление сочетаниями клавиш для плеера', 'Customize keyboard shortcuts for playback and navigation'],
   kbPlay: ['Пауза / воспроизведение', 'Play / pause'],
   kbSeek: ['Перемотка ±5 сек', 'Seek ±5s'],
   kbSeekBack: ['Перемотка назад', 'Seek backward'],

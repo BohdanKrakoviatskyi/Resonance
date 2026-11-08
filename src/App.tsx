@@ -19,6 +19,7 @@ import Collection from './pages/Collection';
 import Settings from './pages/Settings';
 import Appearance from './pages/Appearance';
 import Providers from './pages/Providers';
+import Shortcuts from './pages/Shortcuts';
 
 function Page({ route }: { route: Route }) {
   switch (route.name) {
@@ -34,6 +35,8 @@ function Page({ route }: { route: Route }) {
       return <Appearance />;
     case 'providers':
       return <Providers />;
+    case 'shortcuts':
+      return <Shortcuts />;
     default:
       return <Home />;
   }
