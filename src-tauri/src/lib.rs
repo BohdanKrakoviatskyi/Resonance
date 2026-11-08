@@ -310,13 +310,35 @@ if ($item) {
     }
 }
 
+#[tauri::command]
+async fn finish_splash(app: AppHandle) -> Result<(), String> {
+    if let Some(main_window) = app.get_webview_window("main") {
+        let _ = main_window.show();
+        let _ = main_window.set_focus();
+    }
+    if let Some(splash_window) = app.get_webview_window("splash") {
+        let _ = splash_window.close();
+    }
+    Ok(())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_process::init())
         .manage(YtMusicLoginState::default())
         .on_window_event(|window, event| {
+            if window.label() == "splash"
+                && matches!(event, tauri::WindowEvent::CloseRequested { .. })
+            {
+                if let Some(main_window) = window.app_handle().get_webview_window("main") {
+                    let _ = main_window.show();
+                    let _ = main_window.set_focus();
+                }
+            }
             if window.label() == "soundcloud-login"
                 && matches!(event, tauri::WindowEvent::CloseRequested { .. })
             {
@@ -339,7 +361,8 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             start_soundcloud_login,
             start_ytmusic_login,
-            uninstall_app
+            uninstall_app,
+            finish_splash
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

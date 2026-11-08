@@ -76,19 +76,26 @@ function injectLogoMorph() {
   document.head.appendChild(s);
 }
 
-export function Logo() {
+export function Logo({ size, className }: { size?: number; className?: string } = {}) {
   injectLogoMorph();
   const paletteStyle = useStore(appearance, (state) => state.bgMode === 'dynamic' && state.bgStyle === 'palette');
   const markColor = paletteStyle ? 'var(--md-on-secondary-container)' : 'var(--md-on-primary)';
+  const markW = size ? Math.round(size * (19 / 40)) : undefined;
+  const markH = size ? Math.round(size * (13 / 40)) : undefined;
   return (
-    <span className={cx('shape spin-slow h-10 w-10', paletteStyle ? 'text-secondary-container' : 'text-primary')}>
+    <span
+      className={cx('shape spin-slow', !size && 'h-10 w-10', paletteStyle ? 'text-secondary-container' : 'text-primary', className)}
+      style={size ? { width: size, height: size } : undefined}
+    >
       <svg viewBox="0 0 1 1" aria-hidden="true">
         <path d={LOGO_SHAPES[0]} style={{ animation: 'rs-logo-morph 18s var(--ease-emph) infinite' }} />
       </svg>
       <span
         aria-hidden="true"
-        className="block h-[13px] w-[19px]"
+        className={cx('block', !size && 'h-[13px] w-[19px]')}
         style={{
+          width: markW,
+          height: markH,
           backgroundColor: markColor,
           WebkitMaskImage: `url(${rsMark})`,
           maskImage: `url(${rsMark})`,
