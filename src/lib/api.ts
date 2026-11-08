@@ -1,6 +1,6 @@
 import type { LyricLine, Track } from '../types';
 import { findYouTubeFallbackCandidate, youtubeFallbackQueries } from './youtube-match';
-import { findLyricsCandidate, lyricsSearchQueries } from './lyrics-match';
+import { findLyricsCandidate, lyricsSearchQueries, toSeconds, type LyricsCandidate } from './lyrics-match';
 import { rpc } from './sidecar';
 
 import {
@@ -137,19 +137,115 @@ export interface LyricsData {
   plain?: string[];
   instrumental?: boolean;
   preview?: boolean;
+  matchedTitle?: string;
+  matchedArtist?: string;
 }
 
-const lyricsCache = new Map<string, Promise<LyricsData | null>>();
+export interface ManualLyricsChoice {
+  id: number;
+  trackName: string;
+  artistName: string;
+  albumName?: string;
+  duration: number;
+  syncedLyrics?: string;
+  plainLyrics?: string;
+  instrumental?: boolean;
+}
 
-export function getLyrics(t: Track): Promise<LyricsData | null> {
+const MANUAL_LYRICS_STORAGE_KEY = 'resonance.manual_lyrics.v1';
+const lyricsCache = new Map<string, Promise<LyricsData | null>>();
+let lyricsOverrides: Record<string, ManualLyricsChoice> | null = null;
+
+function loadLyricsOverrides(): Record<string, ManualLyricsChoice> {
+  if (lyricsOverrides) return lyricsOverrides;
+  try {
+    const raw = localStorage.getItem(MANUAL_LYRICS_STORAGE_KEY);
+    lyricsOverrides = raw ? (JSON.parse(raw) as Record<string, ManualLyricsChoice>) : {};
+  } catch {
+    lyricsOverrides = {};
+  }
+  return lyricsOverrides;
+}
+
+function saveLyricsOverrides(map: Record<string, ManualLyricsChoice>) {
+  lyricsOverrides = map;
+  try {
+    localStorage.setItem(MANUAL_LYRICS_STORAGE_KEY, JSON.stringify(map));
+  } catch {
+    /* ignore quota errors */
+  }
+}
+
+export function lyricsDataFromRecord(rec: LyricsCandidate): LyricsData | null {
+  if (rec.instrumental) {
+    return { instrumental: true, matchedTitle: rec.trackName, matchedArtist: rec.artistName };
+  }
+  if (rec.syncedLyrics) {
+    const synced = withGaps(parseLrc(rec.syncedLyrics));
+    if (synced.length) {
+      return { synced, matchedTitle: rec.trackName, matchedArtist: rec.artistName };
+    }
+  }
+  const plainSrc: string = rec.plainLyrics || (rec.syncedLyrics ? String(rec.syncedLyrics).replace(/\[[^\]]*\]/g, '') : '');
+  const plain = plainSrc.split('\n').map((s) => s.trim()).filter(Boolean);
+  return plain.length ? { plain, matchedTitle: rec.trackName, matchedArtist: rec.artistName } : null;
+}
+
+export function setManualLyricsChoice(trackId: string, choice: ManualLyricsChoice | null): LyricsData | null {
+  const overrides = { ...loadLyricsOverrides() };
+  if (choice) {
+    overrides[trackId] = choice;
+    saveLyricsOverrides(overrides);
+    const data = lyricsDataFromRecord(choice);
+    lyricsCache.set(trackId, Promise.resolve(data));
+    return data;
+  }
+  delete overrides[trackId];
+  saveLyricsOverrides(overrides);
+  lyricsCache.delete(trackId);
+  return null;
+}
+
+export function hasManualLyricsChoice(trackId: string): boolean {
+  return Boolean(loadLyricsOverrides()[trackId]);
+}
+
+export async function searchLyricsManual(query: string, signal?: AbortSignal): Promise<ManualLyricsChoice[]> {
+  const q = query.trim();
+  if (!q) return [];
+  const params = new URLSearchParams({ q });
+  const response = await fetch(`https://lrclib.net/api/search?${params}`, { signal });
+  if (!response.ok) return [];
+  const data = await response.json();
+  if (!Array.isArray(data)) return [];
+  return data
+    .filter((item: Json) => item && (item.syncedLyrics || item.plainLyrics || item.instrumental))
+    .slice(0, 20)
+    .map((item: Json, idx: number) => ({
+      id: Number(item.id) || idx + 1,
+      trackName: String(item.trackName || 'Unknown'),
+      artistName: String(item.artistName || 'Unknown'),
+      albumName: item.albumName ? String(item.albumName) : undefined,
+      duration: toSeconds(item.duration),
+      syncedLyrics: typeof item.syncedLyrics === 'string' ? item.syncedLyrics : undefined,
+      plainLyrics: typeof item.plainLyrics === 'string' ? item.plainLyrics : undefined,
+      instrumental: Boolean(item.instrumental),
+    }));
+}
+
+export function getLyrics(t: Track, forceRefresh = false): Promise<LyricsData | null> {
   if (t.lyrics) return Promise.resolve({ synced: t.lyrics });
+  const override = loadLyricsOverrides()[t.id];
+  if (override) {
+    const overriddenData = lyricsDataFromRecord(override);
+    if (overriddenData) return Promise.resolve(overriddenData);
+  }
+  if (forceRefresh) lyricsCache.delete(t.id);
   let p = lyricsCache.get(t.id);
   if (!p) {
     p = (t.source === 'soundcloud' ? fetchSoundCloudLyrics(t) : fetchLyrics(t))
       .catch(() => null)
       .then((value) => {
-        // A miss is only remembered by the Go cache for five minutes. Caching it for the
-        // whole session would hide lyrics that appear after a transient network error.
         if (!value) lyricsCache.delete(t.id);
         return value;
       });
@@ -161,12 +257,13 @@ export function getLyrics(t: Track): Promise<LyricsData | null> {
 async function fetchSoundCloudLyrics(track: Track): Promise<LyricsData | null> {
   const match = track.nativeId?.match(/(\d+)$/);
   const trackId = Number(match?.[1]);
+  const durationSec = toSeconds(track.fullDuration ?? track.duration);
   if (!trackId) return fetchLyrics(track);
   const result = await soundCloudTrackLyrics({
     trackId,
     title: track.title,
     artist: track.artist,
-    durationMs: Math.round((track.fullDuration ?? track.duration) * 1000),
+    durationMs: Math.round(durationSec * 1000),
   });
   if (result.isSynced && result.lines.length) {
     const synced = withGaps(result.lines.map((line) => ({ t: line.startMs / 1000, text: line.text })));
@@ -178,24 +275,16 @@ async function fetchSoundCloudLyrics(track: Track): Promise<LyricsData | null> {
 }
 
 async function fetchLyrics(t: Track): Promise<LyricsData | null> {
-  const duration = t.fullDuration ?? t.duration;
-  const tolerance = t.source === 'youtube' ? 30 : 4;
+  const durationSec = toSeconds(t.fullDuration ?? t.duration);
+  const tolerance = t.source === 'youtube' ? 8 : 4;
   const queries = lyricsSearchQueries(t);
-  let rec: Json | null = null;
+  let rec: LyricsCandidate | null = null;
   for (const query of queries) {
     const params = new URLSearchParams({ track_name: query.title, artist_name: query.artist });
     const results = await getJson(`https://lrclib.net/api/search?${params}`);
-    rec = findLyricsCandidate(Array.isArray(results) ? results : [], query, duration, tolerance);
+    rec = findLyricsCandidate(Array.isArray(results) ? results : [], query, durationSec, tolerance);
     if (rec) break;
   }
   if (!rec) return null;
-  if (rec.instrumental) return { instrumental: true };
-  const preview = false;
-  if (rec.syncedLyrics) {
-    const synced = withGaps(parseLrc(rec.syncedLyrics));
-    if (synced.length) return { synced };
-  }
-  const plainSrc: string = rec.plainLyrics || (rec.syncedLyrics ? String(rec.syncedLyrics).replace(/\[[^\]]*\]/g, '') : '');
-  const plain = plainSrc.split('\n').map((s) => s.trim());
-  return plain.some(Boolean) ? { plain, preview } : null;
+  return lyricsDataFromRecord(rec);
 }

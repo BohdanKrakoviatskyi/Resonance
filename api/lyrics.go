@@ -68,13 +68,15 @@ var (
 		regexp.MustCompile(`\[[^\]]*\]`),
 		regexp.MustCompile(`\([^)]*\)`),
 		regexp.MustCompile(`#\S+`),
-		regexp.MustCompile(`(?i)\bprod\.?\s+[\p{L}\p{N}_]+`),
+		regexp.MustCompile(`\+\S+`),
+		regexp.MustCompile(`https?://\S+`),
+		regexp.MustCompile(`(?i)\b(?:prod|tgk|tg|vk|inst|sc|by)\.?\s*[:.]?\s*[\p{L}\p{N}_.@/-]+`),
 		regexp.MustCompile(`(?i)\b(?:ft|feat|featuring|with)\.?\s+[\p{L}\p{N}&,'’. -]+`),
 	}
 	lyricsVersionWords = []string{
 		"slowed", "sped up", "speed up", "reverb", "bass boosted", "remix", "edit", "flip",
 		"mashup", "slow version", "rework", "re-work", "bootleg", "vip", "nightcore", "8d",
-		"reversed", "acapella", "capella", "spedup", "slowedit",
+		"reversed", "acapella", "capella", "spedup", "slowedit", "alt ver", "alt version",
 	}
 	lyricsDashParts = regexp.MustCompile(`\s+[-–—]\s+`)
 )
@@ -218,7 +220,7 @@ func scoreDeezerCandidate(params trackLyricsParams, candidate deezerTrack, title
 			bestTitle, bestTitleScore = title, score
 		}
 	}
-	if bestTitleScore < 0.62 {
+	if bestTitleScore < 0.72 {
 		return candidateScore{}, false
 	}
 
@@ -226,15 +228,23 @@ func scoreDeezerCandidate(params trackLyricsParams, candidate deezerTrack, title
 	for _, artist := range artists {
 		artistScore = math.Max(artistScore, lyricsTokenOverlap(artist, candidate.Artist.Name))
 	}
-	shortTitle := lyricsTitleSpecificity(bestTitle) < 3
-	durationScore := lyricsDurationScore(params.DurationMs/1000, candidate.Duration)
-	if durationScore == 0 && params.DurationMs > 0 && !lyricsHasVersionMarker(params.Title) {
-		return candidateScore{}, false
+	specificity := lyricsTitleSpecificity(bestTitle)
+	wantSec := (params.DurationMs + 500) / 1000
+	deltaSec := math.Abs(float64(wantSec - candidate.Duration))
+	hasVersion := lyricsHasVersionMarker(params.Title)
+
+	if wantSec > 0 && candidate.Duration > 0 && !hasVersion {
+		if deltaSec > 4 {
+			return candidateScore{}, false
+		}
 	}
-	// For short titles, an exact title with a plausible duration can identify reuploads whose
-	// SoundCloud uploader is not the original artist.
-	if shortTitle && artistScore < 0.5 && !(bestTitleScore >= 0.98 && durationScore >= 0.2) {
-		return candidateScore{}, false
+	durationScore := lyricsDurationScore(wantSec, candidate.Duration)
+
+	// Strict rule: if artist does not match, only allow when the title has >= 3 distinct words AND duration is within ±1.5s.
+	if artistScore < 0.5 {
+		if specificity < 3 || bestTitleScore < 0.98 || wantSec <= 0 || candidate.Duration <= 0 || deltaSec > 1.5 {
+			return candidateScore{}, false
+		}
 	}
 	rank := bestTitleScore*0.62 + artistScore*0.33 + durationScore*0.05
 	return candidateScore{rank: rank, title: bestTitleScore, artist: artistScore, duration: durationScore}, true
@@ -371,22 +381,16 @@ type scoredLRCLibRecord struct {
 
 func scoreLRCLibRecord(query lyricsQuery, candidate lrclibRecord, requireDuration bool) (candidateScore, bool) {
 	titleScore := lyricsTokenOverlap(query.Title, candidate.TrackName)
-	if titleScore < 0.62 {
+	if titleScore < 0.72 {
 		return candidateScore{}, false
 	}
 	artistScore := lyricsTokenOverlap(query.Artist, candidate.ArtistName)
-	shortTitle := lyricsTitleSpecificity(query.Title) < 3
-	// A track with no version marker is an original, so a candidate that is far off in length is a
-	// different song rather than a variant. The soft score below does not catch this on its own:
-	// lyricsDurationScore only rejects past delta/(want+have) > 0.35, and 102s against 127s is
-	// 0.109, which scored a confident-looking 0.2 and let "BATO - Miura" be given the words of
-	// "BATO - Apparts".
-	//
-	// Both conditions must hold. An absolute gap alone would reject a long track for a small
-	// difference that barely matters; a relative gap alone would reject a short track for seconds.
+	specificity := lyricsTitleSpecificity(query.Title)
+	deltaSec := math.Abs(float64(query.Duration) - candidate.Duration)
+
 	if requireDuration && query.Duration > 0 && candidate.Duration > 0 {
-		delta := math.Abs(float64(query.Duration) - candidate.Duration)
-		if delta > 18 && delta/float64(query.Duration) > 0.15 {
+		// Strict ±4s duration check for standard tracks (when artist matches), and ±1.5s when artist is unknown/reupload
+		if deltaSec > 4 {
 			return candidateScore{}, false
 		}
 	}
@@ -394,8 +398,11 @@ func scoreLRCLibRecord(query lyricsQuery, candidate lrclibRecord, requireDuratio
 	if durationScore == 0 && requireDuration {
 		return candidateScore{}, false
 	}
-	if shortTitle && artistScore < 0.5 && !(titleScore >= 0.98 && (!requireDuration || durationScore >= 0.2)) {
-		return candidateScore{}, false
+	// Strict rule: never accept a different artist unless the title has 3+ unique words AND duration matches within ±1.5s!
+	if artistScore < 0.5 {
+		if specificity < 3 || titleScore < 0.98 || query.Duration <= 0 || candidate.Duration <= 0 || deltaSec > 1.5 {
+			return candidateScore{}, false
+		}
 	}
 	rank := titleScore*0.62 + artistScore*0.33 + durationScore*0.05
 	if len(parseLRC(candidate.SyncedLyrics)) > 0 {
@@ -629,7 +636,8 @@ func lyricsTokenSet(value string) map[string]bool {
 			token.Reset()
 		}
 	}
-	for _, char := range strings.ToLower(value) {
+	normalized := strings.ReplaceAll(strings.ToLower(value), "ё", "е")
+	for _, char := range normalized {
 		if unicode.IsLetter(char) || unicode.IsNumber(char) {
 			token.WriteRune(char)
 		} else {
