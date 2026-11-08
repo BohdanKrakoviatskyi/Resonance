@@ -2,7 +2,7 @@
   "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
   "productName": "Resonance",
   "mainBinaryName": "resonance",
-  "version": "0.4.9",
+  "version": "0.4.10",
   "identifier": "com.resonance.app",
   "build": {
     "frontendDist": "../dist",
