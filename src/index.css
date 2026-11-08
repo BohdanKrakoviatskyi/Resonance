@@ -414,7 +414,7 @@ html[data-theme=light] { color-scheme: light; }
   .hrow::-webkit-scrollbar { display: none; }
   .hrow > * { scroll-snap-align: start; }
   .hrow-btn { position: absolute; top: calc(var(--cw, 170px) / 2 - 20px); z-index: 2; opacity: 0; transform: scale(.7); transition: opacity .2s, transform var(--sp-fast-d) var(--sp-fast); }
-  @media (hover: hover) { .hrow-wrap:hover .hrow-btn { opacity: 1; transform: none; } }
+  .hrow-btn { display: none; }
 
   .mcard { display: flex; flex-direction: column; align-items: stretch; gap: 4px; padding: 10px; border-radius: 26px; text-align: left; width: 100%; transition: transform var(--sp-fast-d) var(--sp-fast), border-radius var(--sp-fast-d) var(--sp-fast); }
   .mcard:active { transform: scale(.96); }
@@ -601,6 +601,7 @@ html[data-theme=light] { color-scheme: light; }
     background: color-mix(in oklab, var(--md-on-surface) 11%, transparent) !important;
     box-shadow: 0 8px 24px -8px rgb(0 0 0 / .45), inset 0 0 0 1px rgb(255 255 255 / .12);
   }
+  .imm-carousel-arrow { display: none; }
   .imm-carousel-arrow-prev { left: -18px; }
   .imm-carousel-arrow-next { right: -18px; }
   .imm-carousel-return {
