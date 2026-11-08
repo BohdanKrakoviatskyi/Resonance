@@ -1,7 +1,6 @@
 import { useMemo, useRef, type ReactNode } from 'react';
 import { hexFromArgb } from '@material/material-color-utilities';
 import { Icon, type IconName } from '../components/Icon';
-import { ShortcutSettings } from '../components/ShortcutSettings';
 import { Button, IconButton, Segmented, Slider, type Vars } from '../components/ui';
 import { cx, useStore } from '../lib/util';
 import { t, type Key } from '../lib/i18n';
@@ -278,22 +277,9 @@ export default function Appearance() {
               ]}
             />
           </Card>
-          <Card icon="translate" title={t('language')} i={7}>
-            <Segmented
-              value={a.lang}
-              onChange={(v) => set({ lang: v })}
-              options={[
-                { value: 'ru', label: 'Русский' },
-                { value: 'en', label: 'English' },
-              ]}
-            />
-          </Card>
-          <Card icon="keyboard" title={t('shortcuts')} i={8}>
-            <ShortcutSettings />
-          </Card>
         </div>
 
-        <div className="anim-in flex justify-center py-4" style={{ '--i': 9 } as Vars}>
+        <div className="anim-in flex justify-center py-4" style={{ '--i': 7 } as Vars}>
           <Button
             variant="outlined"
             icon="refresh"

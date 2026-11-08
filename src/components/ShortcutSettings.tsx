@@ -26,17 +26,17 @@ export function ShortcutSettings() {
     if (!id) return;
 
     const onKeyDown = (event: KeyboardEvent) => {
+      event.preventDefault();
+      event.stopPropagation();
+      event.stopImmediatePropagation();
+
       if (event.key === 'Escape') {
-        event.preventDefault();
-        event.stopImmediatePropagation();
         shortcuts.set({ recording: null, error: null });
         return;
       }
       const shortcut = shortcutForEvent(event);
       if (!shortcut || !isValidShortcut(shortcut)) return;
 
-      event.preventDefault();
-      event.stopImmediatePropagation();
       void updateShortcut(id, shortcut).then((saved) => {
         shortcuts.set({ recording: null });
         if (saved) shortcuts.set({ error: null });
