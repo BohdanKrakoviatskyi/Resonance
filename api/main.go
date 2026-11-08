@@ -378,9 +378,11 @@ type service struct {
 	settings     settings
 	authPath     string
 	auth         authState
-	historyPath  string
-	history      []soundcloudTrackCard
-	apiBase      string
+	historyPath        string
+	history            []soundcloudTrackCard
+	frontendBackupPath string
+	frontendBackup     map[string]string
+	apiBase            string
 	httpClient   *http.Client
 	// Lyrics are cached separately from everything else and behind their own lock: mu is held
 	// across disk writes and settings updates, so borrowing it for a cache that outlives an HTTP
@@ -416,13 +418,15 @@ func run(input io.Reader, output io.Writer) error {
 	}
 
 	svc := &service{
-		settingsPath: filepath.Join(dataDir, "settings.json"),
-		settings:     defaultSettings(),
-		authPath:     filepath.Join(dataDir, "auth.json"),
-		historyPath:  filepath.Join(dataDir, "history.json"),
-		apiBase:      apiBase(),
-		httpClient:   &http.Client{Timeout: 15 * time.Second},
-		lyricsCache:  make(map[int64]cachedLyrics),
+		settingsPath:       filepath.Join(dataDir, "settings.json"),
+		settings:           defaultSettings(),
+		authPath:           filepath.Join(dataDir, "auth.json"),
+		historyPath:        filepath.Join(dataDir, "history.json"),
+		frontendBackupPath: filepath.Join(dataDir, "frontend-state.json"),
+		frontendBackup:     make(map[string]string),
+		apiBase:            apiBase(),
+		httpClient:         &http.Client{Timeout: 15 * time.Second},
+		lyricsCache:        make(map[int64]cachedLyrics),
 	}
 	audioMgr := newYTAudioManager(filepath.Join(dataDir, "yt-audio-cache"), svc.httpClient)
 	if err := audioMgr.start(); err != nil {
@@ -439,6 +443,7 @@ func run(input io.Reader, output io.Writer) error {
 	if err := svc.loadHistory(); err != nil {
 		fmt.Fprintln(os.Stderr, "local backend: playback history ignored:", err)
 	}
+	svc.loadFrontendBackup()
 
 	scanner := bufio.NewScanner(input)
 	// Grown on demand, so this only reserves a small buffer until a genuinely large request
@@ -486,14 +491,17 @@ func run(input io.Reader, output io.Writer) error {
 // lock and can run concurrently: a slow SoundCloud fetch no longer freezes
 // playback or lyrics.
 var rpcWriteLocked = map[string]bool{
-	"settings.update": true,
-	"settings.clear":  true,
-	"history.record":  true,
-	"history.clear":   true,
-	"auth.login":      true,
-	"auth.refresh":    true,
-	"auth.logout":     true,
+	"settings.update": saveTrue,
+	"settings.clear":  saveTrue,
+	"history.record":  saveTrue,
+	"history.clear":   saveTrue,
+	"auth.login":      saveTrue,
+	"auth.refresh":    saveTrue,
+	"auth.logout":     saveTrue,
+	"frontend.backup": saveTrue,
 }
+
+const saveTrue = true
 
 // rpcSelfLocked methods manage their own locking. tracks.mine reads auth under
 // a short read lock, does its paging without a lock, and takes a write lock
@@ -677,6 +685,44 @@ func (s *service) RPCHistoryRecord(params historyTrackParams) ([]soundcloudTrack
 	}
 	s.history = updated
 	return append([]soundcloudTrackCard{}, updated...), nil
+}
+
+type frontendBackupParams struct {
+	Entries map[string]string `json:"entries"`
+}
+
+func (s *service) RPCFrontendBackup(params frontendBackupParams) (map[string]string, error) {
+	if s.frontendBackup == nil {
+		s.frontendBackup = make(map[string]string)
+	}
+	for k, v := range params.Entries {
+		if k != "" {
+			s.frontendBackup[k] = v
+		}
+	}
+	if data, err := json.Marshal(s.frontendBackup); err == nil {
+		_ = writeSecretFile(s.frontendBackupPath, data)
+	}
+	return s.frontendBackup, nil
+}
+
+func (s *service) RPCFrontendRestore(_ emptyParams) (map[string]string, error) {
+	out := make(map[string]string, len(s.frontendBackup))
+	for k, v := range s.frontendBackup {
+		out[k] = v
+	}
+	return out, nil
+}
+
+func (s *service) loadFrontendBackup() {
+	data, err := os.ReadFile(s.frontendBackupPath)
+	if err != nil {
+		return
+	}
+	var loaded map[string]string
+	if err := json.Unmarshal(data, &loaded); err == nil && loaded != nil {
+		s.frontendBackup = loaded
+	}
 }
 
 func (s *service) RPCHistoryClear(_ emptyParams) ([]soundcloudTrackCard, error) {

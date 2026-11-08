@@ -9,6 +9,7 @@
     "global-shortcut:allow-unregister",
     "allow-start-soundcloud-login",
     "allow-start-ytmusic-login",
+    "allow-uninstall-app",
     {
       "identifier": "shell:allow-spawn",
       "allow": [

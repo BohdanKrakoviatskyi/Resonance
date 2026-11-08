@@ -41,21 +41,78 @@ export function useStore<T, S>(store: Store<T>, sel: (s: T) => S): S {
   return useSyncExternalStore(store.subscribe, snap, snap);
 }
 
+const persistedStores = new Map<string, () => void>();
+let backupTimer = 0;
+const syncBackupToSidecar = () => {
+  void import('./providers-api')
+    .then(({ backupFrontendState }) => {
+      const entries: Record<string, string> = {};
+      for (const k of [...persistedStores.keys(), 'resonance.shortcuts.v1']) {
+        try {
+          const val = localStorage.getItem(k);
+          if (val !== null) entries[k] = val;
+        } catch {
+          /* ignore */
+        }
+      }
+      if (Object.keys(entries).length > 0) {
+        return backupFrontendState(entries);
+      }
+    })
+    .catch(() => {});
+};
+
+export async function flushFrontendStateBackup(): Promise<void> {
+  for (const save of persistedStores.values()) save();
+  try {
+    const { backupFrontendState } = await import('./providers-api');
+    const entries: Record<string, string> = {};
+    for (const k of [...persistedStores.keys(), 'resonance.shortcuts.v1']) {
+      const val = localStorage.getItem(k);
+      if (val !== null) entries[k] = val;
+    }
+    if (Object.keys(entries).length > 0) {
+      await backupFrontendState(entries);
+    }
+  } catch {
+    /* ignore */
+  }
+}
+
 export function persist<T extends object>(key: string, store: Store<T>, pick: (s: T) => Partial<T>, delay = 350, onError?: () => void) {
+  let hasLocal = false;
   try {
     const raw = localStorage.getItem(key);
-    if (raw) store.set(JSON.parse(raw));
+    if (raw) {
+      hasLocal = true;
+      store.set(JSON.parse(raw));
+    }
   } catch {
     /* corrupted storage — ignore */
+  }
+  if (!hasLocal) {
+    void import('./providers-api')
+      .then(({ restoreFrontendState }) => restoreFrontendState())
+      .then((entries) => {
+        const raw = entries?.[key];
+        if (raw && !localStorage.getItem(key)) {
+          localStorage.setItem(key, raw);
+          store.set(JSON.parse(raw));
+        }
+      })
+      .catch(() => {});
   }
   let tm = 0;
   const save = () => {
     try {
       localStorage.setItem(key, JSON.stringify(pick(store.get())));
+      clearTimeout(backupTimer);
+      backupTimer = window.setTimeout(syncBackupToSidecar, 1000);
     } catch {
       onError?.();
     }
   };
+  persistedStores.set(key, save);
   store.subscribe(() => {
     clearTimeout(tm);
     tm = window.setTimeout(save, delay);

@@ -12,3 +12,8 @@ commands.allow = ["start_soundcloud_login"]
 identifier = "allow-start-ytmusic-login"
 description = "Open the embedded YouTube Music sign-in window."
 commands.allow = ["start_ytmusic_login"]
+
+[[permission]]
+identifier = "allow-uninstall-app"
+description = "Launch the application uninstaller while preserving user data."
+commands.allow = ["uninstall_app"]
