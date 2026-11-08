@@ -30,7 +30,8 @@ export default function Splash() {
 
     const run = async () => {
       if (import.meta.env.DEV && hasTauriRuntime()) {
-        await finishSplash();
+        await new Promise((resolve) => window.setTimeout(resolve, 1800));
+        if (!cancelled) await closeAndShowMain();
         return;
       }
 
