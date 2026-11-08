@@ -1,8 +1,8 @@
 import { useLayoutEffect, useRef, useState, type ReactNode } from 'react';
 import { Icon, type IconName } from './Icon';
-import { IconButton, Shape } from './ui';
+import { IconButton } from './ui';
 import { PlaylistCover, Eq } from './Cover';
-import { cx, useStore } from '../lib/util';
+import { blobPath, cx, useStore } from '../lib/util';
 import { t, tracksLabel } from '../lib/i18n';
 import { markResizing } from '../lib/motion';
 import { library, loadYtMusicPlaylistArtwork } from '../state/library';
@@ -11,6 +11,7 @@ import { ytmusicPlaylistId } from '../lib/ytmusic-library';
 import { appearance } from '../state/appearance';
 import { updater } from '../state/updater';
 import { go, openDialog, routeKey, ui, type Route } from '../state/ui';
+import rsMark from '../assets/rs-mark.png';
 import soundcloudLogo from '../assets/soundcloud.svg';
 import youtubeMusicLogo from '../assets/youtube-music.svg';
 
@@ -54,12 +55,52 @@ function NavItem({ k, active, expanded, label, labelPrefix, sub, icon, art, badg
   );
 }
 
+const LOGO_SHAPES = [
+  blobPath(10, 0.025, 64),
+  blobPath(5, 0.14, 64),
+  blobPath(8, 0.09, 64),
+  blobPath(4, 0.17, 64),
+  blobPath(7, 0.11, 64),
+  blobPath(12, 0.06, 64),
+  blobPath(6, 0.13, 64),
+  blobPath(3, 0.15, 64),
+  blobPath(9, 0.08, 64),
+  blobPath(11, 0.07, 64),
+];
+let logoMorphInjected = false;
+function injectLogoMorph() {
+  if (logoMorphInjected) return;
+  logoMorphInjected = true;
+  const s = document.createElement('style');
+  s.textContent = `@keyframes rs-logo-morph{${LOGO_SHAPES.map((p, i) => `${((i / LOGO_SHAPES.length) * 100).toFixed(2)}%{d:path("${p}")}`).join('')}100%{d:path("${LOGO_SHAPES[0]}")}}`;
+  document.head.appendChild(s);
+}
+
 export function Logo() {
+  injectLogoMorph();
   const paletteStyle = useStore(appearance, (state) => state.bgMode === 'dynamic' && state.bgStyle === 'palette');
+  const markColor = paletteStyle ? 'var(--md-on-secondary-container)' : 'var(--md-on-primary)';
   return (
-    <Shape n={8} amp={0.1} className={cx('spin-slow h-10 w-10', paletteStyle ? 'text-secondary-container' : 'text-primary')}>
-      <Icon name="graphic_eq" size={22} className={paletteStyle ? 'text-on-secondary-container' : 'text-on-primary'} />
-    </Shape>
+    <span className={cx('shape spin-slow h-10 w-10', paletteStyle ? 'text-secondary-container' : 'text-primary')}>
+      <svg viewBox="0 0 1 1" aria-hidden="true">
+        <path d={LOGO_SHAPES[0]} style={{ animation: 'rs-logo-morph 18s var(--ease-emph) infinite' }} />
+      </svg>
+      <span
+        aria-hidden="true"
+        className="block h-[13px] w-[19px]"
+        style={{
+          backgroundColor: markColor,
+          WebkitMaskImage: `url(${rsMark})`,
+          maskImage: `url(${rsMark})`,
+          WebkitMaskSize: 'contain',
+          maskSize: 'contain',
+          WebkitMaskRepeat: 'no-repeat',
+          maskRepeat: 'no-repeat',
+          WebkitMaskPosition: 'center',
+          maskPosition: 'center',
+        }}
+      />
+    </span>
   );
 }
 

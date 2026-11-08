@@ -85,9 +85,10 @@ export function Seek({ big }: { big?: boolean }) {
       }}
       onPointerUp={() => {
         if (drag.current == null) return;
-        seek(drag.current * dur());
+        const targetFraction = drag.current;
         drag.current = null;
         setDragging(false);
+        seek(targetFraction * dur());
       }}
       onPointerCancel={() => {
         drag.current = null;

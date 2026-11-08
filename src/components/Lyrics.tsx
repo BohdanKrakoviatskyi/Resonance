@@ -71,7 +71,8 @@ function SyncedLyrics({ lines, variant }: { lines: LyricLine[]; variant: 'panel'
 
   useEffect(
     () =>
-      onFrame((time) => {
+      onFrame((_visualTime, _dur, realTime) => {
+        const time = realTime;
         const i = findLine(lines, time + 0.12);
         if (i !== activeRef.current) {
           activeRef.current = i;
