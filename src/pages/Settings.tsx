@@ -90,7 +90,16 @@ export default function Settings() {
           />
         </section>
 
-        <div className="anim-in mt-1 flex justify-end" style={{ '--i': items.length + 2 } as Vars}>
+        <div className="anim-in mt-1 flex flex-wrap justify-end gap-2.5" style={{ '--i': items.length + 2 } as Vars}>
+          <button
+            type="button"
+            data-ripple
+            className="sl inline-flex items-center gap-2.5 rounded-full bg-[color-mix(in_oklab,var(--md-on-surface)_12%,var(--md-surface-container-high))] px-5 py-3 font-semibold text-on-surface shadow-lg ring-1 ring-[color-mix(in_oklab,var(--md-on-surface)_14%,transparent)] backdrop-blur-md"
+            onClick={() => openDialog({ kind: 'clear-cache' })}
+          >
+            <Icon name="history" fill size={20} />
+            <span>{t('clearCacheApp')}</span>
+          </button>
           <button
             type="button"
             data-ripple

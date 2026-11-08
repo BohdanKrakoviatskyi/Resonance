@@ -100,6 +100,10 @@ export function setColorTransition(ms: number) {
 
 const cache = new Map<string, Promise<Palette | null>>();
 
+export function clearPaletteCache() {
+  cache.clear();
+}
+
 export function getPalette(url: string, key = url): Promise<Palette | null> {
   if (!url) return Promise.resolve(null);
   let p = cache.get(key);

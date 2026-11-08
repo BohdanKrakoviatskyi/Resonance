@@ -9,7 +9,7 @@ import { t } from '../lib/i18n';
 import { supportsVT } from '../lib/motion';
 import { library } from '../state/library';
 import { useCurrentTrack } from '../state/player';
-import { go, setImmersive, ui } from '../state/ui';
+import { openSearch, setImmersive, ui } from '../state/ui';
 
 /** Fullscreen lyrics: artwork + details on the left, animated synced lyrics on the right. */
 export function Immersive() {
@@ -63,7 +63,7 @@ export function Immersive() {
                   className="truncate text-lg font-semibold text-on-surface-variant hover:text-primary"
                   onClick={() => {
                     setImmersive(false);
-                    go({ name: 'search', q: track.artist });
+                    openSearch(track.artist);
                   }}
                 >
                   {track.artist}

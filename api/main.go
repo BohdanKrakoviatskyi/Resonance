@@ -499,6 +499,7 @@ var rpcWriteLocked = map[string]bool{
 	"auth.refresh":    saveTrue,
 	"auth.logout":     saveTrue,
 	"frontend.backup": saveTrue,
+	"cache.clear":     saveTrue,
 }
 
 const saveTrue = true

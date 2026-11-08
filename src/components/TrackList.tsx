@@ -6,7 +6,7 @@ import { cx, fmtTime, useStore } from '../lib/util';
 import { t } from '../lib/i18n';
 import { getTrack, library, toggleDislike, toggleLike, togglePlaylistTrack } from '../state/library';
 import { addToQueue, player, playNext, playQueue, toggle } from '../state/player';
-import { go, openDialog } from '../state/ui';
+import { go, openDialog, openSearch } from '../state/ui';
 import type { Track } from '../types';
 import soundcloudLogo from '../assets/soundcloud.svg';
 import youtubeMusicLogo from '../assets/youtube-music.svg';
@@ -102,7 +102,7 @@ export function TrackMenu({ track, anchor, onClose, playlistId }: { track: Track
           <MenuItem i={2} icon="playlist_add" label={t('addToPlaylist')} trailing="chevron_right" onClick={() => setSub(true)} />
           {playlistId && <MenuItem i={3} icon="playlist_remove" label={t('removeFromPlaylist')} onClick={() => (togglePlaylistTrack(playlistId, track.id), close())} />}
           <div className="menu-div" />
-          <MenuItem i={4} icon="person" label={t('goToArtist')} onClick={() => (go({ name: 'search', q: track.artist }), close())} />
+          <MenuItem i={4} icon="person" label={t('goToArtist')} onClick={() => (openSearch(track.artist), close())} />
           <MenuItem i={5} icon="thumb_down" label={t('dislike')} onClick={() => (toggleDislike(track.id), close())} />
         </>
       )}

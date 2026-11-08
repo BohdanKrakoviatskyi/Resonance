@@ -169,6 +169,17 @@ export function ytDlpTrackStream(videoId: string, signal?: AbortSignal): Promise
   return rpc('yt.dlp.stream', { videoId }, signal);
 }
 
+export type CacheClearResult = {
+  audioFilesDeleted: number;
+  audioBytesFreed: number;
+  lyricsEntriesCleared: number;
+  streamEntriesCleared: number;
+};
+
+export function clearCache(signal?: AbortSignal): Promise<CacheClearResult> {
+  return rpc('cache.clear', {}, signal);
+}
+
 export function backupFrontendState(entries: Record<string, string>, signal?: AbortSignal): Promise<Record<string, string>> {
   return rpc('frontend.backup', { entries }, signal);
 }

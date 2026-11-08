@@ -6,7 +6,8 @@ import { cx, useStore } from '../lib/util';
 import { t } from '../lib/i18n';
 import { createPlaylist, deletePlaylist, library, renamePlaylist } from '../state/library';
 import { checkForUpdates, runAppUninstall, startInstallNewVersion, updater } from '../state/updater';
-import { go, openDialog, ui, type Dialog, type Snack } from '../state/ui';
+import { clearAppCache } from '../state/cache';
+import { go, openDialog, snack, ui, type Dialog, type Snack } from '../state/ui';
 
 export function Drawer({ open, onClose, side, children }: { open: boolean; onClose: () => void; side: 'left' | 'right'; children: ReactNode }) {
   const { mounted, visible } = usePresence(open, 450);
@@ -219,6 +220,53 @@ function UninstallDialog() {
   );
 }
 
+function ClearCacheDialog() {
+  const [confirmed, setConfirmed] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+  return (
+    <div>
+      <h2 className="headline mb-3 text-2xl">{t('clearCacheTitle')}</h2>
+      <p className="text-sm leading-relaxed text-on-surface-variant">{t('clearCacheText')}</p>
+      <button
+        type="button"
+        data-ripple
+        className="sl mt-4 flex w-full items-center gap-3 rounded-2xl bg-sc-low px-4 py-3 text-left text-sm font-semibold"
+        onClick={() => setConfirmed((v) => !v)}
+      >
+        <span className={cx('check', confirmed && 'on')}>
+          <Icon name="check" />
+        </span>
+        <span className="flex-1">{t('clearCacheConfirmCheck')}</span>
+      </button>
+      {error && <p className="mt-3 text-sm text-error">{error}</p>}
+      <div className="mt-6 flex justify-end gap-2">
+        <Button variant="text" onClick={closeDialog}>
+          {t('cancel')}
+        </Button>
+        <Button
+          icon="history"
+          disabled={!confirmed || busy}
+          className="!bg-[color-mix(in_oklab,var(--md-on-surface)_12%,var(--md-surface-container-highest))] !text-[var(--md-on-surface)]"
+          onClick={() => {
+            setBusy(true);
+            setError('');
+            void clearAppCache()
+              .then(() => {
+                closeDialog();
+                snack(t('clearCacheDone'));
+              })
+              .catch((e) => setError(t('clearCacheError', { reason: e instanceof Error ? e.message : String(e) })))
+              .finally(() => setBusy(false));
+          }}
+        >
+          {t('clearCacheBtn')}
+        </Button>
+      </div>
+    </div>
+  );
+}
+
 function DialogHost() {
   const d = useStore(ui, (s) => s.dialog);
   const [last, setLast] = useState<Dialog | null>(d);
@@ -243,6 +291,8 @@ function DialogHost() {
           <UpdateUninstallDialog />
         ) : last.kind === 'uninstall' ? (
           <UninstallDialog />
+        ) : last.kind === 'clear-cache' ? (
+          <ClearCacheDialog />
         ) : (
           <NameDialog key={JSON.stringify(last)} d={last} />
         )}
