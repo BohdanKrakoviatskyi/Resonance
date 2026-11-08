@@ -93,9 +93,16 @@ export function registerColorProps() {
       /* already registered */
     }
   }
+  try {
+    CSS.registerProperty({ name: '--metal-neon', syntax: '<color>', inherits: true, initialValue: '#8c7cff' });
+  } catch {
+    /* already registered */
+  }
 }
 export function setColorTransition(ms: number) {
-  document.documentElement.style.transition = ms ? ROLES.map((r) => `${kebab(r)} ${ms}ms cubic-bezier(.2,0,0,1)`).join(',') : '';
+  document.documentElement.style.transition = ms
+    ? [...ROLES.map((r) => `${kebab(r)} ${ms}ms cubic-bezier(.2,0,0,1)`), `--metal-neon ${ms}ms cubic-bezier(.2,0,0,1)`].join(',')
+    : '';
 }
 
 const cache = new Map<string, Promise<Palette | null>>();

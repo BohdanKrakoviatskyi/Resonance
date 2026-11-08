@@ -224,6 +224,34 @@ export default function Appearance() {
               <Swatches colors={ACCENT_SWATCHES} value={a.accentColor} onChange={(c) => set({ accentColor: c })} label={t('customColor')} />
             </div>
           )}
+          <div className={cx('mt-5 rounded-2xl bg-sc-low/60 p-4 transition-opacity duration-300', !a.metallic && 'pointer-events-none opacity-40')}>
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <span className="text-sm font-semibold">{t('neonAccent')}</span>
+              <Segmented
+                size="sm"
+                className="w-48"
+                value={a.metallicNeon ? 'on' : 'off'}
+                onChange={(v) => set({ metallicNeon: v === 'on' })}
+                options={[
+                  { value: 'on', label: t('enabled'), icon: 'bolt' },
+                  { value: 'off', label: t('disabled') },
+                ]}
+              />
+            </div>
+            <div className={cx('transition-opacity duration-300', !a.metallicNeon && 'pointer-events-none opacity-40')}>
+              <Row label={t('neonIntensity')} value={`${a.metallicNeonIntensity}%`}>
+                <Slider
+                  value={a.metallicNeonIntensity}
+                  min={10}
+                  max={85}
+                  step={1}
+                  onChange={(v) => set({ metallicNeonIntensity: v })}
+                  label={t('neonIntensity')}
+                  disabled={!a.metallic || !a.metallicNeon}
+                />
+              </Row>
+            </div>
+          </div>
           <div className="mt-5 text-sm font-semibold">{t('currentScheme')}</div>
           <div className="mt-2 flex flex-wrap gap-2">
             {SHOW.map((r) => (
@@ -254,8 +282,19 @@ export default function Appearance() {
           </div>
         </Card>
 
+        <Card icon="layers" title={t('metallicMode')} sub={t('metallicModeDesc')} i={5}>
+          <Segmented
+            value={a.metallic ? 'on' : 'off'}
+            onChange={(v) => set({ metallic: v === 'on' })}
+            options={[
+              { value: 'on', label: t('enabled'), icon: 'auto_awesome' },
+              { value: 'off', label: t('disabled') },
+            ]}
+          />
+        </Card>
+
         <div className="grid gap-4 @3xl:grid-cols-2">
-          <Card icon="contrast" title={t('theme')} i={5}>
+          <Card icon="contrast" title={t('theme')} i={6}>
             <Segmented
               value={a.theme}
               onChange={(v) => set({ theme: v })}
@@ -266,7 +305,7 @@ export default function Appearance() {
               ]}
             />
           </Card>
-          <Card icon="animation" title={t('motion')} i={6}>
+          <Card icon="animation" title={t('motion')} i={7}>
             <Segmented
               value={a.motion}
               onChange={(v) => set({ motion: v })}
@@ -279,7 +318,7 @@ export default function Appearance() {
           </Card>
         </div>
 
-        <div className="anim-in flex justify-center py-4" style={{ '--i': 7 } as Vars}>
+        <div className="anim-in flex justify-center py-4" style={{ '--i': 8 } as Vars}>
           <Button
             variant="outlined"
             icon="refresh"
