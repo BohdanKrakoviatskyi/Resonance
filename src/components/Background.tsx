@@ -3,24 +3,43 @@ import { useStore } from '../lib/util';
 import { theme, type BgSpec } from '../state/theme';
 import { appearance } from '../state/appearance';
 
-function meshCss(s: BgSpec) {
-  const [a, b, c, d] = s.colors;
-  return [
-    `radial-gradient(62% 70% at 12% 14%, ${a} 0%, transparent 72%)`,
-    `radial-gradient(52% 60% at 88% 10%, ${b} 0%, transparent 70%)`,
-    `radial-gradient(60% 66% at 78% 88%, ${c} 0%, transparent 72%)`,
-    `radial-gradient(48% 56% at 18% 92%, ${d} 0%, transparent 70%)`,
-    s.base,
-  ].join(',');
-}
-
-function Layer({ spec, onDone }: { spec: BgSpec; onDone: () => void }) {
-  const style: CSSProperties = spec.kind === 'mesh' ? { background: meshCss(spec) } : { background: spec.base };
+function Layer({ spec, metallic, onDone }: { spec: BgSpec; metallic: boolean; onDone: () => void }) {
+  const [a, b, c, d] = spec.colors;
+  const style: CSSProperties = { background: spec.base };
   return (
     <div className="bg-layer" style={style} onAnimationEnd={(e) => e.target === e.currentTarget && onDone()}>
-      {spec.kind === 'image' && spec.image && (
-        <img src={spec.image} alt="" decoding="async" style={{ filter: spec.blur ? `blur(${spec.blur}px) saturate(1.35)` : undefined }} />
+      {spec.kind === 'mesh' && spec.colors.length >= 3 && (
+        <div className="bg-ambient" data-metallic={metallic ? 'true' : 'false'}>
+          <span className="bg-blob bg-blob-1" style={{ background: `radial-gradient(circle, ${a} 0%, transparent 70%)` }} />
+          <span className="bg-blob bg-blob-2" style={{ background: `radial-gradient(circle, ${b || a} 0%, transparent 70%)` }} />
+          <span className="bg-blob bg-blob-3" style={{ background: `radial-gradient(circle, ${c || b || a} 0%, transparent 70%)` }} />
+          <span className="bg-blob bg-blob-4" style={{ background: `radial-gradient(circle, ${d || a} 0%, transparent 72%)` }} />
+        </div>
       )}
+      {spec.kind === 'image' && spec.image && (
+        <img
+          src={spec.image}
+          alt=""
+          decoding="async"
+          className="bg-image-drift"
+          data-metallic={metallic ? 'true' : 'false'}
+          style={{
+            filter: metallic
+              ? `blur(${Math.max(24, spec.blur)}px) saturate(0.22) contrast(1.15)`
+              : spec.blur
+                ? `blur(${spec.blur}px) saturate(1.35)`
+                : undefined,
+          }}
+        />
+      )}
+      {/* Pre-warmed metallic + neon overlay: always mounted so switching Normal <-> Metallic never mounts/unmounts DOM nodes or flashes */}
+      <div className="bg-metal-fx" data-active={metallic ? 'true' : 'false'}>
+        <span className="bg-metallic-base" />
+        <span className="bg-neon-glow bg-neon-glow-1" />
+        <span className="bg-neon-glow bg-neon-glow-2" />
+        <span className="bg-metallic-sheen" />
+      </div>
+      <span className="bg-vignette" />
       <div className="bg-dim" style={{ background: spec.dim }} />
     </div>
   );
@@ -29,6 +48,7 @@ function Layer({ spec, onDone }: { spec: BgSpec; onDone: () => void }) {
 /** Cross-fading background layer behind all glass panels. */
 export function Background() {
   const bg = useStore(theme, (s) => s.bg);
+  const metallic = useStore(appearance, (s) => s.metallic);
   const [layers, setLayers] = useState<BgSpec[]>(() => (bg ? [bg] : []));
   useEffect(() => {
     if (!bg) return;
@@ -41,7 +61,7 @@ export function Background() {
   return (
     <div className="bg-root" aria-hidden="true">
       {layers.map((l, i) => (
-        <Layer key={l.key} spec={l} onDone={() => i === layers.length - 1 && setLayers((ls) => ls.slice(ls.indexOf(l)))} />
+        <Layer key={l.key} spec={l} metallic={metallic} onDone={() => i === layers.length - 1 && setLayers((ls) => ls.slice(ls.indexOf(l)))} />
       ))}
     </div>
   );

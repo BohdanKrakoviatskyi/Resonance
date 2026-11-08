@@ -20,6 +20,9 @@ export interface Appearance {
   accentMode: 'dynamic' | 'custom';
   accentColor: string;
   variant: Variant;
+  metallic: boolean;
+  metallicNeon: boolean;
+  metallicNeonIntensity: number; // 0..100
   motion: MotionMode;
   lang: 'ru' | 'en';
 }
@@ -39,6 +42,9 @@ export const DEFAULTS: Appearance = {
   accentMode: 'custom',
   accentColor: '#a0a8b8',
   variant: 'neutral',
+  metallic: false,
+  metallicNeon: true,
+  metallicNeonIntensity: 45,
   motion: 'expressive',
   lang: (navigator.language || 'ru').toLowerCase().startsWith('ru') ? 'ru' : 'en',
 };
