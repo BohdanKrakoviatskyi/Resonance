@@ -14,7 +14,6 @@ import { checkForUpdates } from './state/updater';
 import { handleWindowShortcut } from './state/shortcut-runtime';
 import { routeKey, ui, type Route } from './state/ui';
 import Home from './pages/Home';
-import Search from './pages/Search';
 import Collection from './pages/Collection';
 import Settings from './pages/Settings';
 import Appearance from './pages/Appearance';
@@ -23,8 +22,6 @@ import Shortcuts from './pages/Shortcuts';
 
 function Page({ route }: { route: Route }) {
   switch (route.name) {
-    case 'search':
-      return <Search q={route.q} />;
     case 'favorites':
       return <Collection kind="favorites" />;
     case 'playlist':
@@ -44,11 +41,12 @@ function Page({ route }: { route: Route }) {
 
 function Center({ isMd }: { isMd: boolean }) {
   const route = useStore(ui, (s) => s.route);
+  const searchOpen = useStore(ui, (s) => s.searchOpen);
   const key = routeKey(route);
   const scroller = useRef<HTMLDivElement>(null);
   useEffect(() => {
     scroller.current?.scrollTo({ top: 0 });
-  }, [key]);
+  }, [key, searchOpen]);
   return (
     <main className="panel panel-center">
       {!isMd && <IconButton icon="menu" label={t('menu')} variant="glass" className="fab-menu" onClick={() => ui.set({ drawer: true })} />}

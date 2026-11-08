@@ -8,7 +8,7 @@ import { useMedia, useStore, XL } from '../lib/util';
 import { t } from '../lib/i18n';
 import { markResizing } from '../lib/motion';
 import { onFrame, useCurrentTrack } from '../state/player';
-import { go, setImmersive, ui } from '../state/ui';
+import { openSearch, setImmersive, ui } from '../state/ui';
 
 /** Which surface owns the shared "np-cover" view-transition name (must be unique). */
 export function useVtSource(): 'panel' | 'mini' | null {
@@ -60,12 +60,12 @@ export function MiniPlayer() {
               </span>
             )}
           </button>
-          <div key={track?.id ?? 'none'} className="meta-in min-w-0 flex-1">
+          <div key={track?.id ?? 'none'} className="meta-in min-w-0">
             <div className="truncate text-[15px] font-bold">{track?.title ?? t('nothingPlaying')}</div>
             {track ? (
               <div className="flex min-w-0 items-center gap-1.5">
                 <SourcePill track={track} />
-                <button type="button" className="truncate text-left text-[13px] text-on-surface-variant hover:text-primary hover:underline" onClick={() => go({ name: 'search', q: track.artist })}>
+                <button type="button" className="truncate text-left text-[13px] text-on-surface-variant hover:text-primary hover:underline" onClick={() => openSearch(track.artist)}>
                   {track.artist}
                 </button>
               </div>

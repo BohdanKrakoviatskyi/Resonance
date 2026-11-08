@@ -9,7 +9,7 @@ import { cx, useStore } from '../lib/util';
 import { t } from '../lib/i18n';
 import { getTrack, library } from '../state/library';
 import { jumpTo, player, useCurrentTrack } from '../state/player';
-import { go, setImmersive, ui } from '../state/ui';
+import { openSearch, setImmersive, ui } from '../state/ui';
 
 function QueueList() {
   const queue = useStore(player, (s) => s.queue);
@@ -69,7 +69,7 @@ export function NowPlaying({ mode }: { mode: 'inline' | 'drawer' }) {
               <h2 className="np-title headline">{track.title}</h2>
               <div className="flex items-center gap-2">
                 <SourcePill track={track} />
-                <button type="button" className="np-artist truncate" onClick={() => go({ name: 'search', q: track.artist })}>
+                <button type="button" className="np-artist truncate" onClick={() => openSearch(track.artist)}>
                   {track.artist}
                 </button>
               </div>

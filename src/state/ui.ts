@@ -3,7 +3,6 @@ import { viewTransition } from '../lib/motion';
 
 export type Route =
   | { name: 'home' }
-  | { name: 'search'; q: string }
   | { name: 'favorites' }
   | { name: 'playlist'; id: string }
   | { name: 'settings' }
@@ -17,16 +16,15 @@ export type Dialog =
   | { kind: 'delete'; id: string }
   | { kind: 'update' }
   | { kind: 'update-uninstall' }
-  | { kind: 'uninstall' };
+  | { kind: 'uninstall' }
+  | { kind: 'clear-cache' };
 export interface Snack { id: number; text: string; action?: { label: string; run: () => void } }
 
 function parse(): Route {
   const h = location.hash.replace(/^#\/?/, '');
-  const [path, qs] = h.split('?');
+  const [path] = h.split('?');
   const seg = path.split('/');
   switch (seg[0]) {
-    case 'search':
-      return { name: 'search', q: new URLSearchParams(qs ?? '').get('q') ?? '' };
     case 'favorites':
       return { name: 'favorites' };
     case 'playlist':
@@ -44,10 +42,17 @@ function parse(): Route {
   }
 }
 
+function parseSearch(): { searchOpen: boolean; searchQ: string } {
+  const h = location.hash.replace(/^#\/?/, '');
+  const [path, qs] = h.split('?');
+  if (path.split('/')[0] === 'search') {
+    return { searchOpen: true, searchQ: new URLSearchParams(qs ?? '').get('q') ?? '' };
+  }
+  return { searchOpen: false, searchQ: '' };
+}
+
 export function toHash(r: Route) {
   switch (r.name) {
-    case 'search':
-      return r.q ? `#/search?q=${encodeURIComponent(r.q)}` : '#/search';
     case 'playlist':
       return `#/playlist/${encodeURIComponent(r.id)}`;
     case 'home':
@@ -61,6 +66,8 @@ export const routeKey = (r: Route) => (r.name === 'playlist' ? 'pl:' + r.id : r.
 
 export const ui = createStore({
   route: parse(),
+  searchOpen: parseSearch().searchOpen,
+  searchQ: parseSearch().searchQ,
   sidebar: true,
   panel: true,
   tab: 'lyrics' as 'lyrics' | 'queue',
@@ -84,15 +91,28 @@ persist('lyra.ui.v1', ui, (s) => ({
   favProvider: s.favProvider,
 }));
 
-window.addEventListener('hashchange', () => ui.set({ route: parse(), drawer: false }));
+window.addEventListener('hashchange', () => {
+  const s = parseSearch();
+  ui.set({ route: parse(), searchOpen: s.searchOpen, searchQ: s.searchQ, drawer: false });
+});
 
 export function go(r: Route, replace = false) {
   const h = toHash(r);
   if (replace) {
     history.replaceState(null, '', h);
-    ui.set({ route: r });
+    ui.set({ route: r, searchOpen: false, searchQ: '', drawer: false });
   } else if (location.hash !== h) location.hash = h;
-  else ui.set({ route: r, drawer: false });
+  else ui.set({ route: r, searchOpen: false, searchQ: '', drawer: false });
+}
+
+/** Search is an element of the home page, not a separate route. */
+export function openSearch(q = '') {
+  if (location.hash !== '#/') history.replaceState(null, '', '#/');
+  ui.set({ route: { name: 'home' }, searchOpen: true, searchQ: q, drawer: false });
+}
+
+export function closeSearch() {
+  ui.set({ searchOpen: false, searchQ: '' });
 }
 
 let sid = 0;

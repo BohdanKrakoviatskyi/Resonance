@@ -9,7 +9,7 @@ import {
   reloadSoundCloudPlaylistTracks, reloadYtMusicPlaylistTracks,
 } from '../state/library';
 import { player, playQueue, shufflePlay, toggle } from '../state/player';
-import { go, openDialog, ui } from '../state/ui';
+import { go, openDialog, openSearch, ui } from '../state/ui';
 import { parseSoundCloudCollectionId } from '../lib/soundcloud-library';
 import { parseYtMusicCollectionId } from '../lib/ytmusic-library';
 import soundcloudLogo from '../assets/soundcloud.svg';
@@ -225,7 +225,7 @@ export default function Collection({ kind, id }: { kind: 'favorites' | 'playlist
           title={t('favoritesEmpty')}
           text={kind === 'favorites' ? t('favoritesEmptyText') : t('playlistEmptyText')}
           action={
-            <Button icon="search" onClick={() => go({ name: 'search', q: '' })}>
+            <Button icon="search" onClick={() => openSearch('')}>
               {t('findMusic')}
             </Button>
           }

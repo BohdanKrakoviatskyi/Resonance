@@ -198,7 +198,6 @@ export function Sidebar({ mode }: { mode: 'inline' | 'drawer' }) {
       <div ref={listRef} className="side-scroll">
         <div className="side-indicator" style={{ transform: `translateY(${ind?.y ?? 0}px)`, height: ind?.h ?? 52, opacity: ind ? 1 : 0 }} />
         <NavItem k="home" icon="home" label={t('home')} active={active === 'home'} expanded={expanded} onClick={() => nav({ name: 'home' })} />
-        <NavItem k="search" icon="search" label={t('search')} active={active === 'search'} expanded={expanded} onClick={() => nav({ name: 'search', q: '' })} />
         <NavItem k="favorites" icon="favorite" label={t('favorites')} active={active === 'favorites'} expanded={expanded} onClick={() => nav({ name: 'favorites' })} />
         <div className="side-section">
           <span className="label-up fade-x">{t('playlists')}</span>

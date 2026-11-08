@@ -2,7 +2,7 @@ import { isTauri } from '@tauri-apps/api/core';
 import { register, unregister } from '@tauri-apps/plugin-global-shortcut';
 import { currentTrack, next, prev, seekBy, toggle, toggleMute } from './player';
 import { toggleLike } from './library';
-import { go, setImmersive, ui } from './ui';
+import { openSearch, setImmersive, ui } from './ui';
 import {
   DEFAULT_SHORTCUTS,
   SHORTCUTS,
@@ -43,7 +43,7 @@ export function dispatchShortcut(id: ShortcutId) {
       break;
     case 'search':
       setImmersive(false);
-      go({ name: 'search', q: '' });
+      openSearch(ui.get().searchQ);
       break;
     case 'mute':
       toggleMute();
