@@ -298,7 +298,7 @@ export function Sidebar({ mode }: { mode: 'inline' | 'drawer' }) {
           k="settings"
           icon="settings"
           label={t('settings')}
-          active={active === 'settings' || active === 'appearance' || active === 'providers' || active === 'shortcuts'}
+          active={active === 'settings' || active === 'appearance' || active === 'providers' || active === 'shortcuts' || active === 'audio'}
           expanded={expanded}
           onClick={() => nav({ name: 'settings' })}
         />

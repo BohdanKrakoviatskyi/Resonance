@@ -222,11 +222,19 @@ func (m *ytAudioManager) cachedPath(videoID string) (string, bool) {
 }
 
 func (m *ytAudioManager) serveCached(w http.ResponseWriter, r *http.Request, path string) {
+	w.Header().Set("Access-Control-Allow-Origin", "*")
 	w.Header().Set("Cache-Control", "private, max-age=31536000, immutable")
 	http.ServeFile(w, r, path)
 }
 
 func (m *ytAudioManager) handleAudio(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+	if r.Method == http.MethodOptions {
+		w.Header().Set("Access-Control-Allow-Methods", "GET, HEAD, OPTIONS")
+		w.Header().Set("Access-Control-Allow-Headers", "Range, If-Range")
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
 	if r.URL.Query().Get("t") != m.token {
 		http.Error(w, "forbidden", http.StatusForbidden)
 		return
