@@ -17,3 +17,8 @@ commands.allow = ["start_ytmusic_login"]
 identifier = "allow-uninstall-app"
 description = "Launch the application uninstaller while preserving user data."
 commands.allow = ["uninstall_app"]
+
+[[permission]]
+identifier = "allow-finish-splash"
+description = "Show the main window and close the splash window."
+commands.allow = ["finish_splash"]

@@ -12,3 +12,5 @@ __pycache__/
 .venv/
 api/local-api
 api/local-api.exe
+*.key
+*.key.pub
