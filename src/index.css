@@ -52,6 +52,19 @@ html[data-theme=light] { color-scheme: light; }
 
 @layer base {
   html, body, #root { height: 100%; }
+  /* Полный запрет выделения текста/элементов зажатой ЛКМ во всём приложении. */
+  *, *::before, *::after {
+    -webkit-user-select: none !important;
+    user-select: none !important;
+    -webkit-touch-callout: none !important;
+    -webkit-user-drag: none !important;
+  }
+  /* Исключение только для полей, где нужен ввод/редактирование текста. */
+  input, textarea, select, [contenteditable="true"] {
+    -webkit-user-select: text !important;
+    user-select: text !important;
+    -webkit-user-drag: auto !important;
+  }
   body {
     margin: 0; overflow: hidden;
     background: var(--md-surface); color: var(--md-on-surface);
@@ -62,7 +75,7 @@ html[data-theme=light] { color-scheme: light; }
   button { cursor: pointer; font: inherit; color: inherit; background: none; border: 0; padding: 0; text-align: inherit; }
   button:disabled { cursor: default; opacity: .38; }
   input { font: inherit; color: inherit; }
-  ::selection { background: var(--md-primary); color: var(--md-on-primary); }
+  ::selection { background: transparent; color: inherit; }
   :focus-visible { outline: 2px solid var(--md-primary); outline-offset: 2px; }
   ::-webkit-scrollbar { width: 10px; height: 10px; }
   ::-webkit-scrollbar-track { background: transparent; margin-block: 6px; }

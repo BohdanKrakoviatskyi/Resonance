@@ -17,6 +17,16 @@ initializeShortcutRuntime();
 initTheme();
 initFx();
 
+// Жёсткий запрет выделения/перетаскивания мышью (страховка к CSS выше,
+// в т.ч. для случаев, когда движок игнорирует user-select).
+const preventSelectOrDrag = (e: Event) => {
+  const target = e.target as HTMLElement | null;
+  if (target?.closest('input, textarea, select, [contenteditable="true"]')) return;
+  e.preventDefault();
+};
+document.addEventListener('selectstart', preventSelectOrDrag);
+document.addEventListener('dragstart', preventSelectOrDrag);
+
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
     <App />
