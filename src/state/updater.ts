@@ -203,7 +203,11 @@ export async function startInstallNewVersion(onProgress?: (progress: number) => 
       }
     });
 
-    await relaunch();
+    try {
+      await invoke('restart_app');
+    } catch {
+      await relaunch();
+    }
   } catch (err) {
     updater.set({
       installing: false,
