@@ -13,6 +13,23 @@ import type { Track } from '../types';
 export type Repeat = 'off' | 'all' | 'one';
 export type NormalizationTarget = 'quiet' | 'normal' | 'loud';
 export type CrossfadeCurve = 'linear' | 'equalPower' | 'sCurve';
+export type EqPreset = 'flat' | 'bassBoost' | 'vocal' | 'rock' | 'electronic' | 'custom';
+
+export const EQ_BANDS = [
+  { freq: 60, label: '60Hz', type: 'lowshelf' as BiquadFilterType },
+  { freq: 230, label: '230Hz', type: 'peaking' as BiquadFilterType },
+  { freq: 910, label: '910Hz', type: 'peaking' as BiquadFilterType },
+  { freq: 3600, label: '3.6kHz', type: 'peaking' as BiquadFilterType },
+  { freq: 14000, label: '14kHz', type: 'highshelf' as BiquadFilterType },
+] as const;
+
+export const EQ_PRESETS: Record<Exclude<EqPreset, 'custom'>, readonly [number, number, number, number, number]> = {
+  flat: [0, 0, 0, 0, 0],
+  bassBoost: [6.5, 4.0, 0, -1.0, 1.5],
+  vocal: [-2.0, -1.0, 4.5, 3.5, 1.0],
+  rock: [4.5, 2.0, -1.5, 3.0, 4.5],
+  electronic: [5.5, 2.5, -1.0, 2.5, 5.0],
+};
 
 export const DEFAULT_CROSSFADE_DURATION = 4;
 const MANUAL_CROSSFADE_SECONDS = 0.8;
@@ -23,6 +40,7 @@ interface DeckDsp {
   ctx: AudioContext;
   source: MediaElementAudioSourceNode;
   preGain: GainNode;
+  eqFilters: BiquadFilterNode[];
   compressor: DynamicsCompressorNode;
   limiter: DynamicsCompressorNode;
   channelGain: GainNode;
@@ -76,6 +94,9 @@ export const player = createStore({
   crossfadeEnabled: true,
   crossfadeDuration: DEFAULT_CROSSFADE_DURATION,
   crossfadeCurve: 'equalPower' as CrossfadeCurve,
+  // 5-band Equalizer settings
+  eqPreset: 'flat' as EqPreset,
+  eqGains: [0, 0, 0, 0, 0] as number[],
   // Runtime crossfade progress state
   isCrossfading: false,
   fadeProgress: 0,
@@ -156,6 +177,15 @@ const NORMALIZATION_PRESETS: Record<NormalizationTarget, NormalizationPresetSpec
   },
 };
 
+function isEqActive(): boolean {
+  const { eqGains } = player.get();
+  return eqGains.some((g) => Math.abs(g) > 0.05);
+}
+
+function isDspNeeded(): boolean {
+  return player.get().normalizationEnabled || isEqActive();
+}
+
 function ensureDeckDsp(deck: Deck): DeckDsp | undefined {
   if (deck.dsp) return deck.dsp;
   try {
@@ -166,18 +196,26 @@ function ensureDeckDsp(deck: Deck): DeckDsp | undefined {
 
     const source = ctx.createMediaElementSource(deck.el);
     const preGain = ctx.createGain();
+    const eqFilters = EQ_BANDS.map((band) => {
+      const filter = ctx.createBiquadFilter();
+      filter.type = band.type;
+      filter.frequency.value = band.freq;
+      filter.Q.value = band.type === 'peaking' ? 1.1 : 0.707;
+      filter.gain.value = 0;
+      return filter;
+    });
     const compressor = ctx.createDynamicsCompressor();
     const limiter = ctx.createDynamicsCompressor();
     const channelGain = ctx.createGain();
 
-    // Brickwall safety limiter at -1.0 dBFS to guarantee zero clipping even when preGain > 1.0
+    // Brickwall safety limiter at -1.0 dBFS to guarantee zero clipping even when preGain or EQ boost > 1.0
     limiter.threshold.value = -1.0;
     limiter.knee.value = 0;
     limiter.ratio.value = 20;
     limiter.attack.value = 0.001;
     limiter.release.value = 0.08;
 
-    deck.dsp = { ctx, source, preGain, compressor, limiter, channelGain };
+    deck.dsp = { ctx, source, preGain, eqFilters, compressor, limiter, channelGain };
     configureDeckDspChain(deck);
     return deck.dsp;
   } catch {
@@ -185,16 +223,27 @@ function ensureDeckDsp(deck: Deck): DeckDsp | undefined {
   }
 }
 
+function applyEqGainsToDsp(dsp: DeckDsp) {
+  const { eqGains } = player.get();
+  const now = dsp.ctx.currentTime;
+  dsp.eqFilters.forEach((filter, idx) => {
+    const db = clamp(eqGains[idx] ?? 0, -12, 12);
+    filter.gain.setTargetAtTime(db, now, 0.015);
+  });
+}
+
 function configureDeckDspChain(deck: Deck) {
   const dsp = deck.dsp;
   if (!dsp) return;
   const { normalizationEnabled, normalizationTarget } = player.get();
+  const eqActive = isEqActive();
   const preset = NORMALIZATION_PRESETS[normalizationTarget] ?? NORMALIZATION_PRESETS.normal;
   const now = dsp.ctx.currentTime;
 
   try {
     dsp.source.disconnect();
     dsp.preGain.disconnect();
+    for (const f of dsp.eqFilters) f.disconnect();
     dsp.compressor.disconnect();
     dsp.limiter.disconnect();
     dsp.channelGain.disconnect();
@@ -202,17 +251,34 @@ function configureDeckDspChain(deck: Deck) {
     /* ignore */
   }
 
-  if (normalizationEnabled) {
-    dsp.preGain.gain.setTargetAtTime(preset.preGainLinear, now, 0.015);
-    dsp.compressor.threshold.setTargetAtTime(preset.compThresholdDb, now, 0.015);
-    dsp.compressor.knee.setTargetAtTime(preset.compKneeDb, now, 0.015);
-    dsp.compressor.ratio.setTargetAtTime(preset.compRatio, now, 0.015);
-    dsp.compressor.attack.setTargetAtTime(0.008, now, 0.015);
-    dsp.compressor.release.setTargetAtTime(0.22, now, 0.015);
+  applyEqGainsToDsp(dsp);
 
-    dsp.source.connect(dsp.preGain);
-    dsp.preGain.connect(dsp.compressor);
-    dsp.compressor.connect(dsp.limiter);
+  if (normalizationEnabled || eqActive) {
+    dsp.preGain.gain.setTargetAtTime(normalizationEnabled ? preset.preGainLinear : 1.0, now, 0.015);
+
+    let prev: AudioNode = dsp.source;
+    prev.connect(dsp.preGain);
+    prev = dsp.preGain;
+
+    if (eqActive) {
+      for (const f of dsp.eqFilters) {
+        prev.connect(f);
+        prev = f;
+      }
+    }
+
+    if (normalizationEnabled) {
+      dsp.compressor.threshold.setTargetAtTime(preset.compThresholdDb, now, 0.015);
+      dsp.compressor.knee.setTargetAtTime(preset.compKneeDb, now, 0.015);
+      dsp.compressor.ratio.setTargetAtTime(preset.compRatio, now, 0.015);
+      dsp.compressor.attack.setTargetAtTime(0.008, now, 0.015);
+      dsp.compressor.release.setTargetAtTime(0.22, now, 0.015);
+      prev.connect(dsp.compressor);
+      prev = dsp.compressor;
+    }
+
+    // Always route through the brickwall limiter when EQ or normalization is active so +dB EQ boosts never clip
+    prev.connect(dsp.limiter);
     dsp.limiter.connect(dsp.channelGain);
     dsp.channelGain.connect(dsp.ctx.destination);
   } else {
@@ -261,37 +327,33 @@ function syncDeckVolumes() {
   const { volume, muted, normalizationEnabled, normalizationTarget } = player.get();
   const master = clamp(volume, 0, 1);
   const preset = NORMALIZATION_PRESETS[normalizationTarget] ?? NORMALIZATION_PRESETS.normal;
-  const fallbackNormGain = normalizationEnabled ? preset.makeupLinear : 1.0;
+  const makeup = normalizationEnabled ? preset.makeupLinear : 1.0;
 
   for (const deck of decks) {
     const fade = clamp(deck.fadeMultiplier, 0, 1);
     deck.el.muted = muted;
 
     if (deck.dsp && deck.dsp.ctx.state !== 'closed') {
-      // When routed through Web Audio DSP, keep HTMLAudioElement at unity (1.0) so the compressor
-      // sees consistent input levels regardless of the master volume slider, and apply
-      // `MasterVolume * MakeupGain * CrossfadeMultiplier` at the final `channelGain` stage!
       deck.el.volume = 1;
-      const finalGain = muted ? 0 : clamp(master * preset.makeupLinear * fade, 0, 1);
+      const finalGain = muted ? 0 : clamp(master * makeup * fade, 0, 1);
       deck.dsp.channelGain.gain.setTargetAtTime(finalGain, deck.dsp.ctx.currentTime, 0.008);
     } else {
-      // Fallback path when Web Audio graph isn't active: clamp to [0, 1] to prevent distortion
-      deck.el.volume = muted ? 0 : clamp(master * fallbackNormGain * fade, 0, 1);
+      deck.el.volume = muted ? 0 : clamp(master * makeup * fade, 0, 1);
     }
   }
 }
 
 function refreshAllDspChains() {
-  const { normalizationEnabled } = player.get();
+  const needDsp = isDspNeeded();
   for (const deck of decks) {
-    if (normalizationEnabled && !deck.dsp) {
+    if (needDsp && !deck.dsp) {
       ensureDeckDsp(deck);
     }
     if (deck.dsp) {
       configureDeckDspChain(deck);
     }
   }
-  if (normalizationEnabled) {
+  if (needDsp) {
     resumeAudioContextIfNeeded();
   }
   syncDeckVolumes();
@@ -522,6 +584,24 @@ export function setCrossfadeCurve(curve: CrossfadeCurve) {
   }
 }
 
+export function setEqPreset(preset: EqPreset) {
+  if (preset === 'custom') {
+    player.set({ eqPreset: 'custom' });
+    return;
+  }
+  const gains = [...EQ_PRESETS[preset]];
+  player.set({ eqPreset: preset, eqGains: gains });
+  refreshAllDspChains();
+}
+
+export function setEqBandGain(bandIndex: number, db: number) {
+  const cur = player.get().eqGains.slice();
+  while (cur.length < EQ_BANDS.length) cur.push(0);
+  cur[bandIndex] = Math.round(clamp(db, -12, 12) * 2) / 2;
+  player.set({ eqPreset: 'custom', eqGains: cur });
+  refreshAllDspChains();
+}
+
 export const getCrossfadeDuration = (): number => {
   const s = player.get();
   return s.crossfadeEnabled ? s.crossfadeDuration : 0;
@@ -719,7 +799,7 @@ async function resolvePlayableStream(tr: Track): Promise<{ url: string; hls: boo
 }
 
 async function attachStreamToDeck(deck: Deck, stream: { url: string; hls: boolean }) {
-  if (player.get().normalizationEnabled) {
+  if (isDspNeeded()) {
     ensureDeckDsp(deck);
     resumeAudioContextIfNeeded();
   }
@@ -1516,6 +1596,8 @@ export function initPlayer() {
     crossfadeEnabled: s.crossfadeEnabled,
     crossfadeDuration: s.crossfadeDuration,
     crossfadeCurve: s.crossfadeCurve,
+    eqPreset: s.eqPreset,
+    eqGains: s.eqGains,
   }));
   const s = player.get();
   const curId = s.queue[s.index];

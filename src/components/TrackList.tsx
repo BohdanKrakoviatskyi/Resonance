@@ -1,23 +1,18 @@
-import { memo, useState } from 'react';
+import { memo, useEffect, useState } from 'react';
 import { Icon } from './Icon';
 import { IconButton, Menu, MenuItem, type Vars } from './ui';
 import { Cover, Eq, PlaylistCover } from './Cover';
 import { cx, fmtTime, useStore } from '../lib/util';
 import { t } from '../lib/i18n';
-import { getTrack, library, toggleDislike, toggleLike, togglePlaylistTrack } from '../state/library';
+import { getTrack, isDisliked, isLiked, library, toggleDislike, toggleLike, togglePlaylistTrack } from '../state/library';
 import { addToQueue, player, playNext, playQueue, toggle } from '../state/player';
-import { go, openDialog, openSearch } from '../state/ui';
+import { openDialog, openSearch } from '../state/ui';
 import type { Track } from '../types';
 import soundcloudLogo from '../assets/soundcloud.svg';
 import youtubeMusicLogo from '../assets/youtube-music.svg';
 
 export function LikeButton({ id, size = 'md', variant, className }: { id: string; size?: 'sm' | 'md' | 'lg'; variant?: 'tonal'; className?: string }) {
-  const liked = useStore(
-    library,
-    (s) =>
-      !s.disliked.includes(id) &&
-      (s.liked.includes(id) || s.soundcloudLiked.some((t) => t.id === id) || s.ytmusicLiked.some((t) => t.id === id)),
-  );
+  const liked = useStore(library, () => isLiked(id));
   const [burst, setBurst] = useState(0);
   const label = t(liked ? 'unlike' : 'like');
   return (
@@ -49,7 +44,7 @@ export function LikeButton({ id, size = 'md', variant, className }: { id: string
 }
 
 export function DislikeButton({ id, variant, size }: { id: string; variant?: 'tonal'; size?: 'lg' }) {
-  const on = useStore(library, (s) => s.disliked.includes(id));
+  const on = useStore(library, () => isDisliked(id));
   return <IconButton icon="thumb_down" label={t(on ? 'undislike' : 'dislike')} variant={variant} size={size} selected={on} toggle={!variant} onClick={() => toggleDislike(id)} />;
 }
 
@@ -119,7 +114,7 @@ export function SourcePill({ track }: { track: Track }) {
 type RowProps = { id: string; index: number; list: string[]; isCurrent: boolean; isPlaying: boolean; playlistId?: string };
 
 export const TrackRow = memo(function TrackRow({ id, index, list, isCurrent, isPlaying, playlistId }: RowProps) {
-  const disliked = useStore(library, (s) => s.disliked.includes(id));
+  const disliked = useStore(library, () => isDisliked(id));
   const [anchor, setAnchor] = useState<HTMLElement | null>(null);
   const tr = getTrack(id);
   if (!tr) return null;
@@ -130,7 +125,7 @@ export const TrackRow = memo(function TrackRow({ id, index, list, isCurrent, isP
       data-ripple
       data-current={isCurrent}
       data-disliked={disliked}
-      style={{ '--i': index } as Vars}
+      style={{ '--i': index, contentVisibility: index > 24 ? 'auto' : undefined, containIntrinsicSize: index > 24 ? 'auto 62px' : undefined } as Vars}
       onClick={() => (isCurrent ? toggle() : playQueue(list, index))}
     >
       <div className="row-idx">
@@ -165,12 +160,31 @@ export const TrackRow = memo(function TrackRow({ id, index, list, isCurrent, isP
   );
 });
 
+const INITIAL_BATCH = 48;
+const BATCH_STEP = 80;
+
 export function TrackList({ ids, playlistId }: { ids: string[]; playlistId?: string }) {
   const cur = useStore(player, (s) => s.queue[s.index] ?? null);
   const playing = useStore(player, (s) => s.playing);
+  const [visibleCount, setVisibleCount] = useState(() => Math.min(ids.length, INITIAL_BATCH));
+
+  useEffect(() => {
+    setVisibleCount(Math.min(ids.length, INITIAL_BATCH));
+  }, [ids]);
+
+  useEffect(() => {
+    if (visibleCount >= ids.length) return;
+    const raf = requestAnimationFrame(() => {
+      setVisibleCount((c) => Math.min(ids.length, c + BATCH_STEP));
+    });
+    return () => cancelAnimationFrame(raf);
+  }, [visibleCount, ids.length]);
+
+  const slice = visibleCount < ids.length ? ids.slice(0, visibleCount) : ids;
+
   return (
     <div role="list" className="flex flex-col gap-0.5">
-      {ids.map((id, i) => (
+      {slice.map((id, i) => (
         <TrackRow key={id} id={id} index={i} list={ids} isCurrent={id === cur} isPlaying={id === cur && playing} playlistId={playlistId} />
       ))}
     </div>

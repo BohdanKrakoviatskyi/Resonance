@@ -5,7 +5,7 @@ import { TrackList } from '../components/TrackList';
 import { useStore } from '../lib/util';
 import { durLabel, t, tracksLabel } from '../lib/i18n';
 import {
-  getTrack, library, loadSoundCloudPlaylistTracks, loadYtMusicLibrary, loadYtMusicPlaylistArtwork, loadYtMusicPlaylistTracks,
+  getFavoriteIds, getTrack, library, loadSoundCloudPlaylistTracks, loadYtMusicLibrary, loadYtMusicPlaylistArtwork, loadYtMusicPlaylistTracks,
   reloadSoundCloudPlaylistTracks, reloadYtMusicPlaylistTracks,
 } from '../state/library';
 import { player, playQueue, shufflePlay, toggle } from '../state/player';
@@ -97,17 +97,7 @@ export default function Collection({ kind, id }: { kind: 'favorites' | 'playlist
   const favProvider = useStore(ui, (s) => s.favProvider);
   const ids = useMemo(() => {
     if (kind === 'favorites') {
-      const seen = new Set<string>();
-      const out: string[] = [];
-      const providerLiked = favProvider === 'soundcloud' ? soundcloudLiked : ytmusicLiked;
-      for (const trackId of [...liked, ...providerLiked.map((t) => t.id)]) {
-        const track = getTrack(trackId);
-        if (!seen.has(trackId) && !disliked.includes(trackId) && track && track.source === favProvider) {
-          seen.add(trackId);
-          out.push(trackId);
-        }
-      }
-      return out;
+      return getFavoriteIds(favProvider);
     }
     const sourceIds = pl?.ids ?? [];
     return sourceIds.filter((trackId) => !!getTrack(trackId));
