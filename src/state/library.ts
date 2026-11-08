@@ -313,14 +313,31 @@ export function ensureCached(id: string) {
 }
 
 let cachedLibRef: ReturnType<typeof library.get> | null = null;
+let cachedLikedRef: string[] | null = null;
+let cachedDislikedRef: string[] | null = null;
+let cachedScLikedRef: Track[] | null = null;
+let cachedYtLikedRef: Track[] | null = null;
 let likedIdsSet = new Set<string>();
 let dislikedIdsSet = new Set<string>();
 let favSoundCloudIds: string[] = [];
 let favYouTubeIds: string[] = [];
 
 function ensureLibraryIndexes(s = library.get()) {
-  if (cachedLibRef === s) return;
+  if (
+    cachedLibRef === s ||
+    (cachedLikedRef === s.liked &&
+      cachedDislikedRef === s.disliked &&
+      cachedScLikedRef === s.soundcloudLiked &&
+      cachedYtLikedRef === s.ytmusicLiked)
+  ) {
+    cachedLibRef = s;
+    return;
+  }
   cachedLibRef = s;
+  cachedLikedRef = s.liked;
+  cachedDislikedRef = s.disliked;
+  cachedScLikedRef = s.soundcloudLiked;
+  cachedYtLikedRef = s.ytmusicLiked;
   dislikedIdsSet = new Set(s.disliked);
   likedIdsSet = new Set<string>();
   for (const id of s.liked) {

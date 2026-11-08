@@ -31,7 +31,6 @@ export default function Collection({ kind, id }: { kind: 'favorites' | 'playlist
   const ytmusicArtCache = useStore(library, (s) => s.ytmusicPlaylistArt);
   const ytmusicLibraryLoading = useStore(library, (s) => s.ytmusicLibraryLoading);
   const ytmusicLibraryError = useStore(library, (s) => s.ytmusicLibraryError);
-  const cache = useStore(library, (s) => s.cache);
   const soundcloudLibraryLoading = useStore(library, (s) => s.soundcloudLibraryLoading);
   const soundcloudLibraryError = useStore(library, (s) => s.soundcloudLibraryError);
   const [remoteLoading, setRemoteLoading] = useState(false);
@@ -101,7 +100,7 @@ export default function Collection({ kind, id }: { kind: 'favorites' | 'playlist
     }
     const sourceIds = pl?.ids ?? [];
     return sourceIds.filter((trackId) => !!getTrack(trackId));
-  }, [kind, liked, soundcloudLiked, ytmusicLiked, disliked, favProvider, pl, cache]);
+  }, [kind, liked, soundcloudLiked, ytmusicLiked, disliked, favProvider, pl]);
   const playingHere = useStore(player, (s) => s.playing && ids.includes(s.queue[s.index]));
 
   const virtualCollection = ytCollection?.kind === 'liked';

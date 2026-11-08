@@ -1,4 +1,4 @@
-import { memo, useEffect, useState } from 'react';
+import { memo, useEffect, useRef, useState } from 'react';
 import { Icon } from './Icon';
 import { IconButton, Menu, MenuItem, type Vars } from './ui';
 import { Cover, Eq, PlaylistCover } from './Cover';
@@ -111,9 +111,16 @@ export function SourcePill({ track }: { track: Track }) {
   return <img className="provider-logo" src={logo} alt={label} title={label} />;
 }
 
-type RowProps = { id: string; index: number; list: string[]; isCurrent: boolean; isPlaying: boolean; playlistId?: string };
+type RowProps = {
+  id: string;
+  index: number;
+  isCurrent: boolean;
+  isPlaying: boolean;
+  playlistId?: string;
+  onPlayIndex: (index: number) => void;
+};
 
-export const TrackRow = memo(function TrackRow({ id, index, list, isCurrent, isPlaying, playlistId }: RowProps) {
+export const TrackRow = memo(function TrackRow({ id, index, isCurrent, isPlaying, playlistId, onPlayIndex }: RowProps) {
   const disliked = useStore(library, () => isDisliked(id));
   const [anchor, setAnchor] = useState<HTMLElement | null>(null);
   const tr = getTrack(id);
@@ -126,7 +133,12 @@ export const TrackRow = memo(function TrackRow({ id, index, list, isCurrent, isP
       data-current={isCurrent}
       data-disliked={disliked}
       style={{ '--i': index, contentVisibility: index > 24 ? 'auto' : undefined, containIntrinsicSize: index > 24 ? 'auto 62px' : undefined } as Vars}
-      onClick={() => (isCurrent ? toggle() : playQueue(list, index))}
+      onClick={(e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        if (isCurrent) toggle();
+        else onPlayIndex(index);
+      }}
     >
       <div className="row-idx">
         {isCurrent ? <Eq on={isPlaying} /> : <span className="row-num">{index + 1}</span>}
@@ -167,10 +179,21 @@ export function TrackList({ ids, playlistId }: { ids: string[]; playlistId?: str
   const cur = useStore(player, (s) => s.queue[s.index] ?? null);
   const playing = useStore(player, (s) => s.playing);
   const [visibleCount, setVisibleCount] = useState(() => Math.min(ids.length, INITIAL_BATCH));
+  const idsRef = useRef(ids);
+  idsRef.current = ids;
+  const listIdentityRef = useRef('');
 
   useEffect(() => {
-    setVisibleCount(Math.min(ids.length, INITIAL_BATCH));
-  }, [ids]);
+    // Only reset progressive batching when the actual list identity (provider / playlist / first items) changes,
+    // NEVER when a track starts playing or when minor metadata updates occur.
+    const nextIdentity = `${playlistId ?? 'fav'}:${ids[0] ?? ''}:${ids.length}`;
+    if (listIdentityRef.current !== nextIdentity) {
+      listIdentityRef.current = nextIdentity;
+      setVisibleCount(Math.min(ids.length, INITIAL_BATCH));
+    } else if (visibleCount < ids.length) {
+      setVisibleCount((c) => Math.max(c, Math.min(ids.length, INITIAL_BATCH)));
+    }
+  }, [ids, playlistId, visibleCount]);
 
   useEffect(() => {
     if (visibleCount >= ids.length) return;
@@ -180,12 +203,16 @@ export function TrackList({ ids, playlistId }: { ids: string[]; playlistId?: str
     return () => cancelAnimationFrame(raf);
   }, [visibleCount, ids.length]);
 
+  const onPlayIndex = useRef((idx: number) => {
+    playQueue(idsRef.current, idx);
+  }).current;
+
   const slice = visibleCount < ids.length ? ids.slice(0, visibleCount) : ids;
 
   return (
     <div role="list" className="flex flex-col gap-0.5">
       {slice.map((id, i) => (
-        <TrackRow key={id} id={id} index={i} list={ids} isCurrent={id === cur} isPlaying={id === cur && playing} playlistId={playlistId} />
+        <TrackRow key={id} id={id} index={i} isCurrent={id === cur} isPlaying={id === cur && playing} playlistId={playlistId} onPlayIndex={onPlayIndex} />
       ))}
     </div>
   );
