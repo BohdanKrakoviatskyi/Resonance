@@ -312,14 +312,65 @@ export function ensureCached(id: string) {
   if (tr) library.set((s) => ({ cache: { ...s.cache, [id]: tr } }));
 }
 
+let cachedLibRef: ReturnType<typeof library.get> | null = null;
+let likedIdsSet = new Set<string>();
+let dislikedIdsSet = new Set<string>();
+let favSoundCloudIds: string[] = [];
+let favYouTubeIds: string[] = [];
+
+function ensureLibraryIndexes(s = library.get()) {
+  if (cachedLibRef === s) return;
+  cachedLibRef = s;
+  dislikedIdsSet = new Set(s.disliked);
+  likedIdsSet = new Set<string>();
+  for (const id of s.liked) {
+    if (!dislikedIdsSet.has(id)) likedIdsSet.add(id);
+  }
+  for (const tr of s.soundcloudLiked) {
+    if (!dislikedIdsSet.has(tr.id)) likedIdsSet.add(tr.id);
+  }
+  for (const tr of s.ytmusicLiked) {
+    if (!dislikedIdsSet.has(tr.id)) likedIdsSet.add(tr.id);
+  }
+
+  const buildFavList = (provider: 'soundcloud' | 'youtube', providerTracks: Track[]) => {
+    const seen = new Set<string>();
+    const out: string[] = [];
+    for (const id of s.liked) {
+      if (seen.has(id) || dislikedIdsSet.has(id)) continue;
+      const tr = s.cache[id] ?? volatile.get(id);
+      if (tr && tr.source === provider) {
+        seen.add(id);
+        out.push(id);
+      }
+    }
+    for (const tr of providerTracks) {
+      const id = tr.id;
+      if (seen.has(id) || dislikedIdsSet.has(id)) continue;
+      seen.add(id);
+      out.push(id);
+    }
+    return out;
+  };
+
+  favSoundCloudIds = buildFavList('soundcloud', s.soundcloudLiked);
+  favYouTubeIds = buildFavList('youtube', s.ytmusicLiked);
+}
+
 export const isLiked = (id: string) => {
-  const s = library.get();
-  if (s.disliked.includes(id)) return false;
-  if (s.liked.includes(id)) return true;
-  return s.soundcloudLiked.some((t) => t.id === id) || s.ytmusicLiked.some((t) => t.id === id);
+  ensureLibraryIndexes();
+  return likedIdsSet.has(id);
 };
 
-export const isDisliked = (id: string) => library.get().disliked.includes(id);
+export const isDisliked = (id: string) => {
+  ensureLibraryIndexes();
+  return dislikedIdsSet.has(id);
+};
+
+export const getFavoriteIds = (provider: 'soundcloud' | 'youtube'): string[] => {
+  ensureLibraryIndexes();
+  return provider === 'soundcloud' ? favSoundCloudIds : favYouTubeIds;
+};
 
 export function toggleLike(id: string): boolean {
   ensureCached(id);
