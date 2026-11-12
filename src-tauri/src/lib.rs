@@ -439,7 +439,7 @@ fn purge_retired_spotify_storage(app: &AppHandle) {
 }
 
 #[tauri::command]
-pub async fn finish_splash(app: AppHandle) -> Result<(), String> {
+async fn finish_splash(app: AppHandle) -> Result<(), String> {
     if let Some(main_window) = app.get_webview_window("main") {
         let _ = main_window.show();
         let _ = main_window.set_focus();
@@ -451,7 +451,7 @@ pub async fn finish_splash(app: AppHandle) -> Result<(), String> {
 }
 
 #[tauri::command]
-pub async fn restart_app(app: AppHandle) -> Result<(), String> {
+async fn restart_app(app: AppHandle) -> Result<(), String> {
     #[cfg(target_os = "macos")]
     {
         if let Ok(exe) = std::env::current_exe() {
