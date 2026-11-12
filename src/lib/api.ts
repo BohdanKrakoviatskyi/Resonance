@@ -1,14 +1,17 @@
 import type { LyricLine, Track } from '../types';
 import { findYouTubeFallbackCandidate, youtubeFallbackQueries } from './youtube-match';
 import {
+  detectTempoVariant,
   findLyricsCandidate,
   lyricsSearchQueries,
   resolvePersistentLyricsCacheEntry,
+  scaleSyncedLrcTimestamps,
   toSeconds,
   writePersistentLyricsCacheEntry,
   type LyricsCandidate,
   type PersistentLyricsCacheEntry,
 } from './lyrics-match';
+import { ui } from '../state/ui';
 import { rpc } from './sidecar';
 
 import {
@@ -423,6 +426,8 @@ async function fetchLyrics(t: Track): Promise<LyricsData | null> {
   const durationSec = toSeconds(t.fullDuration ?? t.duration);
   const tolerance = t.source === 'youtube' ? 8 : 4;
   const queries = lyricsSearchQueries(t);
+  const scaleSlowedLyrics = Boolean(ui.get().scaleSlowedLyrics);
+  const matchOpts = { scaleSlowedLyrics, rawTitle: t.title, rawArtist: t.artist };
   let rec: LyricsCandidate | null = null;
   let attempts = 0;
   let networkFailures = 0;
@@ -440,7 +445,7 @@ async function fetchLyrics(t: Track): Promise<LyricsData | null> {
         });
         const exactRes = await fetchLrclibJson(`https://lrclib.net/api/get?${getParams}`);
         if (exactRes.data && !Array.isArray(exactRes.data)) {
-          rec = findLyricsCandidate([exactRes.data as LyricsCandidate], query, durationSec, tolerance);
+          rec = findLyricsCandidate([exactRes.data as LyricsCandidate], query, durationSec, tolerance, matchOpts);
           if (rec) break;
         }
       } catch (err) {
@@ -454,7 +459,13 @@ async function fetchLyrics(t: Track): Promise<LyricsData | null> {
     try {
       const searchParams = new URLSearchParams({ track_name: query.title, artist_name: query.artist });
       const searchRes = await fetchLrclibJson(`https://lrclib.net/api/search?${searchParams}`);
-      rec = findLyricsCandidate(Array.isArray(searchRes.data) ? (searchRes.data as LyricsCandidate[]) : [], query, durationSec, tolerance);
+      rec = findLyricsCandidate(
+        Array.isArray(searchRes.data) ? (searchRes.data as LyricsCandidate[]) : [],
+        query,
+        durationSec,
+        tolerance,
+        matchOpts,
+      );
       if (rec) break;
     } catch (err) {
       networkFailures++;
@@ -466,5 +477,17 @@ async function fetchLyrics(t: Track): Promise<LyricsData | null> {
     throw lastError ?? new Error('LRCLIB network request failed');
   }
   if (!rec) return null;
+  if (
+    scaleSlowedLyrics &&
+    rec.syncedLyrics &&
+    durationSec > 0 &&
+    rec.duration &&
+    detectTempoVariant(t.title, t.artist)
+  ) {
+    rec = {
+      ...rec,
+      syncedLyrics: scaleSyncedLrcTimestamps(rec.syncedLyrics, durationSec, rec.duration, true),
+    };
+  }
   return lyricsDataFromRecord(rec);
 }

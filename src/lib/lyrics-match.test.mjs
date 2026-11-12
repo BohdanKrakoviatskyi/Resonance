@@ -2,10 +2,12 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
   LYRICS_NEGATIVE_CACHE_TTL_MS,
+  detectTempoVariant,
   findLyricsCandidate,
   lyricsSearchQueries,
   matchesGeniusCandidate,
   resolvePersistentLyricsCacheEntry,
+  scaleSyncedLrcTimestamps,
   toSeconds,
   writePersistentLyricsCacheEntry,
 } from './lyrics-match.ts';
@@ -214,4 +216,58 @@ test('caches negative not_found results for 7 days, ignores network errors, and 
     resolvePersistentLyricsCacheEntry(cache, 'sc:2244975557', t0 + LYRICS_NEGATIVE_CACHE_TTL_MS + 1),
     { hit: false, data: null },
   );
+});
+
+test('slowed/sped up scaling: detects tempo variant correctly', () => {
+  assert.equal(detectTempoVariant('SPINE (slowed + reverb)', 'WesGhost'), 'slowed');
+  assert.equal(detectTempoVariant('UH OH! - Sub Urban - (sped up/pitched)', 'shirospiral'), 'sped_up');
+  assert.equal(detectTempoVariant('Smells Like Teen Spirit', 'Nirvana'), null);
+});
+
+test('slowed/sped up scaling: keeps original timestamps when scaleSlowedLyrics is false', () => {
+  const lrc = '[00:10.00] First line\n[01:00.00] Second line';
+  assert.equal(scaleSyncedLrcTimestamps(lrc, 205.4, 181.0, false), lrc);
+});
+
+test('slowed/sped up scaling: scales LRC timestamps proportionally for slowed track (WesGhost - SPINE)', () => {
+  const lrc = '[00:10.00] First line\n[01:30.00] Chorus';
+  // ratio = 205.4 / 181.0 = 1.1348066...
+  // 10s * ratio = 11.35s -> [00:11.35], 90s * ratio = 102.13s -> [01:42.13]
+  const scaled = scaleSyncedLrcTimestamps(lrc, 205.4, 181.0, true);
+  assert.equal(scaled, '[00:11.35] First line\n[01:42.13] Chorus');
+});
+
+test('slowed/sped up scaling: scales LRC timestamps proportionally for sped up track', () => {
+  const lrc = '[00:20.00] Fast verse\n[02:00.00] End';
+  // ratio = 96 / 120 = 0.80 -> 20s -> 16.00s, 120s -> 96.00s (01:36.00)
+  const scaled = scaleSyncedLrcTimestamps(lrc, 96, 120, true);
+  assert.equal(scaled, '[00:16.00] Fast verse\n[01:36.00] End');
+});
+
+test('slowed/sped up scaling: matches slowed candidate only when scaleSlowedLyrics flag is enabled', () => {
+  const candidates = [
+    {
+      trackName: 'SPINE',
+      artistName: 'WesGhost',
+      duration: 181.0,
+      syncedLyrics: '[00:10.00] spine lyrics',
+    },
+  ];
+  // With scaleSlowedLyrics = false (default), delta = 24.4s > 10s -> rejected
+  assert.equal(
+    findLyricsCandidate(candidates, { title: 'SPINE', artist: 'WesGhost' }, 205.4, 4, {
+      scaleSlowedLyrics: false,
+      rawTitle: 'SPINE (slowed + reverb)',
+      rawArtist: 'WesGhost',
+    }),
+    null,
+  );
+  // With scaleSlowedLyrics = true, ratio = 1.135 is within slowed bounds -> matched
+  const matched = findLyricsCandidate(candidates, { title: 'SPINE', artist: 'WesGhost' }, 205.4, 4, {
+    scaleSlowedLyrics: true,
+    rawTitle: 'SPINE (slowed + reverb)',
+    rawArtist: 'WesGhost',
+  });
+  assert.ok(matched);
+  assert.equal(matched.trackName, 'SPINE');
 });

@@ -174,16 +174,64 @@ export type LyricsCandidate = {
   instrumental?: boolean;
 };
 
+export type TempoVariant = 'slowed' | 'sped_up' | null;
+
+export function detectTempoVariant(title: string, artist = ''): TempoVariant {
+  const combined = `${title} ${artist}`;
+  if (/\b(?:sped\s*up|speed\s*up|nightcore|fast\s*version)\b/i.test(combined)) {
+    return 'sped_up';
+  }
+  if (/\b(?:slowed|slow\s*version|reverb\s*&\s*slowed|slowed\s*[+&]\s*reverb)\b/i.test(combined)) {
+    return 'slowed';
+  }
+  return null;
+}
+
+export function scaleSyncedLrcTimestamps(
+  lrc: string,
+  trackDuration: unknown,
+  originalDuration: unknown,
+  enabled = true,
+): string {
+  if (!enabled || !lrc) return lrc;
+  const trackSec = toSeconds(trackDuration);
+  const origSec = toSeconds(originalDuration);
+  if (trackSec <= 0 || origSec <= 0) return lrc;
+  const ratio = trackSec / origSec;
+  if (!Number.isFinite(ratio) || ratio < 0.5 || ratio > 1.75 || Math.abs(ratio - 1) < 0.01) {
+    return lrc;
+  }
+  return lrc.replace(/\[(\d+):(\d+(?:\.\d+)?)\]/g, (_match, mmRaw: string, ssRaw: string) => {
+    const totalSec = Math.max(0, (Number(mmRaw) * 60 + Number(ssRaw)) * ratio);
+    const mins = Math.floor(totalSec / 60);
+    const secs = totalSec - mins * 60;
+    const mm = String(mins).padStart(2, '0');
+    const ss = secs.toFixed(2).padStart(5, '0');
+    return `[${mm}:${ss}]`;
+  });
+}
+
+export type LyricsMatchOptions = {
+  scaleSlowedLyrics?: boolean;
+  rawTitle?: string;
+  rawArtist?: string;
+};
+
 export function findLyricsCandidate<T extends LyricsCandidate>(
   candidates: T[],
   query: { title: string; artist: string },
   rawDuration: number,
   tolerance = 4,
+  options?: LyricsMatchOptions,
 ): T | null {
   const wantSec = toSeconds(rawDuration);
   const queryTitleNorm = normalizeLyricsText(stripTrackNoise(query.title));
   if (!queryTitleNorm) return null;
   const wordCount = titleWordCount(query.title);
+  const tempoVariant =
+    options?.scaleSlowedLyrics
+      ? detectTempoVariant(options.rawTitle ?? query.title, options.rawArtist ?? query.artist)
+      : null;
 
   const scored: { candidate: T; score: number }[] = [];
 
@@ -202,9 +250,18 @@ export function findLyricsCandidate<T extends LyricsCandidate>(
     const highConfidenceMatch = artistOk && (exactTitle || titleSim >= 0.85);
     const effectiveTolerance = highConfidenceMatch ? Math.max(tolerance, 10) : tolerance;
     const deltaSec = wantSec > 0 && candSec > 0 ? Math.abs(wantSec - candSec) : 0;
+    const ratio = wantSec > 0 && candSec > 0 ? wantSec / candSec : 1;
+    const tempoRatioOk =
+      Boolean(tempoVariant) &&
+      highConfidenceMatch &&
+      wantSec > 0 &&
+      candSec > 0 &&
+      (tempoVariant === 'slowed'
+        ? ratio >= 0.95 && ratio <= 1.65
+        : ratio >= 0.6 && ratio <= 1.15);
 
     if (wantSec > 0 && candSec > 0) {
-      if (deltaSec > effectiveTolerance) continue;
+      if (deltaSec > effectiveTolerance && !tempoRatioOk) continue;
     }
 
     // Strict anti-false-positive rule:
@@ -217,7 +274,14 @@ export function findLyricsCandidate<T extends LyricsCandidate>(
       }
     }
 
-    const durBonus = wantSec > 0 && candSec > 0 ? Math.max(0, 1 - deltaSec / Math.max(effectiveTolerance, 1)) : 0.5;
+    const durBonus =
+      wantSec > 0 && candSec > 0
+        ? deltaSec <= effectiveTolerance
+          ? Math.max(0, 1 - deltaSec / Math.max(effectiveTolerance, 1))
+          : tempoRatioOk
+            ? 0.65
+            : 0
+        : 0.5;
     const syncBonus = candidate.syncedLyrics ? 0.15 : 0;
     const score = (exactTitle ? 1 : titleSim) * 0.55 + (artistOk ? 0.35 : 0) + durBonus * 0.1 + syncBonus;
     scored.push({ candidate, score });
