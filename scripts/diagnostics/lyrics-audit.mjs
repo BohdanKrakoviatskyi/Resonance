@@ -399,7 +399,8 @@ async function runAudit() {
 
     // 2. Run Current Updated Algorithm (imported from src/lib/lyrics-match.ts)
     const curQueries = lyricsSearchQueries(t);
-    let curMatch = null;
+    let curMatchOff = null;
+    let curMatchOn = null;
     for (const q of curQueries) {
       const getParams = new URLSearchParams({
         track_name: q.title,
@@ -416,8 +417,21 @@ async function runAudit() {
       if (Array.isArray(searchRes.data)) {
         candidates.push(...searchRes.data);
       }
-      curMatch = findLyricsCandidate(candidates, q, durSec, bTolerance);
-      if (curMatch) break;
+      if (!curMatchOff) {
+        curMatchOff = findLyricsCandidate(candidates, q, durSec, bTolerance, {
+          scaleSlowedLyrics: false,
+          rawTitle: t.title,
+          rawArtist: t.artist,
+        });
+      }
+      if (!curMatchOn) {
+        curMatchOn = findLyricsCandidate(candidates, q, durSec, bTolerance, {
+          scaleSlowedLyrics: true,
+          rawTitle: t.title,
+          rawArtist: t.artist,
+        });
+      }
+      if (curMatchOff && curMatchOn) break;
     }
 
     // 3. Probe LRCLIB with deep-cleaned queries to see if lyrics exist in LRCLIB at all
@@ -483,8 +497,10 @@ async function runAudit() {
       baselineType: bMatch ? (bMatch.syncedLyrics ? 'synced' : 'plain') : 'none',
       baselineScore: bMatch ? Number(bScore.toFixed(2)) : 0,
       baselineReason: bMatch ? `OK (${bMatch.artistName} - ${bMatch.trackName})` : bReason,
-      currentFound: Boolean(curMatch),
-      currentType: curMatch ? (curMatch.syncedLyrics ? 'synced' : 'plain') : 'none',
+      currentFound: Boolean(curMatchOff),
+      currentType: curMatchOff ? (curMatchOff.syncedLyrics ? 'synced' : 'plain') : 'none',
+      currentScaledFound: Boolean(curMatchOn),
+      currentScaledType: curMatchOn ? (curMatchOn.syncedLyrics ? 'synced' : 'plain') : 'none',
       lrclibExists: Boolean(bestLrc),
       lrclibType: bestLrc ? (bestLrc.syncedLyrics ? 'synced' : 'plain') : 'none',
       lrclibTrack: bestLrc ? `${bestLrc.artistName} — ${bestLrc.trackName}` : '—',
