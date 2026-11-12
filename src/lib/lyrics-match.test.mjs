@@ -154,3 +154,34 @@ test('normalizes queries across 18 real owner tracks from YouTube Music and Soun
     );
   }
 });
+
+test('extends duration tolerance up to ±10s when both artist and title match with high confidence', () => {
+  const candidates = [
+    {
+      trackName: 'Монополия',
+      artistName: 'Монеточка',
+      duration: 218.0,
+      syncedLyrics: '[00:10.00] synced version',
+      plainLyrics: 'synced version',
+    },
+    {
+      trackName: 'Монополия',
+      artistName: 'Монеточка',
+      duration: 214.0,
+      plainLyrics: 'plain version only',
+    },
+  ];
+  // Track duration on SoundCloud is 213.4s (delta = 4.6s > 4s base tolerance, but within ±10s for high-confidence match)
+  const best = findLyricsCandidate(candidates, { title: 'Монополия', artist: 'Монеточка' }, 213.4, 4);
+  assert.ok(best);
+  assert.equal(best.syncedLyrics, '[00:10.00] synced version');
+
+  // Rejects candidate when delta > 10s even if artist and title match (e.g. 10-minute loop vs 4-minute original)
+  const tooFar = findLyricsCandidate(
+    [{ trackName: 'Pain', artistName: 'Three Days Grace', duration: 251.7, syncedLyrics: '[00:05.00] pain' }],
+    { title: 'Pain', artist: 'Three Days Grace' },
+    604.7,
+    4,
+  );
+  assert.equal(tooFar, null);
+});

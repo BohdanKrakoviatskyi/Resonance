@@ -16,10 +16,37 @@ import {
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Json = Record<string, any>;
 
-async function getJson(url: string): Promise<Json> {
-  const response = await fetch(url);
-  if (!response.ok) throw new Error(String(response.status));
-  return response.json();
+export const LRCLIB_USER_AGENT = 'Resonance/0.4.16 (https://github.com/BohdanKrakoviatskyi/Resonance)';
+const LRCLIB_TIMEOUT_MS = 5_000;
+
+async function fetchLrclibJson(url: string, externalSignal?: AbortSignal): Promise<{ ok: boolean; status: number; data: Json | null }> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), LRCLIB_TIMEOUT_MS);
+  const onAbort = () => controller.abort();
+  if (externalSignal) {
+    if (externalSignal.aborted) controller.abort();
+    else externalSignal.addEventListener('abort', onAbort, { once: true });
+  }
+  try {
+    const response = await fetch(url, {
+      signal: controller.signal,
+      headers: {
+        Accept: 'application/json',
+        'User-Agent': LRCLIB_USER_AGENT,
+      },
+    });
+    if (response.status === 404) {
+      return { ok: true, status: 404, data: null };
+    }
+    if (!response.ok) {
+      throw new Error(`LRCLIB HTTP ${response.status}`);
+    }
+    const data = (await response.json()) as Json;
+    return { ok: true, status: response.status, data };
+  } finally {
+    clearTimeout(timer);
+    if (externalSignal) externalSignal.removeEventListener('abort', onAbort);
+  }
 }
 
 type SoundCloudTrackLike = Pick<SoundCloudTrackCard, 'id' | 'trackUrn' | 'title' | 'permalinkUrl' | 'artworkUrl' | 'duration' | 'user'> | Pick<SoundCloudSearchTrack, 'id' | 'urn' | 'title' | 'permalinkUrl' | 'artworkUrl' | 'duration' | 'user'>;
@@ -268,9 +295,13 @@ export async function searchLyricsManual(query: string, signal?: AbortSignal): P
   const q = query.trim();
   if (!q) return [];
   const params = new URLSearchParams({ q });
-  const response = await fetch(`https://lrclib.net/api/search?${params}`, { signal });
-  if (!response.ok) return [];
-  const data = await response.json();
+  let data: Json | null = null;
+  try {
+    const res = await fetchLrclibJson(`https://lrclib.net/api/search?${params}`, signal);
+    data = res.data;
+  } catch {
+    return [];
+  }
   if (!Array.isArray(data)) return [];
   return data
     .filter((item: Json) => item && (item.syncedLyrics || item.plainLyrics || item.instrumental))
@@ -336,11 +367,46 @@ async function fetchLyrics(t: Track): Promise<LyricsData | null> {
   const tolerance = t.source === 'youtube' ? 8 : 4;
   const queries = lyricsSearchQueries(t);
   let rec: LyricsCandidate | null = null;
+  let attempts = 0;
+  let networkFailures = 0;
+  let lastError: unknown = null;
+
   for (const query of queries) {
-    const params = new URLSearchParams({ track_name: query.title, artist_name: query.artist });
-    const results = await getJson(`https://lrclib.net/api/search?${params}`);
-    rec = findLyricsCandidate(Array.isArray(results) ? results : [], query, durationSec, tolerance);
-    if (rec) break;
+    // 1. Exact lookup via /api/get when track duration is known
+    if (durationSec > 0) {
+      attempts++;
+      try {
+        const getParams = new URLSearchParams({
+          track_name: query.title,
+          artist_name: query.artist,
+          duration: String(Math.round(durationSec)),
+        });
+        const exactRes = await fetchLrclibJson(`https://lrclib.net/api/get?${getParams}`);
+        if (exactRes.data && !Array.isArray(exactRes.data)) {
+          rec = findLyricsCandidate([exactRes.data as LyricsCandidate], query, durationSec, tolerance);
+          if (rec) break;
+        }
+      } catch (err) {
+        networkFailures++;
+        lastError = err;
+      }
+    }
+
+    // 2. Fallback to /api/search with scoring and duration tolerance
+    attempts++;
+    try {
+      const searchParams = new URLSearchParams({ track_name: query.title, artist_name: query.artist });
+      const searchRes = await fetchLrclibJson(`https://lrclib.net/api/search?${searchParams}`);
+      rec = findLyricsCandidate(Array.isArray(searchRes.data) ? (searchRes.data as LyricsCandidate[]) : [], query, durationSec, tolerance);
+      if (rec) break;
+    } catch (err) {
+      networkFailures++;
+      lastError = err;
+    }
+  }
+
+  if (!rec && attempts > 0 && networkFailures === attempts) {
+    throw lastError ?? new Error('LRCLIB network request failed');
   }
   if (!rec) return null;
   return lyricsDataFromRecord(rec);

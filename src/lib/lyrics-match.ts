@@ -199,10 +199,12 @@ export function findLyricsCandidate<T extends LyricsCandidate>(
     if (!exactTitle && titleSim < 0.75) continue;
 
     const artistOk = artistsMatch(query.artist, candArtist);
+    const highConfidenceMatch = artistOk && (exactTitle || titleSim >= 0.85);
+    const effectiveTolerance = highConfidenceMatch ? Math.max(tolerance, 10) : tolerance;
     const deltaSec = wantSec > 0 && candSec > 0 ? Math.abs(wantSec - candSec) : 0;
 
     if (wantSec > 0 && candSec > 0) {
-      if (deltaSec > tolerance) continue;
+      if (deltaSec > effectiveTolerance) continue;
     }
 
     // Strict anti-false-positive rule:
@@ -215,7 +217,7 @@ export function findLyricsCandidate<T extends LyricsCandidate>(
       }
     }
 
-    const durBonus = wantSec > 0 && candSec > 0 ? Math.max(0, 1 - deltaSec / Math.max(tolerance, 1)) : 0.5;
+    const durBonus = wantSec > 0 && candSec > 0 ? Math.max(0, 1 - deltaSec / Math.max(effectiveTolerance, 1)) : 0.5;
     const syncBonus = candidate.syncedLyrics ? 0.15 : 0;
     const score = (exactTitle ? 1 : titleSim) * 0.55 + (artistOk ? 0.35 : 0) + durBonus * 0.1 + syncBonus;
     scored.push({ candidate, score });
