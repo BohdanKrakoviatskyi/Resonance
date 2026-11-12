@@ -65,3 +65,92 @@ test('requires strict artist and title match for Genius candidates without durat
     true,
   );
 });
+
+test('normalizes queries across 18 real owner tracks from YouTube Music and SoundCloud', () => {
+  const cases = [
+    {
+      track: { title: 'POISON. (feat. Pranav.Wav)', artist: 'Kill Dyll', source: 'youtube' },
+      expectPair: { title: 'POISON.', artist: 'Kill Dyll' },
+    },
+    {
+      track: { title: 'I Got Love (feat. Рем Дигга)', artist: 'Miyagi & Andy Panda - Topic', source: 'youtube' },
+      expectPair: { title: 'I Got Love', artist: 'Miyagi' },
+    },
+    {
+      track: { title: 'Smells Like Teen Spirit', artist: 'Nirvana - Topic', source: 'youtube' },
+      expectPair: { title: 'Smells Like Teen Spirit', artist: 'Nirvana' },
+    },
+    {
+      track: { title: 'Горький вкус', artist: ' Султан Лагучев - Topic', source: 'youtube' },
+      expectPair: { title: 'Горький вкус', artist: 'Султан Лагучев' },
+    },
+    {
+      track: { title: 'Let Me Love You', artist: 'DJ Snake - Topic', source: 'youtube' },
+      expectPair: { title: 'Let Me Love You', artist: 'DJ Snake' },
+    },
+    {
+      track: { title: 'Summer', artist: 'Calvin Harris - Topic', source: 'youtube' },
+      expectPair: { title: 'Summer', artist: 'Calvin Harris' },
+    },
+    {
+      track: { title: 'Sharir', artist: 'Heyson', source: 'youtube' },
+      expectPair: { title: 'Sharir', artist: 'Heyson' },
+    },
+    {
+      track: { title: 'JOHAN X Goddamn - Slowmotion', artist: 'JOHAN X Goddamn', source: 'youtube' },
+      expectPair: { title: 'Slowmotion', artist: 'JOHAN' },
+    },
+    {
+      track: { title: 'монстр', artist: 'норман грейсон', source: 'soundcloud' },
+      expectPair: { title: 'монстр', artist: 'норман грейсон' },
+    },
+    {
+      track: { title: 'BATO - Miura', artist: 'Русская Рэп-Сцена', source: 'soundcloud' },
+      expectPair: { title: 'Miura', artist: 'BATO' },
+    },
+    {
+      track: { title: 'trytofriend (prod. cloudly006)', artist: 'FORTUNA 812', source: 'soundcloud' },
+      expectPair: { title: 'trytofriend', artist: 'FORTUNA 812' },
+    },
+    {
+      track: { title: 'princeofscale — FORTUNA 812', artist: 'just_sad_maan', source: 'soundcloud' },
+      expectPair: { title: 'princeofscale', artist: 'FORTUNA 812' },
+    },
+    {
+      track: { title: 'Three Days Grace - Pain', artist: 'DollZ', source: 'soundcloud' },
+      expectPair: { title: 'Pain', artist: 'Three Days Grace' },
+    },
+    {
+      track: { title: 'tame impala-loser (slowed)', artist: 'sebtss', source: 'soundcloud' },
+      expectPair: { title: 'loser', artist: 'tame impala' },
+    },
+    {
+      track: { title: 'Go With The Flow by Queens of the Stone Age (Slowed)', artist: 'Gula', source: 'soundcloud' },
+      expectPair: { title: 'Go With The Flow', artist: 'Queens of the Stone Age' },
+    },
+    {
+      track: { title: 'SPINE (slowed + reverb)', artist: 'WesGhost', source: 'soundcloud' },
+      expectPair: { title: 'SPINE', artist: 'WesGhost' },
+    },
+    {
+      track: { title: 'UH OH! - Sub Urban - (sped up/pitched)', artist: 'shirospiral | MaxDrawsVA', source: 'soundcloud' },
+      expectPair: { title: 'UH OH!', artist: 'Sub Urban' },
+    },
+    {
+      track: { title: 'fashion (walking like a rockstar) - britney manson (tiktok version) (slowed)', artist: 'v e n u s', source: 'soundcloud' },
+      expectPair: { title: 'fashion', artist: 'britney manson' },
+    },
+  ];
+
+  for (const { track, expectPair } of cases) {
+    const queries = lyricsSearchQueries(track);
+    assert.ok(
+      queries.some(
+        (q) =>
+          q.title.toLowerCase() === expectPair.title.toLowerCase() &&
+          q.artist.toLowerCase() === expectPair.artist.toLowerCase(),
+      ),
+      `Expected query ${JSON.stringify(expectPair)} in ${JSON.stringify(queries)} for track ${track.title}`,
+    );
+  }
+});

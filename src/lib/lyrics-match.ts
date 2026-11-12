@@ -49,20 +49,30 @@ export function titleWordCount(value: string): number {
 
 const firstArtist = (value: string) =>
   value
-    .split(/,|&| feat\.? | ft\.? | featuring | x | и /i)[0]
+    .replace(/&amp;/gi, '&')
+    .replace(/&#39;/gi, "'")
+    .replace(/\s*-\s*Topic$/i, '')
+    .replace(/VEVO$/i, '')
+    .split(/,|&|\s+\|\s+| feat\.? | ft\.? | featuring | x | и /i)[0]
     .trim();
 
 export function stripTrackNoise(value: string): string {
   return value
+    .replace(/&amp;/gi, '&')
+    .replace(/&#39;/gi, "'")
+    .replace(/\.mp3$|\.wav$|\.flac$/i, '')
     .replace(/https?:\/\/\S+/gi, ' ')
     .replace(/#\S+/g, ' ')
     .replace(/\+\S+/g, ' ')
-    .replace(/\s*[[(](?:official\b|lyrics?\b|audio\b|music video\b|visuali[sz]er\b|4k\b|hd\b|mv\b|prod\b|slowed\b|reverb\b|sped\s*up\b|speed\s*up\b|nightcore\b|alt\s*ver\b|tgk?\b|vk\b|by\b|feat\b|ft\b)[^\])]*[\])]/gi, ' ')
-    .replace(/\s*[[(][^\])]*(?:prod\.?|slowed|reverb|speed\s*up|sped\s*up|nightcore|alt\s*ver|tgk?:|vk:)[^\])]*[\])]/gi, ' ')
+    .replace(/\s*-\s*Topic$/i, '')
+    .replace(/\s*[[(](?:official\b|lyrics?\b|audio\b|music video\b|visuali[sz]er\b|4k\b|hd\b|mv\b|prod\b|slowed\b|reverb\b|sped\s*up\b|speed\s*up\b|nightcore\b|pitched\b|tiktok\b|version\b|alt\s*ver\b|tgk?\b|vk\b|by\b|feat\b|ft\b)[^\])]*[\])]/gi, ' ')
+    .replace(/\s*[[(][^\])]*(?:prod\.?|slowed|reverb|speed\s*up|sped\s*up|nightcore|pitched|tiktok|version|alt\s*ver|tgk?:|vk:|премьера|клип)[^\])]*[\])]/gi, ' ')
     .replace(/\b(?:prod\.?|tgk?:?|vk:?)\s*[\p{L}\p{N}_.@/-]+/giu, ' ')
-    .replace(/\b(?:ft|feat|featuring)\.?\s+[\p{L}\p{N}&,'’. -]+/giu, ' ')
-    .replace(/\s*(?:[-–—|])\s*(?:official\b|lyrics?\b|audio\b|music video\b|visuali[sz]er\b|slowed\b|sped\s*up\b|speed\s*up\b|reverb\b|nightcore\b|alt\s*ver\b).*$/i, '')
+    .replace(/\b(?:ft|feat|featuring)\.?\s+[^-–—|()[\]]+/giu, ' ')
+    .replace(/\s*(?:[-–—|])\s*(?:official\b|lyrics?\b|audio\b|music video\b|visuali[sz]er\b|slowed\b|sped\s*up\b|speed\s*up\b|reverb\b|nightcore\b|pitched\b|tiktok\b|alt\s*ver\b).*$/i, '')
+    .replace(/[♥𒉭🔥💔]/gu, ' ')
     .replace(/\s+/g, ' ')
+    .replace(/^[\s\-–—|]+|[\s\-–—|]+$/g, '')
     .trim();
 }
 
@@ -88,6 +98,9 @@ export function artistsMatch(queryArtist: string, candidateArtist: string): bool
   return tokenOverlapScore(queryArtist, candidateArtist) >= 0.65;
 }
 
+const stripParentheticalSubtitle = (value: string): string =>
+  value.replace(/\s*\([^)]*\)\s*/g, ' ').replace(/\s+/g, ' ').trim();
+
 export function lyricsSearchQueries(track: Pick<Track, 'title' | 'artist' | 'source'>) {
   const cleanedTitle = stripTrackNoise(track.title);
   const uploader = firstArtist(stripTrackNoise(track.artist));
@@ -106,10 +119,31 @@ export function lyricsSearchQueries(track: Pick<Track, 'title' | 'artist' | 'sou
     ) {
       queries.push(clean);
     }
+    const shortTitle = stripParentheticalSubtitle(clean.title);
+    if (
+      shortTitle &&
+      shortTitle !== clean.title &&
+      clean.artist &&
+      !queries.some(
+        (query) =>
+          normalizeLyricsText(query.title) === normalizeLyricsText(shortTitle) &&
+          normalizeLyricsText(query.artist) === normalizeLyricsText(clean.artist),
+      )
+    ) {
+      queries.push({ title: shortTitle, artist: clean.artist });
+    }
   };
 
-  // Both SoundCloud and YouTube frequently encode "Real Artist - Track Name" inside `title`
-  const parts = cleanedTitle.match(/^(.+?)\s+[–—-]\s+(.+)$/);
+  // Pattern: "Track Title by Artist Name"
+  const byMatch = cleanedTitle.match(/^(.+?)\s+by\s+(.+)$/i);
+  if (byMatch) {
+    add(byMatch[1].trim(), byMatch[2].trim());
+  }
+
+  // Both SoundCloud and YouTube frequently encode "Real Artist - Track Name" or "Track Name - Real Artist"
+  const parts =
+    cleanedTitle.match(/^(.+?)\s+[–—-]\s+(.+)$/) ||
+    cleanedTitle.match(/^([\p{L}\p{N}\s.&,'’]+?)[–—-]([\p{L}\p{N}\s.&,'’()!?]+)$/u);
   if (parts) {
     const left = parts[1].trim();
     const right = parts[2].trim();
@@ -117,6 +151,7 @@ export function lyricsSearchQueries(track: Pick<Track, 'title' | 'artist' | 'sou
       add(left, right);
     } else {
       add(right, left);
+      add(left, right);
       if (uploader && normalizeLyricsText(left) !== normalizeLyricsText(uploader)) {
         add(right, uploader);
       }
