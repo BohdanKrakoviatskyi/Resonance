@@ -1,6 +1,14 @@
 import type { LyricLine, Track } from '../types';
 import { findYouTubeFallbackCandidate, youtubeFallbackQueries } from './youtube-match';
-import { findLyricsCandidate, lyricsSearchQueries, toSeconds, type LyricsCandidate } from './lyrics-match';
+import {
+  findLyricsCandidate,
+  lyricsSearchQueries,
+  resolvePersistentLyricsCacheEntry,
+  toSeconds,
+  writePersistentLyricsCacheEntry,
+  type LyricsCandidate,
+  type PersistentLyricsCacheEntry,
+} from './lyrics-match';
 import { rpc } from './sidecar';
 
 import {
@@ -208,9 +216,31 @@ export interface ManualLyricsChoice {
 }
 
 const MANUAL_LYRICS_STORAGE_KEY = 'resonance.manual_lyrics.v1';
+const PERSISTENT_LYRICS_CACHE_KEY = 'resonance.lyrics_cache.v1';
 const lyricsCache = new Map<string, Promise<LyricsData | null>>();
 let lyricsOverrides: Record<string, ManualLyricsChoice> | null = null;
 let lyricsOverridesRestored: Promise<void> | null = null;
+let persistentLyricsCache: Record<string, PersistentLyricsCacheEntry> | null = null;
+
+function loadPersistentLyricsCache(): Record<string, PersistentLyricsCacheEntry> {
+  if (persistentLyricsCache) return persistentLyricsCache;
+  try {
+    const raw = localStorage.getItem(PERSISTENT_LYRICS_CACHE_KEY);
+    persistentLyricsCache = raw ? (JSON.parse(raw) as Record<string, PersistentLyricsCacheEntry>) : {};
+  } catch {
+    persistentLyricsCache = {};
+  }
+  return persistentLyricsCache;
+}
+
+function savePersistentLyricsCache(map: Record<string, PersistentLyricsCacheEntry>) {
+  persistentLyricsCache = map;
+  try {
+    localStorage.setItem(PERSISTENT_LYRICS_CACHE_KEY, JSON.stringify(map));
+  } catch {
+    /* ignore quota errors */
+  }
+}
 
 function loadLyricsOverrides(): Record<string, ManualLyricsChoice> {
   if (lyricsOverrides) return lyricsOverrides;
@@ -279,11 +309,17 @@ export function setManualLyricsChoice(trackId: string, choice: ManualLyricsChoic
     saveLyricsOverrides(overrides);
     const data = lyricsDataFromRecord(choice);
     lyricsCache.set(trackId, Promise.resolve(data));
+    if (data) {
+      savePersistentLyricsCache(writePersistentLyricsCacheEntry(loadPersistentLyricsCache(), trackId, { status: 'found', data }));
+    }
     return data;
   }
   delete overrides[trackId];
   saveLyricsOverrides(overrides);
   lyricsCache.delete(trackId);
+  const nextPersistent = { ...loadPersistentLyricsCache() };
+  delete nextPersistent[trackId];
+  savePersistentLyricsCache(nextPersistent);
   return null;
 }
 
@@ -328,15 +364,32 @@ export async function getLyrics(t: Track, forceRefresh = false): Promise<LyricsD
     const overriddenData = lyricsDataFromRecord(override);
     if (overriddenData) return overriddenData;
   }
-  if (forceRefresh) lyricsCache.delete(t.id);
+  if (forceRefresh) {
+    lyricsCache.delete(t.id);
+  } else {
+    const cached = resolvePersistentLyricsCacheEntry(loadPersistentLyricsCache(), t.id, Date.now(), false);
+    if (cached.hit) {
+      return cached.data;
+    }
+  }
   let p = lyricsCache.get(t.id);
   if (!p) {
-    p = (t.source === 'soundcloud' ? fetchSoundCloudLyrics(t) : fetchLyrics(t))
-      .catch(() => null)
-      .then((value) => {
+    p = (t.source === 'soundcloud' ? fetchSoundCloudLyrics(t) : fetchLyrics(t)).then(
+      (value) => {
+        const nextCache = writePersistentLyricsCacheEntry(
+          loadPersistentLyricsCache(),
+          t.id,
+          value ? { status: 'found', data: value } : { status: 'not_found' },
+        );
+        savePersistentLyricsCache(nextCache);
         if (!value) lyricsCache.delete(t.id);
         return value;
-      });
+      },
+      () => {
+        lyricsCache.delete(t.id);
+        return null;
+      },
+    );
     lyricsCache.set(t.id, p);
   }
   return p;
@@ -347,18 +400,22 @@ async function fetchSoundCloudLyrics(track: Track): Promise<LyricsData | null> {
   const trackId = Number(match?.[1]);
   const durationSec = toSeconds(track.fullDuration ?? track.duration);
   if (!trackId) return fetchLyrics(track);
-  const result = await soundCloudTrackLyrics({
-    trackId,
-    title: track.title,
-    artist: track.artist,
-    durationMs: Math.round(durationSec * 1000),
-  });
-  if (result.isSynced && result.lines.length) {
-    const synced = withGaps(result.lines.map((line) => ({ t: line.startMs / 1000, text: line.text })));
-    if (synced.length) return { synced };
+  try {
+    const result = await soundCloudTrackLyrics({
+      trackId,
+      title: track.title,
+      artist: track.artist,
+      durationMs: Math.round(durationSec * 1000),
+    });
+    if (result.isSynced && result.lines.length) {
+      const synced = withGaps(result.lines.map((line) => ({ t: line.startMs / 1000, text: line.text })));
+      if (synced.length) return { synced };
+    }
+    const plain = result.lines.map((line) => line.text.trim()).filter(Boolean);
+    if (plain.length) return { plain };
+  } catch {
+    // Fall back to direct LRCLIB lookup when sidecar fails
   }
-  const plain = result.lines.map((line) => line.text.trim()).filter(Boolean);
-  if (plain.length) return { plain };
   return fetchLyrics(track);
 }
 

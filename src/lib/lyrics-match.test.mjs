@@ -1,6 +1,14 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { findLyricsCandidate, lyricsSearchQueries, matchesGeniusCandidate, toSeconds } from './lyrics-match.ts';
+import {
+  LYRICS_NEGATIVE_CACHE_TTL_MS,
+  findLyricsCandidate,
+  lyricsSearchQueries,
+  matchesGeniusCandidate,
+  resolvePersistentLyricsCacheEntry,
+  toSeconds,
+  writePersistentLyricsCacheEntry,
+} from './lyrics-match.ts';
 
 test('uses the song title and artist from an official video title', () => {
   const queries = lyricsSearchQueries({
@@ -184,4 +192,26 @@ test('extends duration tolerance up to ±10s when both artist and title match wi
     4,
   );
   assert.equal(tooFar, null);
+});
+
+test('caches negative not_found results for 7 days, ignores network errors, and respects manual override', () => {
+  const t0 = 1_700_000_000_000;
+  let cache = {};
+
+  // 1. Network / 5xx / timeout errors MUST NOT be written to persistent cache
+  cache = writePersistentLyricsCacheEntry(cache, 'sc:2244975557', { status: 'network_error' }, t0);
+  assert.deepEqual(resolvePersistentLyricsCacheEntry(cache, 'sc:2244975557', t0), { hit: false, data: null });
+
+  // 2. Confirmed 404 / empty results ARE cached as null for 7 days
+  cache = writePersistentLyricsCacheEntry(cache, 'sc:2244975557', { status: 'not_found' }, t0);
+  assert.deepEqual(resolvePersistentLyricsCacheEntry(cache, 'sc:2244975557', t0 + 1000), { hit: true, data: null });
+
+  // 3. Manual override / forceRefresh bypasses negative cache immediately
+  assert.deepEqual(resolvePersistentLyricsCacheEntry(cache, 'sc:2244975557', t0 + 1000, true), { hit: false, data: null });
+
+  // 4. After 7 days TTL expires, negative cache entry is no longer a hit
+  assert.deepEqual(
+    resolvePersistentLyricsCacheEntry(cache, 'sc:2244975557', t0 + LYRICS_NEGATIVE_CACHE_TTL_MS + 1),
+    { hit: false, data: null },
+  );
 });

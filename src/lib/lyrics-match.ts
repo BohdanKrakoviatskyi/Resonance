@@ -227,6 +227,67 @@ export function findLyricsCandidate<T extends LyricsCandidate>(
   return scored[0]?.candidate ?? null;
 }
 
+export type PersistentLyricsCacheEntry = {
+  data: {
+    synced?: { t: number; text: string; gap?: boolean }[];
+    plain?: string[];
+    instrumental?: boolean;
+    preview?: boolean;
+    matchedTitle?: string;
+    matchedArtist?: string;
+  } | null;
+  savedAt: number;
+};
+
+export const LYRICS_NEGATIVE_CACHE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+const LYRICS_CACHE_MAX_ENTRIES = 400;
+
+export function resolvePersistentLyricsCacheEntry(
+  cache: Record<string, PersistentLyricsCacheEntry>,
+  trackId: string,
+  now = Date.now(),
+  manualOverride = false,
+): { hit: boolean; data: PersistentLyricsCacheEntry['data'] } {
+  if (manualOverride) return { hit: false, data: null };
+  const entry = cache[trackId];
+  if (!entry || typeof entry.savedAt !== 'number') return { hit: false, data: null };
+  if (entry.data === null) {
+    if (now - entry.savedAt >= LYRICS_NEGATIVE_CACHE_TTL_MS) {
+      return { hit: false, data: null };
+    }
+    return { hit: true, data: null };
+  }
+  return { hit: true, data: entry.data };
+}
+
+export function writePersistentLyricsCacheEntry(
+  cache: Record<string, PersistentLyricsCacheEntry>,
+  trackId: string,
+  outcome: { status: 'found'; data: NonNullable<PersistentLyricsCacheEntry['data']> } | { status: 'not_found' } | { status: 'network_error' },
+  now = Date.now(),
+): Record<string, PersistentLyricsCacheEntry> {
+  if (outcome.status === 'network_error') {
+    return cache;
+  }
+  const next: Record<string, PersistentLyricsCacheEntry> = {
+    ...cache,
+    [trackId]: {
+      data: outcome.status === 'found' ? outcome.data : null,
+      savedAt: now,
+    },
+  };
+  const keys = Object.keys(next);
+  if (keys.length > LYRICS_CACHE_MAX_ENTRIES) {
+    keys
+      .sort((a, b) => (next[a]?.savedAt ?? 0) - (next[b]?.savedAt ?? 0))
+      .slice(0, keys.length - LYRICS_CACHE_MAX_ENTRIES)
+      .forEach((k) => {
+        delete next[k];
+      });
+  }
+  return next;
+}
+
 /** Strict validator for Genius / external candidates that lack a reliable duration field. */
 export function matchesGeniusCandidate(
   query: { title: string; artist: string },
