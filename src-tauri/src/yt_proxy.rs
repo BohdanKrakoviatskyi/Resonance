@@ -785,175 +785,208 @@ impl YtStreamProxy {
         if raw_id.is_empty() {
             return Err("Не указан ID плейлиста YouTube Music.".to_string());
         }
-        let clean_id = raw_id.strip_prefix("VL").unwrap_or(raw_id);
-        let playlist_url = format!("https://music.youtube.com/playlist?list={clean_id}");
 
         let (ytdlp_bin, env_path) = self.ensure_ytdlp_environment().await?;
         let cache_dir_str = self.ytdlp_cache_dir.to_string_lossy().to_string();
 
-        let mut cmd = Command::new(&ytdlp_bin);
-        cmd.args([
-            "--flat-playlist",
-            "-J",
-            "--cache-dir",
-            &cache_dir_str,
-            "--no-warnings",
-            &playlist_url,
-        ])
-        .env("PATH", &env_path)
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped());
-
-        #[cfg(target_os = "windows")]
-        cmd.creation_flags(CREATE_NO_WINDOW);
-
-        let output = tokio::time::timeout(Duration::from_secs(30), cmd.output())
-            .await
-            .map_err(|_| "Таймаут загрузки плейлиста через yt-dlp (30 сек)".to_string())?
-            .map_err(|e| format!("Не удалось запустить yt-dlp для плейлиста: {e}"))?;
-
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        let stderr = String::from_utf8_lossy(&output.stderr);
-
-        if !output.status.success() && stdout.trim().is_empty() {
-            eprintln!(
-                "[YtPlaylist] yt-dlp --flat-playlist -J failed for {clean_id} ({} ms). stderr: {}",
-                start.elapsed().as_millis(),
-                stderr.trim()
-            );
-            return Err(format!(
-                "Не удалось загрузить плейлист YouTube Music: {}",
-                stderr.trim()
-            ));
-        }
-
-        let data: Value = serde_json::from_str(stdout.trim()).map_err(|e| {
-            let preview: String = stdout.chars().take(600).collect();
-            eprintln!(
-                "[YtPlaylist] JSON parse error for {clean_id}: {e}. Raw stdout preview: {preview} | stderr: {}",
-                stderr.trim()
-            );
-            format!("Ошибка разбора данных плейлиста YouTube Music: {e}")
-        })?;
-
-        let title = data
-            .get("title")
-            .and_then(|v| v.as_str())
-            .map(str::trim)
-            .filter(|s| !s.is_empty())
-            .unwrap_or("Playlist")
-            .to_string();
-
-        let playlist_thumb = extract_best_thumbnail_url(data.get("thumbnails"));
-
-        let mut tracks = Vec::new();
-        let mut seen = std::collections::HashSet::new();
-
-        if let Some(entries) = data.get("entries").and_then(|v| v.as_array()) {
-            for entry in entries {
-                if entry.is_null() {
-                    continue;
-                }
-                let Some(vid) = entry
-                    .get("id")
-                    .and_then(|v| v.as_str())
-                    .map(str::trim)
-                    .filter(|id| is_valid_video_id(id))
-                else {
-                    continue;
-                };
-                if !seen.insert(vid.to_string()) {
-                    continue;
-                }
-
-                let raw_title = entry
-                    .get("title")
-                    .and_then(|v| v.as_str())
-                    .map(str::trim)
-                    .unwrap_or_default();
-
-                // Пропускаем скрытые/удаленные видео, не роняя весь плейлист
-                if raw_title.is_empty()
-                    || raw_title.eq_ignore_ascii_case("[Private video]")
-                    || raw_title.eq_ignore_ascii_case("[Deleted video]")
-                {
-                    continue;
-                }
-
-                let raw_uploader = entry
-                    .get("uploader")
-                    .and_then(|v| v.as_str())
-                    .or_else(|| entry.get("channel").and_then(|v| v.as_str()))
-                    .or_else(|| entry.get("artist").and_then(|v| v.as_str()))
-                    .map(str::trim)
-                    .unwrap_or_default();
-
-                let cleaned_artist = raw_uploader
-                    .trim_end_matches(" - Topic")
-                    .trim();
-                let artist = if cleaned_artist.is_empty() {
-                    "YouTube Music".to_string()
-                } else {
-                    cleaned_artist.to_string()
-                };
-
-                let duration_seconds = entry.get("duration").and_then(|v| v.as_f64());
-
-                let artwork_url = extract_best_thumbnail_url(entry.get("thumbnails"))
-                    .or_else(|| {
-                        entry
-                            .get("thumbnail")
-                            .and_then(|v| v.as_str())
-                            .map(|s| s.to_string())
-                    })
-                    .unwrap_or_else(|| format!("https://i.ytimg.com/vi/{vid}/hqdefault.jpg"));
-
-                tracks.push(YtPlaylistTrackItem {
-                    video_id: vid.to_string(),
-                    title: raw_title.to_string(),
-                    artist: artist.clone(),
-                    artists: vec![artist],
-                    artwork_url: Some(artwork_url),
-                    duration_seconds,
-                    available: true,
-                });
+        let no_vl = raw_id.strip_prefix("VL").unwrap_or(raw_id);
+        let mut id_candidates = Vec::new();
+        for id in [raw_id, no_vl] {
+            if !id.is_empty() && !id_candidates.iter().any(|v| v == id) {
+                id_candidates.push(id.to_string());
             }
         }
 
-        if tracks.is_empty() {
-            let raw_preview: String = stdout.chars().take(1000).collect();
-            eprintln!(
-                "[YtPlaylist] 0 tracks parsed for playlist {clean_id} ({} ms). Raw yt-dlp stdout: {} | stderr: {}",
-                start.elapsed().as_millis(),
-                raw_preview,
-                stderr.trim()
-            );
-            return Err(format!(
-                "Плейлист «{title}» не вернул доступных треков (возможно, он приватный или пуст)."
-            ));
+        let mut url_candidates = Vec::new();
+        for id in &id_candidates {
+            for host in ["music.youtube.com", "www.youtube.com"] {
+                let url = format!("https://{host}/playlist?list={id}");
+                if !url_candidates.iter().any(|v: &String| v == &url) {
+                    url_candidates.push(url);
+                }
+            }
         }
 
-        let artwork_url = playlist_thumb.or_else(|| {
-            tracks
-                .first()
-                .and_then(|t| t.artwork_url.clone())
-        });
+        let mut last_error: Option<String> = None;
 
-        println!(
-            "[YtPlaylist] Loaded playlist {clean_id} (\"{}\"): {} tracks in {} ms",
-            title,
-            tracks.len(),
-            start.elapsed().as_millis()
-        );
+        for playlist_url in &url_candidates {
+            let mut cmd = Command::new(&ytdlp_bin);
+            cmd.args([
+                "--flat-playlist",
+                "-J",
+                "--cache-dir",
+                &cache_dir_str,
+                "--no-warnings",
+                playlist_url,
+            ])
+            .env("PATH", &env_path)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped());
 
-        Ok(YtPlaylistResponse {
-            playlist_id: clean_id.to_string(),
-            title,
-            artwork_url,
-            track_count: tracks.len(),
-            tracks,
-        })
+            #[cfg(target_os = "windows")]
+            cmd.creation_flags(CREATE_NO_WINDOW);
+
+            let output = match tokio::time::timeout(Duration::from_secs(30), cmd.output()).await {
+                Ok(Ok(output)) => output,
+                Ok(Err(e)) => {
+                    last_error = Some(format!("Не удалось запустить yt-dlp для плейлиста: {e}"));
+                    continue;
+                }
+                Err(_) => {
+                    last_error = Some("Таймаут загрузки плейлиста через yt-dlp (30 сек)".to_string());
+                    continue;
+                }
+            };
+
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            let stderr = String::from_utf8_lossy(&output.stderr);
+
+            if !output.status.success() && stdout.trim().is_empty() {
+                eprintln!(
+                    "[YtPlaylist] yt-dlp --flat-playlist -J failed for {raw_id} ({playlist_url}, {} ms). stderr: {}",
+                    start.elapsed().as_millis(),
+                    stderr.trim()
+                );
+                last_error = Some(format!(
+                    "Не удалось загрузить плейлист YouTube Music: {}",
+                    stderr.trim()
+                ));
+                continue;
+            }
+
+            let data: Value = match serde_json::from_str(stdout.trim()) {
+                Ok(v) => v,
+                Err(e) => {
+                    let preview: String = stdout.chars().take(600).collect();
+                    eprintln!(
+                        "[YtPlaylist] JSON parse error for {raw_id}: {e}. Raw stdout preview: {preview} | stderr: {}",
+                        stderr.trim()
+                    );
+                    last_error = Some(format!("Ошибка разбора данных плейлиста YouTube Music: {e}"));
+                    continue;
+                }
+            };
+
+            let title = data
+                .get("title")
+                .and_then(|v| v.as_str())
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .unwrap_or("Playlist")
+                .to_string();
+
+            let playlist_thumb = extract_best_thumbnail_url(data.get("thumbnails"));
+
+            let mut tracks = Vec::new();
+            let mut seen = std::collections::HashSet::new();
+
+            if let Some(entries) = data.get("entries").and_then(|v| v.as_array()) {
+                for entry in entries {
+                    if entry.is_null() {
+                        continue;
+                    }
+                    let Some(vid) = entry
+                        .get("id")
+                        .and_then(|v| v.as_str())
+                        .map(str::trim)
+                        .filter(|id| is_valid_video_id(id))
+                    else {
+                        continue;
+                    };
+                    if !seen.insert(vid.to_string()) {
+                        continue;
+                    }
+
+                    let raw_title = entry
+                        .get("title")
+                        .and_then(|v| v.as_str())
+                        .map(str::trim)
+                        .unwrap_or_default();
+
+                    // Пропускаем скрытые/удаленные видео, не роняя весь плейлист
+                    if raw_title.is_empty()
+                        || raw_title.eq_ignore_ascii_case("[Private video]")
+                        || raw_title.eq_ignore_ascii_case("[Deleted video]")
+                    {
+                        continue;
+                    }
+
+                    let raw_uploader = entry
+                        .get("uploader")
+                        .and_then(|v| v.as_str())
+                        .or_else(|| entry.get("channel").and_then(|v| v.as_str()))
+                        .or_else(|| entry.get("artist").and_then(|v| v.as_str()))
+                        .map(str::trim)
+                        .unwrap_or_default();
+
+                    let cleaned_artist = raw_uploader.trim_end_matches(" - Topic").trim();
+                    let artist = if cleaned_artist.is_empty() {
+                        "YouTube Music".to_string()
+                    } else {
+                        cleaned_artist.to_string()
+                    };
+
+                    let duration_seconds = entry.get("duration").and_then(|v| v.as_f64());
+
+                    let artwork_url = extract_best_thumbnail_url(entry.get("thumbnails"))
+                        .or_else(|| {
+                            entry
+                                .get("thumbnail")
+                                .and_then(|v| v.as_str())
+                                .map(|s| s.to_string())
+                        })
+                        .unwrap_or_else(|| format!("https://i.ytimg.com/vi/{vid}/hqdefault.jpg"));
+
+                    tracks.push(YtPlaylistTrackItem {
+                        video_id: vid.to_string(),
+                        title: raw_title.to_string(),
+                        artist: artist.clone(),
+                        artists: vec![artist],
+                        artwork_url: Some(artwork_url),
+                        duration_seconds,
+                        available: true,
+                    });
+                }
+            }
+
+            if tracks.is_empty() {
+                let raw_preview: String = stdout.chars().take(1000).collect();
+                eprintln!(
+                    "[YtPlaylist] 0 tracks parsed for playlist {raw_id} via {playlist_url} ({} ms). Raw yt-dlp stdout: {} | stderr: {}",
+                    start.elapsed().as_millis(),
+                    raw_preview,
+                    stderr.trim()
+                );
+                last_error = Some(format!(
+                    "Плейлист «{title}» не вернул доступных треков (возможно, он приватный или пуст)."
+                ));
+                continue;
+            }
+
+            let artwork_url = playlist_thumb.or_else(|| tracks.first().and_then(|t| t.artwork_url.clone()));
+            let clean_id = no_vl.to_string();
+
+            println!(
+                "[YtPlaylist] Loaded playlist {clean_id} (\"{}\"): {} tracks in {} ms via {}",
+                title,
+                tracks.len(),
+                start.elapsed().as_millis(),
+                playlist_url
+            );
+
+            return Ok(YtPlaylistResponse {
+                playlist_id: clean_id,
+                title,
+                artwork_url,
+                track_count: tracks.len(),
+                tracks,
+            });
+        }
+
+        Err(last_error.unwrap_or_else(|| {
+            "Плейлист YouTube Music не вернул доступных треков (возможно, он приватный или пуст).".to_string()
+        }))
     }
 
     async fn ensure_ytdlp_environment(&self) -> Result<(PathBuf, String), String> {
@@ -1041,6 +1074,9 @@ impl YtStreamProxy {
             .ok()
             .and_then(|mut it| it.next())
             .is_some();
+        if has_cached_sigfuncs {
+            return;
+        }
 
         let start = Instant::now();
         match self.resolve_via_ytdlp(YTDLP_WARMUP_VIDEO_ID, false).await {
@@ -1207,16 +1243,35 @@ async fn download_and_verify_ytdlp(http: &Client, target_path: &Path) -> Result<
     let bin_url = format!(
         "https://github.com/yt-dlp/yt-dlp/releases/latest/download/{asset_name}"
     );
-    let sums_url = "https://github.com/yt-dlp/yt-dlp/releases/latest/download/SHA256SUMS";
+    let sums_urls = [
+        "https://github.com/yt-dlp/yt-dlp/releases/latest/download/SHA2-256SUMS",
+        "https://github.com/yt-dlp/yt-dlp/releases/latest/download/SHA256SUMS",
+    ];
 
-    let sums_text = http
-        .get(sums_url)
-        .send()
-        .await
-        .map_err(|e| format!("Не удалось загрузить SHA256SUMS для yt-dlp: {e}"))?
-        .text()
-        .await
-        .map_err(|e| format!("Ошибка чтения SHA256SUMS: {e}"))?;
+    let mut sums_text = None;
+    let mut last_sums_err = String::new();
+    for sums_url in sums_urls {
+        match http.get(sums_url).send().await {
+            Ok(resp) => match resp.error_for_status() {
+                Ok(ok_resp) => match ok_resp.text().await {
+                    Ok(text) => {
+                        sums_text = Some(text);
+                        break;
+                    }
+                    Err(e) => {
+                        last_sums_err = format!("Ошибка чтения контрольных сумм yt-dlp: {e}");
+                    }
+                },
+                Err(e) => {
+                    last_sums_err = format!("Не удалось загрузить контрольные суммы yt-dlp: {e}");
+                }
+            },
+            Err(e) => {
+                last_sums_err = format!("Не удалось загрузить контрольные суммы yt-dlp: {e}");
+            }
+        }
+    }
+    let sums_text = sums_text.ok_or(last_sums_err)?;
 
     let expected_hash = sums_text
         .lines()
@@ -1230,7 +1285,7 @@ async fn download_and_verify_ytdlp(http: &Client, target_path: &Path) -> Result<
                 None
             }
         })
-        .ok_or_else(|| format!("Хэш SHA-256 для {asset_name} не найден в SHA256SUMS"))?;
+        .ok_or_else(|| format!("Хэш SHA-256 для {asset_name} не найден в контрольных суммах yt-dlp"))?;
 
     let bytes = http
         .get(&bin_url)
