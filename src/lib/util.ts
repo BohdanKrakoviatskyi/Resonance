@@ -41,13 +41,17 @@ export function useStore<T, S>(store: Store<T>, sel: (s: T) => S): S {
   return useSyncExternalStore(store.subscribe, snap, snap);
 }
 
+const EXTRA_BACKUP_KEYS = ['resonance.shortcuts.v1', 'resonance.manual_lyrics.v1'];
 const persistedStores = new Map<string, () => void>();
 let backupTimer = 0;
+const isSplashContext = () => typeof document !== 'undefined' && document.documentElement.dataset.splash === 'true';
+
 const syncBackupToSidecar = () => {
+  if (isSplashContext()) return;
   void import('./providers-api')
     .then(({ backupFrontendState }) => {
       const entries: Record<string, string> = {};
-      for (const k of [...persistedStores.keys(), 'resonance.shortcuts.v1']) {
+      for (const k of [...persistedStores.keys(), ...EXTRA_BACKUP_KEYS]) {
         try {
           const val = localStorage.getItem(k);
           if (val !== null) entries[k] = val;
@@ -63,11 +67,12 @@ const syncBackupToSidecar = () => {
 };
 
 export async function flushFrontendStateBackup(): Promise<void> {
+  if (isSplashContext()) return;
   for (const save of persistedStores.values()) save();
   try {
     const { backupFrontendState } = await import('./providers-api');
     const entries: Record<string, string> = {};
-    for (const k of [...persistedStores.keys(), 'resonance.shortcuts.v1']) {
+    for (const k of [...persistedStores.keys(), ...EXTRA_BACKUP_KEYS]) {
       const val = localStorage.getItem(k);
       if (val !== null) entries[k] = val;
     }

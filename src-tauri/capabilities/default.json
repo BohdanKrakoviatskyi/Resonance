@@ -1,16 +1,24 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Permissions for the main application window",
-  "windows": ["main"],
+  "description": "Permissions for the application windows",
+  "windows": ["main", "splash"],
   "permissions": [
     "core:default",
+    "core:window:allow-close",
+    "core:window:allow-show",
+    "core:window:allow-set-focus",
+    "core:window:allow-start-dragging",
     "global-shortcut:allow-register",
     "global-shortcut:allow-unregister",
+    "updater:default",
+    "process:default",
     "allow-start-soundcloud-login",
     "allow-start-ytmusic-login",
     "allow-uninstall-app",
     "allow-yt-proxy-commands",
+    "allow-finish-splash",
+    "allow-restart-app",
     {
       "identifier": "shell:allow-spawn",
       "allow": [

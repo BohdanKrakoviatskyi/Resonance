@@ -155,10 +155,22 @@ async fn start_ytmusic_login(app: AppHandle, state: State<'_, YtMusicLoginState>
 
     // Open the library page directly: it is the page we need for capture, and
     // signed-out visitors get a clear sign-in prompt there.
-    WebviewWindowBuilder::new(&app, "ytmusic-login", WebviewUrl::External(library_url()?))
-        .title("Sign in to YouTube Music")
-        .inner_size(1040.0, 820.0)
-        .center()
+    let mut login_window = WebviewWindowBuilder::new(
+        &app,
+        "ytmusic-login",
+        WebviewUrl::External(library_url()?),
+    )
+    .title("Sign in to YouTube Music")
+    .inner_size(1040.0, 820.0)
+    .center();
+
+    // WebKit's macOS user agent makes YouTube Music serve its unsupported
+    // browser page, which cannot be signed into.
+    if let Some(user_agent) = ytmusic_login_user_agent() {
+        login_window = login_window.user_agent(&user_agent);
+    }
+
+    login_window
         .build()
         .map_err(|error| format!("could not open YouTube Music login: {error}"))?;
 
@@ -173,9 +185,88 @@ fn library_url() -> Result<Url, String> {
         .map_err(|error| format!("invalid YouTube Music URL: {error}"))
 }
 
-fn session_cookie_url() -> Result<Url, String> {
-    Url::parse("https://music.youtube.com/")
-        .map_err(|error| format!("invalid YouTube Music URL: {error}"))
+/// WebKit on macOS reports a user agent without the `Version/… Safari/…`
+/// suffix every other engine includes, so YouTube Music cannot classify the
+/// login webview and answers with its "browser not optimised" page instead of
+/// the sign-in screen. The engine really is WebKit, so report it as Safari.
+fn ytmusic_login_user_agent() -> Option<String> {
+    if !cfg!(target_os = "macos") {
+        return None;
+    }
+    let version = std::process::Command::new("sw_vers")
+        .arg("-productVersion")
+        .output()
+        .ok()
+        .and_then(|output| String::from_utf8(output.stdout).ok())
+        .map(|version| version.trim().to_string())
+        .filter(|version| !version.is_empty())
+        .unwrap_or_else(|| "17.0".to_string());
+    // Safari reports major.minor only, e.g. "17.4" for macOS 14.5.
+    let version = version
+        .split('.')
+        .take(2)
+        .collect::<Vec<_>>()
+        .join(".");
+    Some(format!(
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/{version} Safari/605.1.15"
+    ))
+}
+
+const YTMUSIC_HOST: &str = "music.youtube.com";
+
+/// Whether a cookie domain applies to `host`.
+///
+/// WebKit reports the domain of a `Domain=youtube.com` cookie as
+/// `youtube.com`, without a leading dot, so the dot is not a reliable marker
+/// for "domain cookie". A cookie therefore covers `host` when the domains
+/// match or when `host` is a subdomain of the cookie's domain.
+fn domain_applies_to(cookie_domain: &str, host: &str) -> bool {
+    let domain = cookie_domain.trim_start_matches('.').to_ascii_lowercase();
+    let host = host.to_ascii_lowercase();
+    if domain.is_empty() {
+        return false;
+    }
+    if host == domain {
+        return true;
+    }
+    // A bare label such as "com" is a public suffix and must not match every
+    // host below it.
+    if !domain.contains('.') {
+        return false;
+    }
+    host.ends_with(&format!(".{domain}"))
+}
+
+/// Whether a cookie path applies to `request_path`.
+fn path_applies_to(cookie_path: Option<&str>, request_path: &str) -> bool {
+    match cookie_path {
+        None => true,
+        Some(path) if path.is_empty() || path == "/" => true,
+        Some(path) => {
+            request_path == path
+                || (request_path.starts_with(path)
+                    && request_path.as_bytes().get(path.len()) == Some(&b'/'))
+        }
+    }
+}
+
+/// Collects the cookies that apply to YouTube Music.
+///
+/// `cookies_for_url` cannot be used here: wry filters by exact domain
+/// equality, so the `youtube.com` domain cookies Google issues
+/// (`__Secure-3PAPISID` and friends) never match `music.youtube.com`.
+fn music_youtube_cookies(window: &WebviewWindow) -> Result<Vec<Cookie<'static>>, String> {
+    let all = window.cookies().map_err(|error| error.to_string())?;
+    Ok(all
+        .into_iter()
+        .filter(|cookie| {
+            let domain_matches = cookie
+                .domain()
+                .map(|domain| domain_applies_to(domain, YTMUSIC_HOST))
+                .unwrap_or(false);
+            domain_matches && path_applies_to(cookie.path(), "/")
+        })
+        .collect())
 }
 
 /// Polls the login window instead of relying on an in-page script, so capture
@@ -220,12 +311,13 @@ fn nonce_is_active(app: &AppHandle, nonce: &str) -> bool {
 /// Reads the session from the native cookie store and hands it to the app.
 /// Returns true when the attempt is finished (captured or already handled).
 fn capture_ytmusic_session(app: &AppHandle, window: &WebviewWindow, nonce: &str) -> bool {
-    let Ok(cookie_url) = session_cookie_url() else {
-        return false;
-    };
     // This runs on a blocking worker; cookie reads must stay off the UI thread.
-    let Ok(cookies) = window.cookies_for_url(cookie_url) else {
-        return false;
+    let cookies = match music_youtube_cookies(window) {
+        Ok(cookies) => cookies,
+        Err(error) => {
+            eprintln!("could not read the YouTube Music cookie store: {error}");
+            return false;
+        }
     };
     let cookie_header = build_cookie_header(&cookies);
     if !has_secure_papisid(&cookie_header) {
@@ -346,11 +438,51 @@ fn purge_retired_spotify_storage(app: &AppHandle) {
     }
 }
 
+#[tauri::command]
+pub async fn finish_splash(app: AppHandle) -> Result<(), String> {
+    if let Some(main_window) = app.get_webview_window("main") {
+        let _ = main_window.show();
+        let _ = main_window.set_focus();
+    }
+    if let Some(splash_window) = app.get_webview_window("splash") {
+        let _ = splash_window.close();
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn restart_app(app: AppHandle) -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    {
+        if let Ok(exe) = std::env::current_exe() {
+            let app_bundle = exe
+                .ancestors()
+                .find(|p| p.extension().and_then(|e| e.to_str()) == Some("app"))
+                .map(|p| p.to_path_buf());
+
+            if let Some(bundle_path) = app_bundle {
+                let _ = std::process::Command::new("/bin/sh")
+                    .arg("-c")
+                    .arg("sleep 0.7 && open -a \"$1\"")
+                    .arg("sh")
+                    .arg(&bundle_path)
+                    .spawn();
+                app.exit(0);
+                return Ok(());
+            }
+        }
+    }
+
+    app.restart();
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_process::init())
         .manage(YtMusicLoginState::default())
         .manage(YtStreamProxy::default())
         .setup(|app| {
@@ -363,6 +495,14 @@ pub fn run() {
             Ok(())
         })
         .on_window_event(|window, event| {
+            if window.label() == "splash"
+                && matches!(event, tauri::WindowEvent::CloseRequested { .. })
+            {
+                if let Some(main_window) = window.app_handle().get_webview_window("main") {
+                    let _ = main_window.show();
+                    let _ = main_window.set_focus();
+                }
+            }
             if window.label() == "soundcloud-login"
                 && matches!(event, tauri::WindowEvent::CloseRequested { .. })
             {
@@ -386,6 +526,8 @@ pub fn run() {
             start_soundcloud_login,
             start_ytmusic_login,
             uninstall_app,
+            finish_splash,
+            restart_app,
             resolve_yt_stream_url,
             search_yt_tracks,
             fetch_yt_playlist_tracks
@@ -452,5 +594,33 @@ mod tests {
         ));
         assert!(!has_secure_papisid("SID=session"));
         assert!(!has_secure_papisid("__Secure-3PAPISID="));
+    }
+
+    #[test]
+    fn matches_domain_cookies_against_the_youtube_music_host() {
+        // WebKit reports the domain of a `Domain=youtube.com` cookie as
+        // "youtube.com", without a leading dot.
+        assert!(domain_applies_to("youtube.com", YTMUSIC_HOST));
+        assert!(domain_applies_to(".youtube.com", YTMUSIC_HOST));
+        assert!(domain_applies_to("music.youtube.com", YTMUSIC_HOST));
+        assert!(domain_applies_to(".MUSIC.YouTube.com", YTMUSIC_HOST));
+
+        // Cookies of other hosts must not leak into the header.
+        assert!(!domain_applies_to("google.com", YTMUSIC_HOST));
+        assert!(!domain_applies_to("accounts.google.com", YTMUSIC_HOST));
+        assert!(!domain_applies_to("google.com.ua", YTMUSIC_HOST));
+        assert!(!domain_applies_to("", YTMUSIC_HOST));
+
+        // A public suffix must not match every host below it.
+        assert!(!domain_applies_to("com", YTMUSIC_HOST));
+    }
+
+    #[test]
+    fn matches_cookie_paths_against_the_request_path() {
+        assert!(path_applies_to(None, "/"));
+        assert!(path_applies_to(Some("/"), "/"));
+        assert!(!path_applies_to(Some("/library"), "/"));
+        assert!(path_applies_to(Some("/youtubei"), "/youtubei/v1/browse"));
+        assert!(!path_applies_to(Some("/youtubei"), "/youtubeix/v1"));
     }
 }

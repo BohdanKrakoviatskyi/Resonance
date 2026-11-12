@@ -767,7 +767,35 @@ def _fetch_playlist_via_ytdlp(playlist_id: str) -> dict[str, Any]:
 def fetch_playlist_tracks_resilient(
     headers: dict[str, str] | None, playlist_id: str
 ) -> dict[str, Any]:
-    return _fetch_playlist_via_ytdlp(playlist_id)
+    clean_id = playlist_id[2:] if playlist_id.startswith("VL") else playlist_id
+    if headers:
+        try:
+            client = _ytmusic(headers)
+            playlist = client.get_playlist(clean_id, limit=None)
+            if isinstance(playlist, dict):
+                raw_tracks = playlist.get("tracks") or []
+                normalized = [
+                    t for item in raw_tracks if (t := normalize_track(item))
+                ]
+                if normalized:
+                    summary = normalize_playlist_summary(
+                        {"playlistId": clean_id, **playlist}
+                    )
+                    if not summary.get("artworkUrl"):
+                        summary["artworkUrl"] = normalized[0].get("artworkUrl")
+                    summary["trackCount"] = summary.get("trackCount") or len(
+                        normalized
+                    )
+                    return {
+                        **summary,
+                        "tracks": normalized,
+                    }
+        except Exception:
+            pass
+    try:
+        return _fetch_playlist_via_ytdlp(playlist_id)
+    except Exception:
+        return _fetch_playlist_via_browse(playlist_id, headers)
 
 
 def handle(request: dict[str, Any], data_dir: Path) -> Any:
