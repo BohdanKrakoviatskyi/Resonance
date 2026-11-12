@@ -154,8 +154,14 @@ export function ytMusicLibrarySync(signal?: AbortSignal): Promise<YtMusicLibrary
   return ytMusicRpc('library.sync', {}, signal);
 }
 
-export async function ytMusicPlaylistTracks(playlistId: string, _signal?: AbortSignal): Promise<YtMusicPlaylist> {
-  return invoke<YtMusicPlaylist>('fetch_yt_playlist_tracks', { playlistId });
+export async function ytMusicPlaylistTracks(playlistId: string, signal?: AbortSignal): Promise<YtMusicPlaylist> {
+  try {
+    const playlist = await invoke<YtMusicPlaylist>('fetch_yt_playlist_tracks', { playlistId });
+    if (playlist?.tracks && playlist.tracks.length > 0) return playlist;
+  } catch {
+    // Fallback to ytmusic-worker (ytmusicapi / InnerTube browse) for playlists yt-dlp can't parse.
+  }
+  return ytMusicRpc<YtMusicPlaylist>('playlist.tracks', { playlistId }, signal);
 }
 
 export function ytMusicPlaylistArtwork(playlistId: string, signal?: AbortSignal): Promise<string | null> {
