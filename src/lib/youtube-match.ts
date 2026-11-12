@@ -3,13 +3,17 @@ type YouTubeCandidate = { title: string; artist: string; durationMs: number };
 
 const normalize = (value: string) => value.toLocaleLowerCase().replace(/[’']/g, '').replace(/[^\p{L}\p{N}]+/gu, ' ').trim();
 
+const NOISE_BRACKET = /\s*[\[(]\s*(?:official(?: music)? video|official(?: audio| lyric video)?|lyrics?|audio|music video|mv|m\/v|visuali[sz]er|4k|hd|hq|explicit(?: version)?|clean(?: version)?|remaster(?:ed)?(?: \d{4})?|clip|prod\.?[^\])]*)\s*[\])]/gi;
+const NOISE_DASH = /\s*[-–—|]\s*(?:official(?: music)? video|official(?: audio)?|lyrics?|audio|music video|mv|visuali[sz]er|explicit|clean|remaster(?:ed)?|hq|hd|4k|clip)\b.*$/i;
+const VARIANT = /\b(?:live|acoustic|sped up|speed up|nightcore|slowed|reverb|remix|cover|karaoke|instrumental|8d)\b/g;
+
 function titleTokens(value: string) {
   const core = value
     .replace(/\s*[\[(]\s*(?:feat(?:uring)?|ft)\.?\s*[^)\]]*[)\]]/gi, ' ')
     .replace(/\s*\b(?:feat(?:uring)?|ft)\.?\s+.*$/i, ' ')
-    .replace(/\s*[\[(](?:official\b|lyrics?\b|audio\b|music video\b|visuali[sz]er\b|4k\b|hd\b)[^\])]*[\])]/gi, ' ')
-    .replace(/\s*[-–—|]\s*(?:official\b|lyrics\b|audio\b|music video\b|visuali[sz]er\b).*$/i, ' ');
-  return new Set(normalize(core).split(/\s+/).filter((token) => token.length > 1));
+    .replace(NOISE_BRACKET, ' ')
+    .replace(NOISE_DASH, ' ');
+  return new Set(normalize(core).split(' ').filter(Boolean));
 }
 
 function coverage(target: Set<string>, candidate: Set<string>) {
@@ -25,43 +29,62 @@ function featuredArtist(value: string) {
 }
 
 export function youtubeFallbackQueries(track: FallbackTrack) {
-  const title = featuredArtist(track.title);
   const artist = featuredArtist(track.artist);
-  return [...new Set([`${artist} - ${title}`.trim(), `${title} ${artist}`.trim(), title].filter(Boolean))];
+  let title = featuredArtist(track.title);
+  const prefix = `${artist} - `;
+  if (artist && title.toLocaleLowerCase().startsWith(prefix.toLocaleLowerCase())) title = title.slice(prefix.length).trim();
+  const queries = [artist && title ? `${artist} - ${title}` : '', artist && title ? `${title} ${artist}` : '', title];
+  const genericTitle = normalize(title).split(' ').filter(Boolean).length <= 1 && normalize(title).length <= 3;
+  return [...new Set(queries.filter(Boolean).filter((_q, i) => !(i === 2 && genericTitle && artist)))];
 }
 
 export function findYouTubeFallbackCandidate<T extends YouTubeCandidate>(track: FallbackTrack, candidates: T[]): T | null {
+  const hasKnownDuration = track.duration > 0;
+  const maxDiffSec = Math.max(10, track.duration * 0.1);
   const cleanTitle = normalize(featuredArtist(track.title));
   const cleanArtist = normalize(featuredArtist(track.artist));
+  const hasArtist = cleanArtist.length >= 2;
   const targetTitle = titleTokens(track.title);
-  const targetArtist = new Set(cleanArtist.split(/\s+/).filter((token) => token.length > 1));
-  const titleWords = cleanTitle.split(/\s+/).filter(Boolean);
+  const targetArtist = new Set(cleanArtist.split(' ').filter(Boolean));
+  const requested = new Set(normalize(track.title).match(VARIANT) ?? []);
+  const titleWords = cleanTitle.split(' ').filter(Boolean);
   const isShortOrGenericTitle = titleWords.length <= 1 && cleanTitle.length <= 8;
+  const isDistinctiveTitle = !isShortOrGenericTitle;
   const minTitleScore = isShortOrGenericTitle ? 0.9 : 0.75;
-  const hasKnownDuration = track.duration > 0;
 
-  return candidates
-    .map((candidate, index) => {
-      const candTitleClean = normalize(candidate.title);
-      const candArtistClean = normalize(candidate.artist);
-      const titleScore = coverage(targetTitle, titleTokens(candidate.title));
-      const rawArtistScore = coverage(targetArtist, new Set(candArtistClean.split(/\s+/).filter((token) => token.length > 1)));
-      const exactArtistMatch =
-        cleanArtist.length >= 2 &&
-        (candArtistClean.includes(cleanArtist) ||
-          cleanArtist.includes(candArtistClean) ||
-          candTitleClean.includes(cleanArtist));
-      const artistScore = exactArtistMatch ? Math.max(rawArtistScore, 1) : rawArtistScore;
-      const artistMatched = artistScore >= 0.65 || exactArtistMatch;
+  let best: { candidate: T; titleScore: number; artistScore: number; durationScore: number } | null = null;
+  for (const candidate of candidates) {
+    const candDurSec = candidate.durationMs / 1000;
+    let durationScore = 0.5;
+    if (hasKnownDuration && candDurSec > 0) {
+      const diffSec = Math.abs(track.duration - candDurSec);
+      if (diffSec > maxDiffSec) continue;
+      durationScore = 1 - diffSec / maxDiffSec;
+    }
 
-      const candDurSec = candidate.durationMs > 0 ? candidate.durationMs / 1000 : 0;
-      const diffSec = hasKnownDuration && candDurSec > 0 ? Math.abs(track.duration - candDurSec) : 999;
-      const within10Sec = hasKnownDuration ? (candDurSec > 0 && diffSec <= 10 ? 1 : 0) : 1;
-      const durationScore = hasKnownDuration && candDurSec > 0
-        ? 1 - Math.min(diffSec / Math.max(track.duration, candDurSec), 1)
-        : 0;
-      return { candidate, index, titleScore, artistScore, artistMatched, within10Sec, durationScore };
-    })
-    .filter(({ titleScore, artistMatched, within10Sec }) => titleScore >= minTitleScore && artistMatched && within10Sec === 1)
-    .sort((a, b) => b.titleScore - a.titleScore || b.artistScore - a.artistScore || b.durationScore - a.durationScore || a.index - b.index)[0]?.candidate ?? null;
+    const candTitle = normalize(candidate.title);
+    if (candTitle.match(VARIANT)?.some((word) => !requested.has(word))) continue;
+
+    const titleScore = coverage(targetTitle, titleTokens(candidate.title));
+    if (titleScore < minTitleScore) continue;
+
+    const candArtist = normalize(candidate.artist).replace(/(?:\s+topic|\s*vevo)$/, '');
+    const candCompact = candArtist.replace(/\s+/g, '');
+    const cleanCompact = cleanArtist.replace(/\s+/g, '');
+    const exactArtistMatch = hasArtist && (
+      (candCompact.length >= 2 && candCompact === cleanCompact) ||
+      (candArtist.length >= 2 && (` ${candArtist} `.includes(` ${cleanArtist} `) || ` ${cleanArtist} `.includes(` ${candArtist} `))) ||
+      ` ${candTitle} `.includes(` ${cleanArtist} `)
+    );
+    const rawArtistScore = coverage(targetArtist, new Set(candArtist.split(' ').filter(Boolean)));
+    const artistScore = exactArtistMatch ? 1 : rawArtistScore;
+    const titleOnlyRecovery = titleScore === 1 && isDistinctiveTitle && durationScore >= 0.8 && candArtist.length >= 2;
+    if (!(artistScore >= 0.65 || titleOnlyRecovery)) continue;
+
+    if (!best || titleScore > best.titleScore || (titleScore === best.titleScore && (artistScore > best.artistScore ||
+      (artistScore === best.artistScore && durationScore > best.durationScore)))) {
+      best = { candidate, titleScore, artistScore, durationScore };
+    }
+  }
+  return best?.candidate ?? null;
 }

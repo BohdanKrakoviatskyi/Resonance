@@ -394,6 +394,7 @@ type service struct {
 	ytStreamMu    sync.Mutex
 	ytStreamCache map[string]ytStreamCacheEntry
 	ytStreamCalls map[string]*ytStreamCall
+	ytStreamGen   uint64
 	// Local HTTP audio proxy/cache for YouTube playback (download+stream+disk cache).
 	ytAudio *ytAudioManager
 }
@@ -652,9 +653,13 @@ func (s *service) RPCSettingsClear(_ emptyParams) (settings, error) {
 	if err := removeFileIfExists(s.historyPath); err != nil {
 		return settings{}, fmt.Errorf("clear history: %w", err)
 	}
+	if err := removeFileIfExists(s.frontendBackupPath); err != nil {
+		return settings{}, fmt.Errorf("clear frontend backup: %w", err)
+	}
 	s.auth = authState{}
 	s.settings = defaultSettings()
 	s.history = nil
+	s.frontendBackup = make(map[string]string)
 	return s.settings, nil
 }
 
@@ -1597,9 +1602,7 @@ func (s *service) RPCMixedSelections(_ emptyParams) ([]mixedSelection, error) {
 	if s.auth.Token == "" {
 		return nil, errors.New("сначала подключите аккаунт SoundCloud")
 	}
-	query := url.Values{}
-	query.Set("oauth_token", s.auth.Token)
-	endpoint, err := s.soundcloudV2URL("/mixed-selections", query)
+	endpoint, err := s.soundcloudV2URL("/mixed-selections", url.Values{})
 	if err != nil {
 		return nil, fmt.Errorf("не удалось сформировать запрос подборок: %w", err)
 	}
@@ -2544,6 +2547,10 @@ func validBackgroundImage(value string) bool {
 		// The declared type alone is not enough: the bytes have to carry the same signature,
 		// so a data URL labelled image/jpeg cannot smuggle an arbitrary payload through here.
 		if !bytes.Equal(image[:len(format.magic)], format.magic) {
+			return false
+		}
+		// RIFF is shared by WAV, AVI and others, so WebP also needs its own marker at bytes 8-11.
+		if format.prefix == "data:image/webp;base64," && (len(image) < 12 || string(image[8:12]) != "WEBP") {
 			return false
 		}
 		// GIF87a is the older revision and GIF89a adds the graphic control extension. Both are
