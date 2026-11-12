@@ -67,7 +67,7 @@ class WorkerTests(unittest.TestCase):
         self.assertEqual(normalized["X-Goog-AuthUser"], "0")
         self.assertEqual(normalized["x-origin"], "https://music.youtube.com")
         self.assertEqual(normalized["Cookie"], HEADERS["Cookie"])
-        self.assertEqual(normalized["Authorization"], HEADERS["Authorization"])
+        self.assertRegex(normalized["Authorization"], r"^SAPISIDHASH \S+$")
 
         # The login window now supplies the native cookie only; Authorization is
         # derived from __Secure-3PAPISID so capture never depends on page hooks.
