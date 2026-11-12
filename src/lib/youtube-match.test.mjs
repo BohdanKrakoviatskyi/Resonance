@@ -28,5 +28,9 @@ test('retries with a clean title and without a potentially wrong SoundCloud uplo
     title: 'I Don’t Know (Radio Mix) [feat. Erika]',
     artist: 'SoundCloud Reposts',
     duration: 202,
-  }), ['I Don’t Know (Radio Mix) SoundCloud Reposts', 'I Don’t Know (Radio Mix)']);
+  }), [
+    'SoundCloud Reposts - I Don’t Know (Radio Mix)',
+    'I Don’t Know (Radio Mix) SoundCloud Reposts',
+    'I Don’t Know (Radio Mix)',
+  ]);
 });

@@ -97,6 +97,7 @@ function DeleteDialog({ id }: { id: string }) {
 function UpdateDialog() {
   const st = useStore(updater, (s) => s);
   const [installing, setInstalling] = useState(false);
+  const busy = installing || st.installing;
 
   useEffect(() => {
     void checkForUpdates();
@@ -106,7 +107,8 @@ function UpdateDialog() {
     setInstalling(true);
     try {
       await startInstallNewVersion();
-      openDialog({ kind: 'update-uninstall' });
+    } catch {
+      /* error state is captured in updater store */
     } finally {
       setInstalling(false);
     }
@@ -130,7 +132,21 @@ function UpdateDialog() {
             <span className="text-on-surface-variant">{t('updateLatestVer')}</span>
             <span className={cx('font-semibold', st.available && 'text-primary')}>v{st.latestVersion}</span>
           </div>
-          {!st.available && !st.error && (
+          {busy && (
+            <div className="pt-2">
+              <div className="mb-1.5 flex items-center justify-between text-xs font-semibold text-on-surface-variant">
+                <span>{st.progress >= 100 ? t('splashInstalling') : t('splashUpdating')}</span>
+                <span className="tabular-nums text-primary">{st.progress}%</span>
+              </div>
+              <div className="splash-progress-track">
+                <div
+                  className="splash-progress-fill"
+                  style={{ width: `${Math.max(4, Math.min(100, st.progress))}%` }}
+                />
+              </div>
+            </div>
+          )}
+          {!st.available && !st.error && !busy && (
             <p className="pt-2 text-on-surface-variant">{t('updateUpToDate')}</p>
           )}
           {st.error && (
@@ -139,15 +155,15 @@ function UpdateDialog() {
         </div>
       )}
       <div className="mt-6 flex flex-wrap justify-end gap-2">
-        <Button variant="text" onClick={closeDialog}>
+        <Button variant="text" disabled={busy} onClick={closeDialog}>
           {t('closeBtn')}
         </Button>
         {st.available ? (
-          <Button icon="download" disabled={installing || st.checking} onClick={() => void onInstall()}>
+          <Button icon="download" disabled={busy || st.checking} onClick={() => void onInstall()}>
             {t('updateInstallBtn')}
           </Button>
         ) : (
-          <Button variant="tonal" icon="refresh" disabled={st.checking} onClick={() => void checkForUpdates(true)}>
+          <Button variant="tonal" icon="refresh" disabled={busy || st.checking} onClick={() => void checkForUpdates(true)}>
             {t('updateCheckAgainBtn')}
           </Button>
         )}

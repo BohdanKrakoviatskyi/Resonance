@@ -26,3 +26,13 @@ commands.allow = [
   "search_yt_tracks",
   "fetch_yt_playlist_tracks"
 ]
+
+[[permission]]
+identifier = "allow-finish-splash"
+description = "Show the main window and close the splash window."
+commands.allow = ["finish_splash"]
+
+[[permission]]
+identifier = "allow-restart-app"
+description = "Cleanly restart the application after an update."
+commands.allow = ["restart_app"]

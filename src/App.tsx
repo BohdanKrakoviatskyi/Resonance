@@ -10,9 +10,9 @@ import { IconButton } from './components/ui';
 import { MD, useMedia, useStore, XL } from './lib/util';
 import { t, useLang } from './lib/i18n';
 import { loadSoundCloudLibrary, loadYtMusicLibrary } from './state/library';
-import { checkForUpdates } from './state/updater';
+import { checkForUpdates, startInstallNewVersion } from './state/updater';
 import { handleWindowShortcut } from './state/shortcut-runtime';
-import { routeKey, ui, type Route } from './state/ui';
+import { routeKey, snack, ui, type Route } from './state/ui';
 import Home from './pages/Home';
 import Collection from './pages/Collection';
 import Settings from './pages/Settings';
@@ -84,8 +84,17 @@ export default function App() {
   useEffect(() => {
     void loadSoundCloudLibrary();
     void loadYtMusicLibrary();
-    void checkForUpdates(true);
-    const timer = window.setInterval(() => void checkForUpdates(), 30 * 60 * 1000);
+    const runBgCheck = () => {
+      void checkForUpdates(true).then((st) => {
+        if (st.available) {
+          snack(`${t('updateAvailable')}: v${st.latestVersion}`, {
+            label: t('updateInstallBtn'),
+            run: () => void startInstallNewVersion(),
+          });
+        }
+      });
+    };
+    const timer = window.setInterval(runBgCheck, 30 * 60 * 1000);
     return () => window.clearInterval(timer);
   }, []);
 
