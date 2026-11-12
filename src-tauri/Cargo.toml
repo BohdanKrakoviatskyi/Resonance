@@ -24,6 +24,11 @@ serde = { version = "1.0", features = ["derive"] }
 log = "0.4"
 tauri = { version = "2.12.5", features = [] }
 tauri-plugin-log = "2"
-
 tauri-plugin-shell = "2"
 tauri-plugin-global-shortcut = "2"
+
+tokio = { version = "1.44", features = ["net", "io-util", "sync", "time", "macros", "rt-multi-thread", "process", "fs"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+sha2 = "0.10"
+keyring = { version = "3.6", features = ["windows-native", "apple-native", "sync-secret-service"] }
+url = "2.5"

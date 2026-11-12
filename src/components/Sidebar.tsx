@@ -158,7 +158,7 @@ export function Sidebar({ mode }: { mode: 'inline' | 'drawer' }) {
   const listRef = useRef<HTMLDivElement>(null);
   const [ind, setInd] = useState<{ y: number; h: number } | null>(null);
   const active = routeKey(route);
-  const showYtMusic = ytmusicConnected && ytmusicPlaylists.length > 0;
+  const showYtMusic = ytmusicPlaylists.length > 0;
   const showSoundCloud = soundcloudPlaylists.length > 0;
 
   useLayoutEffect(() => {
@@ -213,20 +213,24 @@ export function Sidebar({ mode }: { mode: 'inline' | 'drawer' }) {
               onToggle={() => ui.set({ foldYtMusic: !foldYtMusic })}
             />
             {!foldYtMusic &&
-              ytmusicPlaylists.map((p) => (
-                <NavItem
-                  key={`yt:${p.playlistId}`}
-                  k={'pl:' + ytmusicPlaylistId(p.playlistId)}
-                  label={p.title}
-                  labelPrefix={<img src={youtubeMusicLogo} alt="" aria-hidden="true" />}
-                  sub={tracksLabel(p.trackCount)}
-                  active={active === 'pl:' + ytmusicPlaylistId(p.playlistId)}
-                  expanded={expanded}
-                  playing={playing && !!curId && (library.get().ytmusicPlaylistTracks[p.playlistId] ?? []).some((track) => track.id === curId) && active === 'pl:' + ytmusicPlaylistId(p.playlistId)}
-                  art={<YtMusicPlaylistCover playlistId={p.playlistId} title={p.title} artworkUrl={p.artworkUrl} />}
-                  onClick={() => nav({ name: 'playlist', id: ytmusicPlaylistId(p.playlistId) })}
-                />
-              ))}
+              ytmusicPlaylists.map((p) => {
+                const loadedCount = library.get().ytmusicPlaylistTracks[p.playlistId]?.length;
+                const count = Number(p.trackCount) > 0 ? p.trackCount : loadedCount ?? p.trackCount ?? 0;
+                return (
+                  <NavItem
+                    key={`yt:${p.playlistId}`}
+                    k={'pl:' + ytmusicPlaylistId(p.playlistId)}
+                    label={p.title}
+                    labelPrefix={<img src={youtubeMusicLogo} alt="" aria-hidden="true" />}
+                    sub={tracksLabel(count)}
+                    active={active === 'pl:' + ytmusicPlaylistId(p.playlistId)}
+                    expanded={expanded}
+                    playing={playing && !!curId && (library.get().ytmusicPlaylistTracks[p.playlistId] ?? []).some((track) => track.id === curId) && active === 'pl:' + ytmusicPlaylistId(p.playlistId)}
+                    art={<YtMusicPlaylistCover playlistId={p.playlistId} title={p.title} artworkUrl={p.artworkUrl} />}
+                    onClick={() => nav({ name: 'playlist', id: ytmusicPlaylistId(p.playlistId) })}
+                  />
+                );
+              })}
           </>
         )}
         {showSoundCloud && (

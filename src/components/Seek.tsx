@@ -135,12 +135,13 @@ export function PlayButton() {
   const playing = useStore(player, (s) => s.playing);
   const loading = useStore(player, (s) => s.loading);
   const has = useStore(player, (s) => s.index >= 0);
-  const label = playing ? t('pause') : t('play');
+  const active = playing || loading;
+  const label = active ? t('pause') : t('play');
   return (
-    <button type="button" className="play-btn sl" data-ripple data-playing={playing} aria-label={label} data-tip={label} onClick={toggle} disabled={!has}>
+    <button type="button" className="play-btn sl" data-ripple data-playing={active} data-loading={loading} aria-label={label} data-tip={label} onClick={toggle} disabled={!has}>
       <Icon name="play_arrow" fill className="pi-play" />
       <Icon name="pause" fill className="pi-pause" />
-      {loading && playing && (
+      {loading && (
         <svg className="play-spin" viewBox="0 0 66 66" aria-hidden="true">
           <circle cx="33" cy="33" r="31" />
         </svg>

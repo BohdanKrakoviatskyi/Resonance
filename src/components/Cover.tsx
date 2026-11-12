@@ -20,6 +20,7 @@ export function Cover({ src, className, style, icon = 'music_note' }: { src?: st
           alt=""
           loading="lazy"
           decoding="async"
+          referrerPolicy="no-referrer"
           draggable={false}
           className={okSrc === src || loadedCoverUrls.has(src) ? 'ok' : ''}
           ref={(el) => {
@@ -78,6 +79,7 @@ export function ArtCover({ src, className, vt, onClick, label }: { src?: string;
           src={l.src}
           alt=""
           decoding="async"
+          referrerPolicy="no-referrer"
           draggable={false}
           className={l.ok ? 'ok' : ''}
           ref={(el) => {
@@ -105,7 +107,7 @@ export function PlaylistCover({ p, className, style }: { p: Playlist; className?
     return (
       <div className={cx('cover mosaic', className)} style={style}>
         {covers.map((c) => (
-          <img key={c} src={c} alt="" loading="lazy" decoding="async" draggable={false} />
+          <img key={c} src={c} alt="" loading="lazy" decoding="async" referrerPolicy="no-referrer" draggable={false} />
         ))}
       </div>
     );

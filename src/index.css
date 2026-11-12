@@ -139,10 +139,47 @@ html[data-theme=light] { color-scheme: light; }
     background:
       linear-gradient(140deg, rgb(255 255 255 / .11), rgb(255 255 255 / 0) 42%, rgb(255 255 255 / 0) 70%, rgb(255 255 255 / .05)),
       color-mix(in oklab, var(--tint) min(100%, calc(var(--glass-alpha) + var(--boost, 0%))), transparent);
-    -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(1.8) brightness(1.05);
-    backdrop-filter: blur(var(--glass-blur)) saturate(1.8) brightness(1.05);
+    -webkit-backdrop-filter: blur(calc(var(--glass-blur) * .72)) saturate(1.85) brightness(1.06);
+    backdrop-filter: blur(calc(var(--glass-blur) * .72)) saturate(1.85) brightness(1.06);
   }
-  html[data-glass=liquid][data-distort=on]:not([data-resizing]) .panel:not(.mini)::before { inset: -40px; filter: url(#lg-distort); }
+  html[data-glass=liquid][data-distort=on]:not([data-resizing]) .panel:not(.mini)::before {
+    inset: -24px;
+    filter: url(#lg-distort);
+  }
+  html[data-glass=liquid][data-distort=on]:not([data-resizing]) .panel:not(.mini)::after,
+  .demo-liquid::after {
+    inset: 0;
+    background:
+      radial-gradient(120% 90% at 18% 12%, rgb(255 255 255 / calc(var(--refract-k, .45) * .16)), transparent 54%),
+      radial-gradient(110% 85% at 84% 88%, color-mix(in oklab, var(--glass-spec-tint, rgb(255 255 255 / .16)) calc(var(--refract-k, .45) * 22%), transparent), transparent 58%);
+  }
+  html[data-theme-dragging="true"][data-glass=liquid][data-distort=on] .panel:not(.mini)::before,
+  html.is-picking[data-glass=liquid][data-distort=on] .panel:not(.mini)::before {
+    filter: none !important;
+  }
+  html.is-picking .panel::before,
+  html.is-picking .demo-liquid::before,
+  html.is-picking .demo-frosted::before {
+    -webkit-backdrop-filter: none !important;
+    backdrop-filter: none !important;
+  }
+  html.is-picking .panel {
+    box-shadow: none !important;
+  }
+  html.is-picking .bg-ambient,
+  html.is-picking .bg-neon-glow {
+    display: none !important;
+  }
+  html[data-theme-dragging="true"],
+  html[data-theme-dragging="true"] *,
+  html[data-theme-dragging="true"] *::before,
+  html[data-theme-dragging="true"] *::after,
+  html.is-picking,
+  html.is-picking *,
+  html.is-picking *::before,
+  html.is-picking *::after {
+    transition: none !important;
+  }
   html[data-glass=liquid] .panel::after, .demo-liquid::after {
     box-shadow:
       inset 1.5px 1.5px 0 -.5px rgb(255 255 255 / .5),
@@ -463,16 +500,16 @@ html[data-theme=light] { color-scheme: light; }
   /* ---------- now playing panel ---------- */
   .np { flex-shrink: 0; width: 360px; transition: width var(--sp-def-d) var(--sp-def), margin var(--sp-def-d) var(--sp-def); }
   .np[data-open=false] { width: 0; margin-left: calc(var(--gap) * -1); }
-  .np-inner { width: 360px; height: 100%; display: flex; flex-direction: column; padding: 20px 20px 18px; transition: opacity .3s, transform var(--sp-def-d) var(--sp-def); }
+  .np-inner { width: 360px; height: 100%; min-height: 0; display: flex; flex-direction: column; padding: 20px 20px 18px; transition: opacity .3s, transform var(--sp-def-d) var(--sp-def); }
   .np[data-mode=drawer], .np[data-mode=drawer] .np-inner { width: 100%; }
   .np[data-open=false] .np-inner { opacity: 0; transform: translateX(30px); }
-  .np-cover { width: min(100%, 36vh); aspect-ratio: 1; border-radius: 28px; margin: 0 auto; box-shadow: 0 18px 44px -18px rgb(0 0 0 / .6); cursor: pointer; transition: border-radius var(--sp-def-d) var(--sp-def), transform var(--sp-fast-d) var(--sp-fast); }
+  .np-cover { width: min(100%, 36vh); aspect-ratio: 1; flex-shrink: 0; border-radius: 28px; margin: 0 auto; box-shadow: 0 18px 44px -18px rgb(0 0 0 / .6); cursor: pointer; transition: border-radius var(--sp-def-d) var(--sp-def), transform var(--sp-fast-d) var(--sp-fast); }
   .np-cover:hover { border-radius: 40px; }
   .np-cover:active { transform: scale(.97); }
   .np-title { font-size: 24px; line-height: 1.15; margin: 16px 0 2px; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
   .np-artist { font-size: 15px; font-weight: 550; color: var(--md-on-surface-variant); transition: color .2s; }
   .np-artist:hover { color: var(--md-primary); text-decoration: underline; text-underline-offset: 3px; }
-  .np-body { flex: 1; min-height: 160px; margin-top: 12px; border-radius: 24px; overflow: hidden; background: color-mix(in oklab, var(--md-surface-container-highest) 34%, transparent); }
+  .np-body { position: relative; flex: 1 1 0%; min-height: 160px; margin-top: 12px; border-radius: 24px; overflow: hidden; background: color-mix(in oklab, var(--md-surface-container-highest) 34%, transparent); }
   html[data-glass=off] .np-body { background: var(--md-surface-container); }
   .np-queue { height: 100%; overflow-y: auto; padding: 8px; }
   .meta-in { animation: rise var(--sp-def-d) var(--sp-def) backwards; }
@@ -828,8 +865,8 @@ html[data-theme=light] { color-scheme: light; }
   .anim-in { animation: rise var(--sp-def-d) var(--sp-def) backwards; animation-delay: calc(min(var(--i, 0), 14) * 32ms); }
 
   /* ---------- background ---------- */
-  .bg-root { position: fixed; inset: 0; z-index: -1; overflow: hidden; background: var(--md-surface); transition: background-color .6s var(--ease-emph); }
-  .bg-layer { position: absolute; inset: 0; overflow: hidden; animation: fade .75s var(--ease-emph) backwards; transition: background-color .6s var(--ease-emph); backface-visibility: hidden; }
+  .bg-root { position: fixed; inset: 0; z-index: -1; overflow: hidden; contain: layout style paint; transform: translateZ(0); will-change: background; background: var(--md-surface); transition: background-color .6s var(--ease-emph); }
+  .bg-layer { position: absolute; inset: 0; overflow: hidden; contain: layout style paint; transform: translateZ(0); will-change: background; animation: fade .75s var(--ease-emph) backwards; transition: background-color .6s var(--ease-emph); backface-visibility: hidden; }
   .bg-layer img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; transform: scale(1.24); transform-origin: center; transition: filter .6s var(--ease-emph); will-change: transform, filter; backface-visibility: hidden; }
   .bg-image-drift { animation: bg-img-float 26s ease-in-out infinite alternate; }
   .bg-ambient {
@@ -872,7 +909,7 @@ html[data-theme=light] { color-scheme: light; }
     position: absolute; border-radius: 50%; pointer-events: none;
     mix-blend-mode: screen;
     filter: blur(72px);
-    opacity: calc(var(--metal-neon-k, 0.45) * 0.42);
+    opacity: calc(var(--metal-neon-k, 0) * 0.42);
     transition: opacity .55s var(--ease-emph);
     will-change: opacity;
   }
