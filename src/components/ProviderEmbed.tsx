@@ -21,15 +21,25 @@ declare global {
   }
 }
 
-function script(id: string, src: string): Promise<void> {
-  const found = document.getElementById(id) as HTMLScriptElement | null;
-  if (found?.dataset.loaded === 'true') return Promise.resolve();
-  return new Promise((resolve, reject) => {
-    const element = found ?? Object.assign(document.createElement('script'), { id, src, async: true });
-    element.addEventListener('load', () => { element.dataset.loaded = 'true'; resolve(); }, { once: true });
-    element.addEventListener('error', () => reject(new Error(`Could not load ${id}`)), { once: true });
-    if (!found) document.head.append(element);
+let youtubeApi: Promise<YouTubeAPI> | undefined;
+
+function loadYouTubeApi(): Promise<YouTubeAPI> {
+  if (window.YT?.Player) return Promise.resolve(window.YT);
+  youtubeApi ??= new Promise((resolve, reject) => {
+    const previousReady = window.onYouTubeIframeAPIReady;
+    window.onYouTubeIframeAPIReady = () => {
+      previousReady?.();
+      if (window.YT?.Player) resolve(window.YT);
+    };
+    const element = Object.assign(document.createElement('script'), { id: 'youtube-iframe-api', src: 'https://www.youtube.com/iframe_api', async: true });
+    element.addEventListener('error', () => {
+      element.remove();
+      youtubeApi = undefined;
+      reject(new Error('Could not load youtube-iframe-api'));
+    }, { once: true });
+    document.head.append(element);
   });
+  return youtubeApi;
 }
 
 export function usesProviderEmbed(track: Track) {
@@ -40,80 +50,90 @@ export function ProviderEmbed({ track }: { track: Track }) {
   const host = useRef<HTMLDivElement>(null);
   useEffect(() => {
     if (!usesProviderEmbed(track) || !host.current || !track.nativeId) return;
+    const videoId = track.nativeId;
+    const duration = track.duration;
     let disposed = false;
-    let unregister = () => {};
     let endedSent = false;
     let timer: number | undefined;
     let player: YouTubePlayer | undefined;
-    let previousReady: (() => void) | undefined;
-    let readyCallback: (() => void) | undefined;
+    const el = host.current;
+    let unregister = () => {};
     const clearTimer = () => {
       if (timer !== undefined) {
         window.clearInterval(timer);
         timer = undefined;
       }
     };
-    const report = (playing: boolean, loading: boolean, position = 0, duration = track.duration, ended = false) => {
+    const report = (playing: boolean, loading: boolean, position = 0, length = duration, ended = false) => {
       if (disposed) return;
       if (playing) endedSent = false;
       const endedNow = ended && !endedSent;
       if (endedNow) endedSent = true;
-      publishProviderState({ playing, loading, position, duration, ended: endedNow });
+      publishProviderState({ playing, loading, position, duration: length, ended: endedNow });
+    };
+    const destroyPlayer = () => {
+      clearTimer();
+      const current = player;
+      player = undefined;
+      if (current) {
+        try { current.destroy(); } catch {}
+      }
+      el.replaceChildren();
     };
 
     if (track.source === 'youtube') {
-      previousReady = window.onYouTubeIframeAPIReady;
-      readyCallback = () => {
-        previousReady?.();
-        const YT = window.YT;
-        if (disposed || !YT || !host.current) return;
-        player = new YT.Player(host.current, {
-          videoId: track.nativeId!, width: '100%', height: 270,
+      report(false, true, 0);
+      loadYouTubeApi().then((YT) => {
+        if (disposed) return;
+        const isActive = (state: number) => state === YT.PlayerState.PLAYING || state === YT.PlayerState.BUFFERING;
+        const sample = (target: YouTubePlayer) => {
+          const state = target.getPlayerState();
+          const length = target.getDuration();
+          report(state === YT.PlayerState.PLAYING, state === YT.PlayerState.BUFFERING, target.getCurrentTime(), Number.isFinite(length) && length > 0 ? length : duration, state === YT.PlayerState.ENDED);
+          return state;
+        };
+        const tick = () => {
+          if (player && !isActive(sample(player))) clearTimer();
+        };
+        const syncTimer = (state: number) => {
+          if (!isActive(state)) return clearTimer();
+          if (timer === undefined) timer = window.setInterval(tick, 500);
+        };
+        const mount = document.createElement('div');
+        el.append(mount);
+        player = new YT.Player(mount, {
+          videoId, width: '100%', height: 270,
           playerVars: { autoplay: 0, controls: 1, playsinline: 1 },
           events: {
             onReady: ({ target }) => {
-              if (disposed) {
-                try { target.destroy(); } catch {}
-                return;
-              }
-              timer = window.setInterval(() => {
-                if (disposed) return;
-                const state = target.getPlayerState();
-                report(state === YT.PlayerState.PLAYING, state === YT.PlayerState.BUFFERING, target.getCurrentTime(), target.getDuration(), state === YT.PlayerState.ENDED);
-              }, 500);
+              if (disposed) return;
               unregister = registerProviderControls({
                 play: () => target.playVideo(), pause: () => target.pauseVideo(),
                 seek: (seconds) => target.seekTo(seconds, true), setVolume: (volume) => target.setVolume(volume * 100),
-                destroy: () => { clearTimer(); try { target.destroy(); } catch {} },
+                destroy: destroyPlayer,
               });
-              report(false, false, target.getCurrentTime(), target.getDuration());
+              syncTimer(sample(target));
             },
-            onStateChange: ({ target, data }) => {
+            onStateChange: ({ target }) => {
               if (disposed) return;
-              report(data === YT.PlayerState.PLAYING, data === YT.PlayerState.BUFFERING, target.getCurrentTime(), target.getDuration(), data === YT.PlayerState.ENDED);
+              syncTimer(sample(target));
+            },
+            onError: () => {
+              if (disposed) return;
+              clearTimer();
+              report(false, false, 0);
             },
           },
         });
-        void player;
-      };
-      window.onYouTubeIframeAPIReady = readyCallback;
-      if (window.YT) readyCallback();
-      else void script('youtube-iframe-api', 'https://www.youtube.com/iframe_api').catch(() => report(false, false));
+      }).catch(() => report(false, false));
     }
 
     return () => {
       disposed = true;
-      clearTimer();
       unregister();
       unregister = () => {};
-      if (readyCallback && window.onYouTubeIframeAPIReady === readyCallback) {
-        window.onYouTubeIframeAPIReady = previousReady;
-      }
-      if (player) {
-        try { player.destroy(); } catch {}
-        player = undefined;
-      }
+      destroyPlayer();
     };
-  }, [track.id, track.nativeId, track.source, track.duration]);
+  }, [track.id, track.nativeId, track.source]);
   return usesProviderEmbed(track) ? <div ref={host} className="provider-embed mt-4 min-h-[200px] w-full overflow-hidden rounded-2xl bg-surface-container-low" aria-label={`${track.source} player`} /> : null;
 }

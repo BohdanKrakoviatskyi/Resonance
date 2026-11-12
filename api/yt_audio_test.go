@@ -126,3 +126,33 @@ func TestGrowingFileReadWaitsForDataStillDownloading(t *testing.T) {
 		t.Fatal("Read did not resume after data was appended")
 	}
 }
+
+func TestPruneOrphansKeepsOnlyCompleteAudio(t *testing.T) {
+	dir := t.TempDir()
+	manager := &ytAudioManager{cacheDir: dir}
+	files := map[string]bool{
+		"done1.m4a":      true,
+		"done1.m4a.done": true,
+		"orphan.m4a":     false,
+		"stale.m4a.done": false,
+		"x.abc123.meta":  false,
+		"y.m4a.part":     false,
+	}
+	for name := range files {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte("x"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	manager.pruneOrphans()
+
+	for name, keep := range files {
+		_, err := os.Stat(filepath.Join(dir, name))
+		if keep && err != nil {
+			t.Errorf("%s was removed but is complete", name)
+		}
+		if !keep && err == nil {
+			t.Errorf("%s survived pruning", name)
+		}
+	}
+}

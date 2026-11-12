@@ -23,7 +23,12 @@ import (
 const (
 	ytAudioCacheMaxBytes = 3 << 30 // 3 GiB
 	ytAudioTokenBytes    = 16
+	ytAudioMaxDownloads  = 3 // concurrent yt-dlp processes
+	ytAudioMaxPrefetch   = 1 // of those, how many may be prefetches; the rest stay free for playback
+	ytAudioTouchInterval = time.Hour
 )
+
+var ytAudioExts = []string{".m4a", ".webm", ".opus", ".mp3", ".ogg"}
 
 type ytAudioManager struct {
 	mu       sync.Mutex
@@ -32,6 +37,9 @@ type ytAudioManager struct {
 	token    string
 	client   *http.Client
 	active   map[string]*ytAudioActive
+	maxBytes int64 // cache size limit, 0 means ytAudioCacheMaxBytes
+	slots    chan struct{}
+	prefetch chan struct{}
 }
 
 // ytAudioActive is one in-flight download plus everything a reader needs to
@@ -42,9 +50,10 @@ type ytAudioActive struct {
 	done chan struct{}
 
 	mu          sync.Mutex
-	changed     chan struct{} // closed and replaced on every state change
-	size        int64         // bytes written so far
-	total       int64         // expected final size, 0 when unknown
+	changed     chan struct{} // allocated only while a reader waits; closed on the next state change
+	waiting     bool
+	size        int64 // bytes written so far
+	total       int64 // expected final size, 0 when unknown
 	path        string
 	contentType string
 	metaKnown   bool
@@ -53,15 +62,26 @@ type ytAudioActive struct {
 }
 
 func newYTAudioActive() *ytAudioActive {
-	return &ytAudioActive{
-		done:    make(chan struct{}),
-		changed: make(chan struct{}),
+	return &ytAudioActive{done: make(chan struct{})}
+}
+
+// notifyLocked wakes waiting readers. It is a no-op when nobody waits, so the
+// per-chunk writes do not allocate or close channels.
+func (a *ytAudioActive) notifyLocked() {
+	if a.waiting {
+		close(a.changed)
+		a.changed = nil
+		a.waiting = false
 	}
 }
 
-func (a *ytAudioActive) notifyLocked() {
-	close(a.changed)
-	a.changed = make(chan struct{})
+// waitChanLocked returns a channel closed on the next state change. Caller holds mu.
+func (a *ytAudioActive) waitChanLocked() chan struct{} {
+	if a.changed == nil {
+		a.changed = make(chan struct{})
+	}
+	a.waiting = true
+	return a.changed
 }
 
 func (a *ytAudioActive) setMeta(total int64) {
@@ -104,11 +124,12 @@ func (a *ytAudioActive) waitReady(ctx context.Context) bool {
 	for {
 		a.mu.Lock()
 		ready := (a.metaKnown && a.path != "" && a.contentType != "") || a.finished
-		changed := a.changed
-		a.mu.Unlock()
 		if ready {
+			a.mu.Unlock()
 			return true
 		}
+		changed := a.waitChanLocked()
+		a.mu.Unlock()
 		select {
 		case <-changed:
 		case <-ctx.Done():
@@ -124,6 +145,8 @@ func newYTAudioManager(cacheDir string, client *http.Client) *ytAudioManager {
 		token:    token,
 		client:   client,
 		active:   make(map[string]*ytAudioActive),
+		slots:    make(chan struct{}, ytAudioMaxDownloads),
+		prefetch: make(chan struct{}, ytAudioMaxPrefetch),
 	}
 }
 
@@ -139,6 +162,7 @@ func (m *ytAudioManager) start() error {
 	if err := os.MkdirAll(m.cacheDir, 0o700); err != nil {
 		return fmt.Errorf("create yt audio cache: %w", err)
 	}
+	m.pruneOrphans()
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		return fmt.Errorf("listen yt audio server: %w", err)
@@ -166,12 +190,13 @@ func (m *ytAudioManager) ensureCached(videoID string) {
 	if !validYouTubeVideoID(videoID) {
 		return
 	}
-	m.acquire(videoID)
+	m.acquire(videoID, false)
 }
 
 // acquire returns the active download for id, starting one if needed, or nil
-// when the file is already fully cached.
-func (m *ytAudioManager) acquire(videoID string) *ytAudioActive {
+// when the file is already fully cached or a prefetch was dropped for lack of
+// a prefetch slot (a prefetch is only a hint, so dropping one is harmless).
+func (m *ytAudioManager) acquire(videoID string, prefetch bool) *ytAudioActive {
 	if _, ok := m.cachedPath(videoID); ok {
 		return nil
 	}
@@ -184,10 +209,24 @@ func (m *ytAudioManager) acquire(videoID string) *ytAudioActive {
 	if active, ok := m.active[videoID]; ok {
 		return active
 	}
+	if prefetch {
+		select {
+		case m.prefetch <- struct{}{}:
+		default:
+			return nil
+		}
+	}
 	active := newYTAudioActive()
 	m.active[videoID] = active
 	go func() {
+		// Playback waits for a download slot; a prefetch also holds the single
+		// prefetch slot, so at most one slot is ever taken by prefetches.
+		m.slots <- struct{}{}
 		err := m.downloadToCache(videoID, active)
+		<-m.slots
+		if prefetch {
+			<-m.prefetch
+		}
 		m.mu.Lock()
 		delete(m.active, videoID)
 		m.mu.Unlock()
@@ -209,7 +248,7 @@ func (m *ytAudioManager) acquire(videoID string) *ytAudioActive {
 func (m *ytAudioManager) cachedPath(videoID string) (string, bool) {
 	// A file counts only with its .done marker, so a truncated download
 	// (>64 KB but incomplete) is not mistaken for a complete cache.
-	for _, ext := range []string{".m4a", ".webm", ".opus", ".mp3", ".ogg"} {
+	for _, ext := range ytAudioExts {
 		path := filepath.Join(m.cacheDir, videoID+ext)
 		if _, err := os.Stat(path + ".done"); err != nil {
 			continue
@@ -224,7 +263,19 @@ func (m *ytAudioManager) cachedPath(videoID string) (string, bool) {
 func (m *ytAudioManager) serveCached(w http.ResponseWriter, r *http.Request, path string) {
 	w.Header().Set("Access-Control-Allow-Origin", "*")
 	w.Header().Set("Cache-Control", "private, max-age=31536000, immutable")
+	m.touch(path)
 	http.ServeFile(w, r, path)
+}
+
+// touch refreshes a cache file's mtime, the LRU clock enforceCacheLimit evicts
+// by. Throttled so repeated plays do not turn every hit into a metadata write.
+func (m *ytAudioManager) touch(path string) {
+	info, err := os.Stat(path)
+	if err != nil || time.Since(info.ModTime()) < ytAudioTouchInterval {
+		return
+	}
+	now := time.Now()
+	_ = os.Chtimes(path, now, now)
 }
 
 func (m *ytAudioManager) handleAudio(w http.ResponseWriter, r *http.Request) {
@@ -252,12 +303,12 @@ func (m *ytAudioManager) handleAudio(w http.ResponseWriter, r *http.Request) {
 
 	// Prefetch probe: start caching in background without tying up this request.
 	if r.URL.Query().Get("prefetch") == "1" {
-		m.ensureCached(id)
+		m.acquire(id, true)
 		w.WriteHeader(http.StatusAccepted)
 		return
 	}
 
-	active := m.acquire(id)
+	active := m.acquire(id, false)
 	if active == nil {
 		if path, ok := m.cachedPath(id); ok {
 			m.serveCached(w, r, path)
@@ -356,7 +407,6 @@ func (g *ytGrowingFile) Read(p []byte) (int, error) {
 		g.active.mu.Lock()
 		size, total := g.active.size, g.active.total
 		finished, err := g.active.finished, g.active.err
-		changed := g.active.changed
 		g.active.mu.Unlock()
 
 		if total > 0 && g.pos >= total {
@@ -385,6 +435,15 @@ func (g *ytGrowingFile) Read(p []byte) (int, error) {
 			}
 			return 0, io.EOF
 		}
+		// Re-check under the lock so a write that landed since the snapshot is
+		// not missed; the wait channel is only allocated when we must block.
+		g.active.mu.Lock()
+		if g.pos < g.active.size || g.active.finished {
+			g.active.mu.Unlock()
+			continue
+		}
+		changed := g.active.waitChanLocked()
+		g.active.mu.Unlock()
 		select {
 		case <-changed:
 		case <-g.ctx.Done():
@@ -412,10 +471,11 @@ func sniffAudioType(chunk []byte) (ext, contentType string) {
 	return ".m4a", "audio/mp4"
 }
 
-// readYtDlpSize parses the byte count yt-dlp writes before downloading. The
-// file appears before the first media byte, so a short retry is enough.
+// readYtDlpSize parses the byte count yt-dlp writes before downloading. It
+// prints "NA" when no size is known, which yields 0. The file is written before
+// the first media byte, so only a brief retry is needed.
 func readYtDlpSize(path string) int64 {
-	for attempt := 0; attempt < 20; attempt++ {
+	for attempt := 0; attempt < 4; attempt++ {
 		if data, err := os.ReadFile(path); err == nil {
 			text := strings.TrimSpace(string(data))
 			if text != "" {
@@ -426,7 +486,7 @@ func readYtDlpSize(path string) int64 {
 				return 0
 			}
 		}
-		time.Sleep(50 * time.Millisecond)
+		time.Sleep(25 * time.Millisecond)
 	}
 	return 0
 }
@@ -452,7 +512,7 @@ func (m *ytAudioManager) downloadToCache(id string, active *ytAudioActive) error
 	cmd := exec.CommandContext(dlCtx, binary,
 		"--no-warnings", "--no-progress", "--no-playlist",
 		"--extractor-retries", "2", "--socket-timeout", "15",
-		"--no-simulate", "--print-to-file", "%(filesize)s", metaPath,
+		"--no-simulate", "--print-to-file", "%(filesize,filesize_approx)s", metaPath,
 		"--format", "bestaudio[ext=m4a]/bestaudio[ext=webm]/bestaudio",
 		"-o", "-",
 		videoURL,
@@ -490,6 +550,9 @@ func (m *ytAudioManager) downloadToCache(id string, active *ytAudioActive) error
 				active.setMeta(total)
 				ext, contentType := sniffAudioType(chunk)
 				path = filepath.Join(m.cacheDir, id+ext)
+				// Drop a stale marker first: otherwise cachedPath would serve the
+				// file as complete while it is being overwritten.
+				_ = os.Remove(path + ".done")
 				file, err = os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
 				if err != nil {
 					return err
@@ -508,11 +571,7 @@ func (m *ytAudioManager) downloadToCache(id string, active *ytAudioActive) error
 
 	waitErr := cmd.Wait()
 	if waitErr != nil {
-		msg := strings.TrimSpace(stderrBuf.String())
-		if len(msg) > 400 {
-			msg = msg[:400]
-		}
-		if msg != "" {
+		if msg := ytDlpErrorDetail(stderrBuf.String()); msg != "" {
 			return fmt.Errorf("yt-dlp: %s", msg)
 		}
 		return fmt.Errorf("yt-dlp: %w", waitErr)
@@ -525,9 +584,12 @@ func (m *ytAudioManager) downloadToCache(id string, active *ytAudioActive) error
 		return errors.New("yt-dlp produced too little audio data")
 	}
 	if total > 0 && written != total {
-		// The stream is still usable; only a reader that was promised the
-		// reported length would stop early. Record it so the cause is obvious.
+		// The reported size was approximate. Correct it so later readers see the
+		// real length. Requests that already sent the old Content-Length end short.
 		log.Printf("yt audio size mismatch id=%s expected=%d actual=%d", id, total, written)
+		active.mu.Lock()
+		active.total = written
+		active.mu.Unlock()
 	}
 
 	closeFile()
@@ -540,15 +602,48 @@ func (m *ytAudioManager) downloadToCache(id string, active *ytAudioActive) error
 	return nil
 }
 
+// pruneOrphans removes leftovers a crash or kill can leave behind: partial
+// and meta files, and audio without a .done marker. Runs before any download.
+func (m *ytAudioManager) pruneOrphans() {
+	entries, err := os.ReadDir(m.cacheDir)
+	if err != nil {
+		return
+	}
+	for _, e := range entries {
+		name := e.Name()
+		if e.IsDir() {
+			continue
+		}
+		drop := strings.HasSuffix(name, ".part") || strings.HasSuffix(name, ".meta")
+		if !drop && strings.HasSuffix(name, ".done") {
+			_, statErr := os.Stat(filepath.Join(m.cacheDir, strings.TrimSuffix(name, ".done")))
+			drop = os.IsNotExist(statErr)
+		} else if !drop {
+			isAudio := false
+			for _, ext := range ytAudioExts {
+				isAudio = isAudio || filepath.Ext(name) == ext
+			}
+			if isAudio {
+				_, doneErr := os.Stat(filepath.Join(m.cacheDir, name+".done"))
+				drop = os.IsNotExist(doneErr)
+			}
+		}
+		if drop {
+			_ = os.Remove(filepath.Join(m.cacheDir, name))
+		}
+	}
+}
+
 func (m *ytAudioManager) enforceCacheLimit(extra int64) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
+	// Directory scan and sort run without m.mu so playback requests are not
+	// stalled behind disk work; m.mu is taken only to check and remove each file.
 	entries, err := os.ReadDir(m.cacheDir)
 	if err != nil {
 		return
 	}
 	type item struct {
-		path string
+		id   string
+		name string
 		size int64
 		mod  time.Time
 	}
@@ -562,10 +657,17 @@ func (m *ytAudioManager) enforceCacheLimit(extra int64) {
 		if err != nil {
 			continue
 		}
-		items = append(items, item{path: filepath.Join(m.cacheDir, e.Name()), size: info.Size(), mod: info.ModTime()})
+		// Cache files are "<videoID>.<ext>"; video IDs contain no dots, so the
+		// prefix identifies the download a file belongs to.
+		id, _, _ := strings.Cut(e.Name(), ".")
+		items = append(items, item{id: id, name: e.Name(), size: info.Size(), mod: info.ModTime()})
 		total += info.Size()
 	}
-	target := int64(ytAudioCacheMaxBytes) - extra
+	limit := m.maxBytes
+	if limit <= 0 {
+		limit = ytAudioCacheMaxBytes
+	}
+	target := limit - extra
 	if total <= target {
 		return
 	}
@@ -574,8 +676,30 @@ func (m *ytAudioManager) enforceCacheLimit(extra int64) {
 		if total <= target {
 			break
 		}
-		if err := os.Remove(it.path); err == nil {
+		if m.removeIfIdle(it.id, it.name) {
 			total -= it.size
 		}
 	}
+}
+
+// removeIfIdle deletes a cache file and its sidecars unless its download is
+// in flight. The active check and the removal share m.mu so a download cannot
+// start on the same id in between.
+func (m *ytAudioManager) removeIfIdle(id, name string) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if _, busy := m.active[id]; busy {
+		return false
+	}
+	path := filepath.Join(m.cacheDir, name)
+	if err := os.Remove(path); err != nil {
+		return false
+	}
+	_ = os.Remove(path + ".done")
+	if metas, err := filepath.Glob(filepath.Join(m.cacheDir, id+".*.meta")); err == nil {
+		for _, meta := range metas {
+			_ = os.Remove(meta)
+		}
+	}
+	return true
 }

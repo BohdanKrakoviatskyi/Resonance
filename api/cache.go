@@ -5,6 +5,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"strings"
 )
 
 // cacheClearResult reports how much cached data was removed. User data —
@@ -29,6 +30,7 @@ func (s *service) RPCCacheClear(_ emptyParams) (cacheClearResult, error) {
 	s.ytStreamMu.Lock()
 	result.StreamEntriesCleared = len(s.ytStreamCache)
 	s.ytStreamCache = make(map[string]ytStreamCacheEntry)
+	s.ytStreamGen++
 	s.ytStreamMu.Unlock()
 
 	if s.ytAudio != nil {
@@ -45,9 +47,14 @@ func (s *service) RPCCacheClear(_ emptyParams) (cacheClearResult, error) {
 }
 
 // clear removes every cached audio file (and its .done marker) from the
-// cache directory. In-flight downloads keep running and will re-create
-// their file when they finish; those are re-fetched on demand anyway.
+// cache directory. Files belonging to in-flight downloads are skipped, since
+// they are open or still being written (and can't be removed on Windows).
+// Removal is best effort: a file that can't be removed is skipped.
 func (m *ytAudioManager) clear() (int, int64, error) {
+	// Held for the whole pass so no download can register between the
+	// active check and the removal (acquire takes the same lock).
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	entries, err := os.ReadDir(m.cacheDir)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -61,13 +68,19 @@ func (m *ytAudioManager) clear() (int, int64, error) {
 		if e.IsDir() {
 			continue
 		}
+		// Cache files are "<videoID>.<ext>" (and .done/.meta siblings); video IDs contain no dots.
+		id, _, _ := strings.Cut(e.Name(), ".")
+		if _, busy := m.active[id]; busy {
+			continue
+		}
 		path := filepath.Join(m.cacheDir, e.Name())
 		info, err := e.Info()
 		if err != nil {
 			continue
 		}
 		if err := os.Remove(path); err != nil {
-			return deleted, bytesFreed, err
+			log.Printf("cache.clear skip %s: %v", e.Name(), err)
+			continue
 		}
 		deleted++
 		bytesFreed += info.Size()

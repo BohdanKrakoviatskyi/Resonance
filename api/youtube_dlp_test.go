@@ -1,6 +1,11 @@
 package main
 
-import "testing"
+import (
+	"strings"
+	"testing"
+	"time"
+	"unicode/utf8"
+)
 
 func TestParseYtDlpSearchResultsMapsEntriesToPlayableTracks(t *testing.T) {
 	results, err := parseYtDlpSearchResults([]byte(`{
@@ -36,6 +41,44 @@ func TestYtDlpAudioURLRequiresHTTPSGoogleVideoHost(t *testing.T) {
 		if validYtDlpAudioURL(value) {
 			t.Errorf("unexpectedly accepted URL %q", value)
 		}
+	}
+}
+
+func TestParseYtDlpSearchResultsSkipsLiveAndZeroDuration(t *testing.T) {
+	results, err := parseYtDlpSearchResults([]byte(`{"entries":[
+		{"id":"cswfR85D7jM","title":"Live","duration":0},
+		{"id":"NB7WuqWzDhw","title":"Song","duration":214}
+	]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(results) != 1 || results[0].NativeID != "NB7WuqWzDhw" {
+		t.Fatalf("got %#v, want only the track with a duration", results)
+	}
+}
+
+func TestYtStreamExpiryHonorsSignedExpire(t *testing.T) {
+	now := time.Unix(1_000_000, 0)
+	signed := "https://rr1.googlevideo.com/videoplayback?expire=1000600&sig=x"
+	if got, want := ytStreamExpiry(signed, now), time.Unix(1_000_300, 0); !got.Equal(want) {
+		t.Fatalf("expiry = %v, want %v (expire minus margin)", got, want)
+	}
+	if got, want := ytStreamExpiry("https://rr1.googlevideo.com/videoplayback?sig=x", now), now.Add(ytStreamCacheTTL); !got.Equal(want) {
+		t.Fatalf("unsigned expiry = %v, want %v", got, want)
+	}
+	if got := ytStreamExpiry("https://rr1.googlevideo.com/videoplayback?expire=1000000", now); now.Before(got) {
+		t.Fatalf("already-expired URL should not be cacheable, got expiry %v", got)
+	}
+}
+
+func TestYtDlpErrorDetailKeepsLastErrorAndValidUTF8(t *testing.T) {
+	stderr := "WARNING: noise\nERROR: Sign in to confirm\n" + strings.Repeat("é", 600)
+	msg := ytDlpErrorDetail(stderr)
+	if !strings.HasPrefix(msg, "ERROR: Sign in") {
+		t.Fatalf("expected the ERROR line, got %q", msg[:20])
+	}
+	if !utf8.ValidString(msg) || len([]rune(msg)) > 500 {
+		t.Fatalf("message not valid UTF-8 or too long: %d runes", len([]rune(msg)))
 	}
 }
 
