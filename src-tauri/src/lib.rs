@@ -1,6 +1,11 @@
+pub mod yt_proxy;
+
 use std::sync::Mutex;
 use std::time::Duration;
 
+use yt_proxy::{
+    YtStreamProxy, fetch_yt_playlist_tracks, resolve_yt_stream_url, search_yt_tracks,
+};
 use tauri::webview::Cookie;
 use tauri::{
     AppHandle, Emitter, Manager, State, Url, WebviewUrl, WebviewWindow, WebviewWindowBuilder,
@@ -310,12 +315,53 @@ if ($item) {
     }
 }
 
+/// Одноразовая зачистка устаревших токенов, куки и кэшей удалённой интеграции
+fn purge_retired_spotify_storage(app: &AppHandle) {
+    for account in ["oauth_tokens", "oauth_tokens_v1"] {
+        if let Ok(entry) = keyring::Entry::new("com.resonance.spotify", account) {
+            let _ = entry.delete_credential();
+        }
+    }
+    if let Ok(config_dir) = app.path().app_config_dir() {
+        for file_name in [
+            "spotify_config.json",
+            "spotify_imports.json",
+            "spotify_profile_cache.json",
+            "spotify.json",
+        ] {
+            let _ = std::fs::remove_file(config_dir.join(file_name));
+        }
+        let _ = std::fs::remove_dir_all(config_dir.join("spotify-webview"));
+    }
+    if let Ok(data_dir) = app.path().app_data_dir() {
+        for file_name in [
+            "spotify_config.json",
+            "spotify_imports.json",
+            "spotify_profile_cache.json",
+            "spotify.json",
+        ] {
+            let _ = std::fs::remove_file(data_dir.join(file_name));
+        }
+        let _ = std::fs::remove_dir_all(data_dir.join("spotify-webview"));
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .manage(YtMusicLoginState::default())
+        .manage(YtStreamProxy::default())
+        .setup(|app| {
+            purge_retired_spotify_storage(app.handle());
+            let app_handle = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                let proxy = app_handle.state::<YtStreamProxy>();
+                let _ = proxy.ensure_server_port().await;
+            });
+            Ok(())
+        })
         .on_window_event(|window, event| {
             if window.label() == "soundcloud-login"
                 && matches!(event, tauri::WindowEvent::CloseRequested { .. })
@@ -339,7 +385,10 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             start_soundcloud_login,
             start_ytmusic_login,
-            uninstall_app
+            uninstall_app,
+            resolve_yt_stream_url,
+            search_yt_tracks,
+            fetch_yt_playlist_tracks
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

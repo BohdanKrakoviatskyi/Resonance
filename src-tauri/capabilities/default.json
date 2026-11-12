@@ -10,6 +10,7 @@
     "allow-start-soundcloud-login",
     "allow-start-ytmusic-login",
     "allow-uninstall-app",
+    "allow-yt-proxy-commands",
     {
       "identifier": "shell:allow-spawn",
       "allow": [

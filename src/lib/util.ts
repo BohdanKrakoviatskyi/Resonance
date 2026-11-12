@@ -90,18 +90,59 @@ export function persist<T extends object>(key: string, store: Store<T>, pick: (s
   } catch {
     /* corrupted storage — ignore */
   }
-  if (!hasLocal) {
-    void import('./providers-api')
-      .then(({ restoreFrontendState }) => restoreFrontendState())
-      .then((entries) => {
-        const raw = entries?.[key];
-        if (raw && !localStorage.getItem(key)) {
-          localStorage.setItem(key, raw);
-          store.set(JSON.parse(raw));
+  void import('./providers-api')
+    .then(({ restoreFrontendState }) => restoreFrontendState())
+    .then((entries) => {
+      const raw = entries?.[key];
+      if (!raw) return;
+      if (!hasLocal) {
+        const parsed = JSON.parse(raw) as Record<string, unknown>;
+        if (key === 'lyra.lib.v1') {
+          delete parsed.spotifyLiked;
+          delete parsed.spotifyPlaylists;
+          delete parsed.spotifyPlaylistTracks;
+          delete parsed.spotifyAuthorized;
+          delete parsed.spotifyProfile;
         }
-      })
-      .catch(() => {});
-  }
+        if (key === 'lyra.ui.v1') {
+          delete parsed.foldSpotify;
+          if (parsed.favProvider !== 'soundcloud' && parsed.favProvider !== 'youtube') {
+            parsed.favProvider = 'soundcloud';
+          }
+        }
+        const cleanedRaw = JSON.stringify(parsed);
+        localStorage.setItem(key, cleanedRaw);
+        store.set(parsed as Partial<T>);
+        return;
+      }
+      if (key === 'lyra.lib.v1') {
+        try {
+          const backedUp = JSON.parse(raw) as Record<string, unknown>;
+          const current = store.get() as Record<string, unknown>;
+          const patch: Record<string, unknown> = {};
+          for (const field of ['ytmusicLiked', 'ytmusicPlaylists', 'soundcloudLiked', 'soundcloudPlaylists']) {
+            const curArr = Array.isArray(current[field]) ? (current[field] as unknown[]) : [];
+            const bakArr = Array.isArray(backedUp[field]) ? (backedUp[field] as unknown[]) : [];
+            if (curArr.length === 0 && bakArr.length > 0) {
+              patch[field] = bakArr;
+            }
+          }
+          for (const objField of ['ytmusicPlaylistTracks', 'soundcloudPlaylistTracks', 'ytmusicPlaylistArt']) {
+            const curObj = current[objField] && typeof current[objField] === 'object' ? (current[objField] as Record<string, unknown>) : {};
+            const bakObj = backedUp[objField] && typeof backedUp[objField] === 'object' ? (backedUp[objField] as Record<string, unknown>) : {};
+            if (Object.keys(curObj).length === 0 && Object.keys(bakObj).length > 0) {
+              patch[objField] = bakObj;
+            }
+          }
+          if (Object.keys(patch).length > 0) {
+            store.set(patch as Partial<T>);
+          }
+        } catch {
+          /* ignore */
+        }
+      }
+    })
+    .catch(() => {});
   let tm = 0;
   const save = () => {
     try {

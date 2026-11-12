@@ -41,11 +41,14 @@ export interface Palette {
 export function buildScheme(accent: number, bg: number, dark: boolean, v: Variant): DynamicScheme {
   const src = Hct.fromInt(accent);
   const base = new CTORS[v](src, dark, 0, '2025');
-  if (v === 'mono') return base;
   const b = Hct.fromInt(bg);
-  const c = b.chroma < 6 ? b.chroma : Math.min(Math.max(b.chroma * 0.42, 6), 22);
+  // Strictly achromatic neutral palettes when background color is pure black / gray (chroma < 6),
+  // preventing Fidelity/Rainbow/FruitSalad variants from injecting accent chroma into surfaces/outlines.
+  const isNeutralBg = b.chroma < 6;
+  const c = isNeutralBg ? 0 : Math.min(Math.max(b.chroma * 0.56, 8), 32);
+  const cv = isNeutralBg ? 0 : c + 4;
   return new DynamicScheme({
-    sourceColorHct: src,
+    sourceColorHct: isNeutralBg ? Hct.from(0, 0, b.tone) : src,
     variant: base.variant,
     contrastLevel: 0,
     isDark: dark,
@@ -54,8 +57,8 @@ export function buildScheme(accent: number, bg: number, dark: boolean, v: Varian
     secondaryPalette: base.secondaryPalette,
     tertiaryPalette: base.tertiaryPalette,
     errorPalette: base.errorPalette,
-    neutralPalette: TonalPalette.fromHueAndChroma(b.hue, c),
-    neutralVariantPalette: TonalPalette.fromHueAndChroma(b.hue, c + 4),
+    neutralPalette: TonalPalette.fromHueAndChroma(isNeutralBg ? 0 : b.hue, c),
+    neutralVariantPalette: TonalPalette.fromHueAndChroma(isNeutralBg ? 0 : b.hue, cv),
   });
 }
 

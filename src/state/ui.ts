@@ -94,6 +94,10 @@ persist('lyra.ui.v1', ui, (s) => ({
   favProvider: s.favProvider,
 }));
 
+if (ui.get().favProvider !== 'soundcloud' && ui.get().favProvider !== 'youtube') {
+  ui.set({ favProvider: 'soundcloud' });
+}
+
 window.addEventListener('hashchange', () => {
   const s = parseSearch();
   ui.set({ route: parse(), searchOpen: s.searchOpen, searchQ: s.searchQ, drawer: false });

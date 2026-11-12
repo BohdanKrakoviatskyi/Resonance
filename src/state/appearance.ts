@@ -52,6 +52,16 @@ export const DEFAULTS: Appearance = {
 export const appearance = createStore<Appearance>({ ...DEFAULTS });
 persist('lyra.app.v1', appearance, ({ bgImage: _omit, ...rest }) => rest);
 
+// Repair legacy stored state where switching to Liquid Glass accidentally left refraction at 0%
+try {
+  const cur = appearance.get();
+  if (cur.glass === 'liquid' && (!Number.isFinite(cur.refraction) || cur.refraction <= 0)) {
+    appearance.set({ refraction: DEFAULTS.refraction });
+  }
+} catch {
+  /* ignore */
+}
+
 const IMG_KEY = 'lyra.bgimg.v1';
 const DB_NAME = 'lyra.media.v1';
 const STORE_NAME = 'bg';

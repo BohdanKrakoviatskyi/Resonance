@@ -17,3 +17,12 @@ commands.allow = ["start_ytmusic_login"]
 identifier = "allow-uninstall-app"
 description = "Launch the application uninstaller while preserving user data."
 commands.allow = ["uninstall_app"]
+
+[[permission]]
+identifier = "allow-yt-proxy-commands"
+description = "Allow YouTube Music stream resolution, search, and playlist commands."
+commands.allow = [
+  "resolve_yt_stream_url",
+  "search_yt_tracks",
+  "fetch_yt_playlist_tracks"
+]

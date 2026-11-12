@@ -3,17 +3,18 @@ import { useStore } from '../lib/util';
 import { theme, type BgSpec } from '../state/theme';
 import { appearance } from '../state/appearance';
 
-function Layer({ spec, metallic, onDone }: { spec: BgSpec; metallic: boolean; onDone: () => void }) {
+function Layer({ spec, metallic, isTop, onDone }: { spec: BgSpec; metallic: boolean; isTop: boolean; onDone: () => void }) {
   const [a, b, c, d] = spec.colors;
-  const style: CSSProperties = { background: spec.base };
+  const useLiveVars = isTop && spec.key === 'mesh:color';
+  const style: CSSProperties = { background: useLiveVars ? `var(--bg-base, ${spec.base})` : spec.base };
   return (
     <div className="bg-layer" style={style} onAnimationEnd={(e) => e.target === e.currentTarget && onDone()}>
       {spec.kind === 'mesh' && spec.colors.length >= 3 && (
         <div className="bg-ambient" data-metallic={metallic ? 'true' : 'false'}>
-          <span className="bg-blob bg-blob-1" style={{ background: `radial-gradient(circle, ${a} 0%, transparent 70%)` }} />
-          <span className="bg-blob bg-blob-2" style={{ background: `radial-gradient(circle, ${b || a} 0%, transparent 70%)` }} />
-          <span className="bg-blob bg-blob-3" style={{ background: `radial-gradient(circle, ${c || b || a} 0%, transparent 70%)` }} />
-          <span className="bg-blob bg-blob-4" style={{ background: `radial-gradient(circle, ${d || a} 0%, transparent 72%)` }} />
+          <span className="bg-blob bg-blob-1" style={{ background: `radial-gradient(circle, ${useLiveVars ? `var(--bg-blob-1, ${a})` : a} 0%, transparent 70%)` }} />
+          <span className="bg-blob bg-blob-2" style={{ background: `radial-gradient(circle, ${useLiveVars ? `var(--bg-blob-2, ${b || a})` : (b || a)} 0%, transparent 70%)` }} />
+          <span className="bg-blob bg-blob-3" style={{ background: `radial-gradient(circle, ${useLiveVars ? `var(--bg-blob-3, ${c || b || a})` : (c || b || a)} 0%, transparent 70%)` }} />
+          <span className="bg-blob bg-blob-4" style={{ background: `radial-gradient(circle, ${useLiveVars ? `var(--bg-blob-4, ${d || a})` : (d || a)} 0%, transparent 72%)` }} />
         </div>
       )}
       {spec.kind === 'image' && spec.image && (
@@ -61,7 +62,7 @@ export function Background() {
   return (
     <div className="bg-root" aria-hidden="true">
       {layers.map((l, i) => (
-        <Layer key={l.key} spec={l} metallic={metallic} onDone={() => i === layers.length - 1 && setLayers((ls) => ls.slice(ls.indexOf(l)))} />
+        <Layer key={l.key} spec={l} metallic={metallic} isTop={i === layers.length - 1} onDone={() => i === layers.length - 1 && setLayers((ls) => ls.slice(ls.indexOf(l)))} />
       ))}
     </div>
   );
@@ -71,11 +72,11 @@ export function Background() {
 export function SvgDefs() {
   const r = useStore(appearance, (s) => s.refraction);
   return (
-    <svg width="0" height="0" style={{ position: 'absolute' }} aria-hidden="true" focusable="false">
-      <filter id="lg-distort" x="0%" y="0%" width="100%" height="100%" colorInterpolationFilters="sRGB">
-        <feTurbulence type="fractalNoise" baseFrequency="0.007 0.011" numOctaves={2} seed={7} result="noise" />
-        <feGaussianBlur in="noise" stdDeviation="2.5" result="soft" />
-        <feDisplacementMap in="SourceGraphic" in2="soft" scale={Math.round(r * 1.3)} xChannelSelector="R" yChannelSelector="G" />
+    <svg width="0" height="0" style={{ position: 'absolute', pointerEvents: 'none' }} aria-hidden="true" focusable="false">
+      <filter id="lg-distort" filterUnits="objectBoundingBox" primitiveUnits="userSpaceOnUse" x="-15%" y="-15%" width="130%" height="130%" colorInterpolationFilters="sRGB">
+        <feTurbulence type="fractalNoise" baseFrequency="0.005 0.008" numOctaves={2} seed={7} result="noise" />
+        <feGaussianBlur in="noise" stdDeviation="3" result="soft" />
+        <feDisplacementMap in="SourceGraphic" in2="soft" scale={Math.round(r * 0.45)} xChannelSelector="R" yChannelSelector="G" />
       </filter>
     </svg>
   );

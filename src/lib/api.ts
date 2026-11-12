@@ -89,15 +89,43 @@ export { ytDlpTrackStream };
 export async function findYouTubeFallback(track: Track): Promise<Track | null> {
   const seed = { ...track, duration: track.fullDuration ?? track.duration };
   for (const query of youtubeFallbackQueries(seed)) {
-    const match = findYouTubeFallbackCandidate(seed, await searchYtDlpTracks(query));
-    if (!match) continue;
-    const duration = match.durationMs / 1000;
-    return {
-      id: `yt:${match.nativeId}`, title: match.title, artist: match.artist,
-      cover: match.artworkUrl || undefined, thumb: match.artworkUrl || undefined,
-      src: match.permalink || `https://music.youtube.com/watch?v=${encodeURIComponent(match.nativeId)}`,
-      duration, fullDuration: duration || undefined, nativeId: match.nativeId, playback: 'direct', source: 'youtube',
-    };
+    try {
+      const ytCandidates = (await searchYtDlpTracks(query)).filter(
+        (c) => `yt:${c.nativeId}` !== track.id && c.nativeId !== track.nativeId
+      );
+      const match = findYouTubeFallbackCandidate(seed, ytCandidates);
+      if (match) {
+        const duration = match.durationMs / 1000;
+        const fallbackCover = match.nativeId ? `https://i.ytimg.com/vi/${encodeURIComponent(match.nativeId)}/hqdefault.jpg` : undefined;
+        const artwork = match.artworkUrl || fallbackCover;
+        return {
+          id: `yt:${match.nativeId}`, title: match.title, artist: match.artist,
+          cover: artwork, thumb: artwork,
+          src: match.permalink || `https://music.youtube.com/watch?v=${encodeURIComponent(match.nativeId)}`,
+          duration, fullDuration: duration || undefined, nativeId: match.nativeId, playback: 'direct', source: 'youtube',
+        };
+      }
+    } catch {
+      // Continue to SoundCloud fallback
+    }
+    if (track.id.startsWith('yt:')) {
+      try {
+        const scTracks = await searchSoundCloudTracks(query);
+        const scCandidates = scTracks
+          .filter((sc) => sc.duration > 60_000)
+          .map((sc) => ({
+            ...sc,
+            artist: sc.user?.username || 'SoundCloud',
+            durationMs: sc.duration,
+          }));
+        const scMatch = findYouTubeFallbackCandidate(seed, scCandidates);
+        if (scMatch) {
+          return mapSoundCloudTrack(scMatch);
+        }
+      } catch {
+        // Ignore SoundCloud search error
+      }
+    }
   }
   return null;
 }

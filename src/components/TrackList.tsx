@@ -5,7 +5,7 @@ import { Cover, Eq, PlaylistCover } from './Cover';
 import { cx, fmtTime, useStore } from '../lib/util';
 import { t } from '../lib/i18n';
 import { getTrack, isDisliked, isLiked, library, toggleDislike, toggleLike, togglePlaylistTrack } from '../state/library';
-import { addToQueue, player, playNext, playQueue, toggle } from '../state/player';
+import { addToQueue, player, playNext, playQueue, prefetchTrackByIdLowPriority, toggle } from '../state/player';
 import { openDialog, openSearch } from '../state/ui';
 import type { Track } from '../types';
 import soundcloudLogo from '../assets/soundcloud.svg';
@@ -123,6 +123,17 @@ type RowProps = {
 export const TrackRow = memo(function TrackRow({ id, index, isCurrent, isPlaying, playlistId, onPlayIndex }: RowProps) {
   const disliked = useStore(library, () => isDisliked(id));
   const [anchor, setAnchor] = useState<HTMLElement | null>(null);
+  const hoverTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => {
+    return () => {
+      if (hoverTimerRef.current !== null) {
+        clearTimeout(hoverTimerRef.current);
+        hoverTimerRef.current = null;
+      }
+    };
+  }, []);
+
   const tr = getTrack(id);
   if (!tr) return null;
   return (
@@ -133,7 +144,25 @@ export const TrackRow = memo(function TrackRow({ id, index, isCurrent, isPlaying
       data-current={isCurrent}
       data-disliked={disliked}
       style={{ '--i': index, contentVisibility: index > 24 ? 'auto' : undefined, containIntrinsicSize: index > 24 ? 'auto 62px' : undefined } as Vars}
+      onMouseEnter={() => {
+        if (hoverTimerRef.current !== null) clearTimeout(hoverTimerRef.current);
+        hoverTimerRef.current = setTimeout(() => {
+          hoverTimerRef.current = null;
+          prefetchTrackByIdLowPriority(id);
+        }, 380);
+      }}
+      onMouseLeave={() => {
+        // При уходе курсора отменяем только таймер дебаунса, не убивая уже запущенный процесс
+        if (hoverTimerRef.current !== null) {
+          clearTimeout(hoverTimerRef.current);
+          hoverTimerRef.current = null;
+        }
+      }}
       onClick={(e) => {
+        if (hoverTimerRef.current !== null) {
+          clearTimeout(hoverTimerRef.current);
+          hoverTimerRef.current = null;
+        }
         e.preventDefault();
         e.stopPropagation();
         if (isCurrent) toggle();

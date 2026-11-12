@@ -189,6 +189,7 @@ const S = {
   custom: ['Свой', 'Custom'],
   customColor: ['Свой цвет', 'Custom color'],
   colorStyle: ['Стиль палитры', 'Palette style'],
+  colorStyleMetallicHint: ['При включённом металлическом эффекте используется хромированная стальная палитра', 'Overridden by Metallic style while enabled'],
   tonal: ['Тональный', 'Tonal'],
   vibrant: ['Яркий', 'Vibrant'],
   expressive: ['Экспрессивный', 'Expressive'],
@@ -279,11 +280,12 @@ export function t(k: Key, vars?: Record<string, string | number>) {
 export const useLang = () => useStore(appearance, (s) => s.lang);
 export const pick = (ru: string, en: string) => (appearance.get().lang === 'en' ? en : ru);
 
-export function tracksLabel(n: number) {
-  if (appearance.get().lang === 'en') return `${n} ${n === 1 ? 'track' : 'tracks'}`;
-  const m10 = n % 10, m100 = n % 100;
+export function tracksLabel(n?: number | null) {
+  const count = Number.isFinite(Number(n)) && n !== null && n !== undefined ? Math.max(0, Math.round(Number(n))) : 0;
+  if (appearance.get().lang === 'en') return `${count} ${count === 1 ? 'track' : 'tracks'}`;
+  const m10 = count % 10, m100 = count % 100;
   const w = m10 === 1 && m100 !== 11 ? 'трек' : m10 >= 2 && m10 <= 4 && (m100 < 12 || m100 > 14) ? 'трека' : 'треков';
-  return `${n} ${w}`;
+  return `${count} ${w}`;
 }
 
 export function durLabel(sec: number) {

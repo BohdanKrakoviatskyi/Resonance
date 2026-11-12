@@ -29,7 +29,8 @@ export function mapYtMusicTrack(track: YtMusicTrack): Track {
   const videoId = String(track.videoId || '').trim();
   const artist = track.artist || track.artists?.filter(Boolean).join(', ') || 'YouTube Music';
   const duration = Number(track.durationSeconds) || 0;
-  const artwork = track.artworkUrl || undefined;
+  const fallbackCover = videoId ? `https://i.ytimg.com/vi/${encodeURIComponent(videoId)}/hqdefault.jpg` : undefined;
+  const artwork = track.artworkUrl || fallbackCover;
   return {
     id: `yt:${videoId}`,
     title: track.title || 'Unknown title',
@@ -42,6 +43,28 @@ export function mapYtMusicTrack(track: YtMusicTrack): Track {
     nativeId: videoId,
     playback: 'direct',
     source: 'youtube',
+  };
+}
+
+export function normalizeYtMusicPlaylist(playlist: YtMusicPlaylist): YtMusicPlaylist {
+  const rawCount = Number(playlist.trackCount);
+  const trackCount =
+    Number.isFinite(rawCount) && rawCount > 0
+      ? Math.round(rawCount)
+      : Array.isArray(playlist.tracks) && playlist.tracks.length > 0
+      ? playlist.tracks.length
+      : Number.isFinite(rawCount) && rawCount >= 0
+      ? Math.round(rawCount)
+      : 0;
+  const firstTrackArt = playlist.tracks?.find((t) => Boolean(t?.artworkUrl || t?.videoId));
+  const fallbackArt = firstTrackArt
+    ? firstTrackArt.artworkUrl ||
+      (firstTrackArt.videoId ? `https://i.ytimg.com/vi/${encodeURIComponent(firstTrackArt.videoId)}/hqdefault.jpg` : null)
+    : null;
+  return {
+    ...playlist,
+    artworkUrl: playlist.artworkUrl || fallbackArt || null,
+    trackCount,
   };
 }
 

@@ -1,3 +1,4 @@
+import { invoke } from '@tauri-apps/api/core';
 import { rpc } from './sidecar';
 import { ytMusicRpc } from './ytmusic-sidecar';
 import type { YtMusicLibrary, YtMusicPlaylist } from './ytmusic-library';
@@ -153,20 +154,102 @@ export function ytMusicLibrarySync(signal?: AbortSignal): Promise<YtMusicLibrary
   return ytMusicRpc('library.sync', {}, signal);
 }
 
-export function ytMusicPlaylistTracks(playlistId: string, signal?: AbortSignal): Promise<YtMusicPlaylist> {
-  return ytMusicRpc('playlist.tracks', { playlistId }, signal);
+export async function ytMusicPlaylistTracks(playlistId: string, _signal?: AbortSignal): Promise<YtMusicPlaylist> {
+  return invoke<YtMusicPlaylist>('fetch_yt_playlist_tracks', { playlistId });
 }
 
 export function ytMusicPlaylistArtwork(playlistId: string, signal?: AbortSignal): Promise<string | null> {
   return ytMusicRpc('playlist.artwork', { playlistId }, signal);
 }
 
-export function searchYtDlpTracks(query: string, signal?: AbortSignal): Promise<YouTubeTrack[]> {
+export async function searchYtDlpTracks(query: string, signal?: AbortSignal): Promise<YouTubeTrack[]> {
+  try {
+    const tracks = await invoke<YouTubeTrack[]>('search_yt_tracks', { query });
+    if (tracks && tracks.length > 0) return tracks;
+  } catch {
+    // Fallback to sidecar yt-dlp search if Rust InnerTube search fails
+  }
   return rpc('yt.dlp.search', { query }, signal);
 }
 
-export function ytDlpTrackStream(videoId: string, signal?: AbortSignal): Promise<{ url: string }> {
-  return rpc('yt.dlp.stream', { videoId }, signal);
+export type YtResolveAttemptTiming = {
+  method: string;
+  outcome: string;
+  durationMs: number;
+};
+
+export type YtStreamResolveResult = {
+  url: string;
+  cacheHit?: boolean;
+  resolveMs?: number;
+  attempts?: YtResolveAttemptTiming[];
+};
+
+export type YtStreamResolveOptions = {
+  requestId?: number;
+  clickTsMs?: number;
+  priority?: boolean;
+  signal?: AbortSignal;
+};
+
+export async function ytDlpTrackStream(
+  videoId: string,
+  options?: AbortSignal | YtStreamResolveOptions,
+): Promise<YtStreamResolveResult> {
+  const opts: YtStreamResolveOptions =
+    options && 'aborted' in options ? { signal: options } : (options ?? {});
+  const attempts: YtResolveAttemptTiming[] = [];
+  const t0 = performance.now();
+  try {
+    const res = await invoke<YtStreamResolveResult>('resolve_yt_stream_url', {
+      videoId,
+      requestId: opts.requestId,
+      clickTsMs: opts.clickTsMs,
+      priority: opts.priority ?? true,
+    });
+    if (res?.url) {
+      return {
+        url: res.url,
+        cacheHit: res.cacheHit,
+        resolveMs: res.resolveMs ?? Math.round(performance.now() - t0),
+        attempts: res.attempts?.length
+          ? res.attempts
+          : [{ method: 'rust_yt_proxy', outcome: 'ok', durationMs: Math.round(performance.now() - t0) }],
+      };
+    }
+  } catch (err) {
+    attempts.push({
+      method: 'rust_yt_proxy',
+      outcome: `err: ${err instanceof Error ? err.message : String(err)}`,
+      durationMs: Math.round(performance.now() - t0),
+    });
+  }
+  const t1 = performance.now();
+  try {
+    const fallback = await rpc<{ url: string }>('yt.dlp.stream', { videoId }, opts.signal);
+    const sidecarMs = Math.round(performance.now() - t1);
+    attempts.push({
+      method: 'sidecar: yt.dlp.stream',
+      outcome: fallback?.url ? 'ok' : 'empty',
+      durationMs: sidecarMs,
+    });
+    return {
+      url: fallback.url,
+      cacheHit: false,
+      resolveMs: Math.round(performance.now() - t0),
+      attempts,
+    };
+  } catch (err) {
+    const sidecarMs = Math.round(performance.now() - t1);
+    attempts.push({
+      method: 'sidecar: yt.dlp.stream',
+      outcome: `err: ${err instanceof Error ? err.message : String(err)}`,
+      durationMs: sidecarMs,
+    });
+    const error = err instanceof Error ? err : new Error(String(err));
+    (error as Error & { attempts?: YtResolveAttemptTiming[] }).attempts = attempts;
+    throw error;
+  }
 }
 
 export type CacheClearResult = {
