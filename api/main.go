@@ -23,7 +23,7 @@ import (
 
 const (
 	appName    = "Resonance"
-	appVersion = "0.4.15"
+	appVersion = "0.4.16"
 	// legacyAppName is where this sidecar kept its files before the rename to Resonance. Only
 	// migrateLegacyDataDir reads it, and only to move those files once; it is not a second
 	// supported location, and nothing writes to it again.
