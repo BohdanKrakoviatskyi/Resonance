@@ -198,6 +198,8 @@ export function withGaps(lines: LyricLine[]): LyricLine[] {
   return out;
 }
 
+export type LyricsProviderSource = 'LRCLIB' | 'Deezer' | 'Кэш' | 'Выбран вручную';
+
 export interface LyricsData {
   synced?: LyricLine[];
   plain?: string[];
@@ -205,6 +207,10 @@ export interface LyricsData {
   preview?: boolean;
   matchedTitle?: string;
   matchedArtist?: string;
+  matchedDurationSec?: number;
+  durationDeltaSec?: number;
+  sourceLabel?: LyricsProviderSource;
+  possibleOffsetWarning?: boolean;
 }
 
 export interface ManualLyricsChoice {
@@ -290,27 +296,72 @@ function saveLyricsOverrides(map: Record<string, ManualLyricsChoice>) {
     .catch(() => {});
 }
 
-export function lyricsDataFromRecord(rec: LyricsCandidate): LyricsData | null {
+export function lyricsDataFromRecord(
+  rec: LyricsCandidate,
+  opts?: {
+    playingDurationSec?: number;
+    sourceLabel?: LyricsProviderSource;
+    possibleOffsetWarning?: boolean;
+  },
+): LyricsData | null {
+  const matchedDurationSec = toSeconds(rec.duration);
+  const playingSec = toSeconds(opts?.playingDurationSec);
+  const durationDeltaSec =
+    playingSec > 0 && matchedDurationSec > 0
+      ? Number((playingSec - matchedDurationSec).toFixed(1))
+      : 0;
+  const meta = {
+    matchedTitle: rec.trackName,
+    matchedArtist: rec.artistName,
+    matchedDurationSec: matchedDurationSec > 0 ? matchedDurationSec : undefined,
+    durationDeltaSec,
+    sourceLabel: opts?.sourceLabel ?? 'LRCLIB',
+    possibleOffsetWarning: opts?.possibleOffsetWarning,
+  };
   if (rec.instrumental) {
-    return { instrumental: true, matchedTitle: rec.trackName, matchedArtist: rec.artistName };
+    return { instrumental: true, ...meta };
   }
   if (rec.syncedLyrics) {
     const synced = withGaps(parseLrc(rec.syncedLyrics));
     if (synced.length) {
-      return { synced, matchedTitle: rec.trackName, matchedArtist: rec.artistName };
+      return { synced, ...meta };
     }
   }
   const plainSrc: string = rec.plainLyrics || (rec.syncedLyrics ? String(rec.syncedLyrics).replace(/\[[^\]]*\]/g, '') : '');
   const plain = plainSrc.split('\n').map((s) => s.trim()).filter(Boolean);
-  return plain.length ? { plain, matchedTitle: rec.trackName, matchedArtist: rec.artistName } : null;
+  return plain.length ? { plain, ...meta } : null;
 }
 
-export function setManualLyricsChoice(trackId: string, choice: ManualLyricsChoice | null): LyricsData | null {
+export function formatLyricsDebugSummary(data: LyricsData, track?: Track | null): string {
+  const src = data.sourceLabel ?? 'LRCLIB';
+  const type = data.synced?.length ? 'Synced' : data.plain?.length ? 'Plain' : data.instrumental ? 'Instrumental' : 'None';
+  const artist = data.matchedArtist || track?.artist || 'Unknown';
+  const title = data.matchedTitle || track?.title || 'Unknown';
+  const playingSec = track ? toSeconds(track.fullDuration ?? track.duration) : 0;
+  const delta =
+    typeof data.durationDeltaSec === 'number'
+      ? data.durationDeltaSec
+      : playingSec > 0 && data.matchedDurationSec
+        ? Number((playingSec - data.matchedDurationSec).toFixed(1))
+        : 0;
+  const sign = delta > 0 ? '+' : '';
+  const warn = data.possibleOffsetWarning ? ' · ⚠️ Возможен сдвиг' : '';
+  return `[Lyrics] Источник: ${src} · Тип: ${type} · ${artist} — ${title} (Δ ${sign}${delta.toFixed(1)} с)${warn}`;
+}
+
+export function setManualLyricsChoice(
+  trackId: string,
+  choice: ManualLyricsChoice | null,
+  playingDurationSec?: number,
+): LyricsData | null {
   const overrides = { ...loadLyricsOverrides() };
   if (choice) {
     overrides[trackId] = choice;
     saveLyricsOverrides(overrides);
-    const data = lyricsDataFromRecord(choice);
+    const data = lyricsDataFromRecord(choice, {
+      playingDurationSec,
+      sourceLabel: 'Выбран вручную',
+    });
     lyricsCache.set(trackId, Promise.resolve(data));
     if (data) {
       savePersistentLyricsCache(writePersistentLyricsCacheEntry(loadPersistentLyricsCache(), trackId, { status: 'found', data }));
@@ -358,21 +409,51 @@ export async function searchLyricsManual(query: string, signal?: AbortSignal): P
 }
 
 export async function getLyrics(t: Track, forceRefresh = false): Promise<LyricsData | null> {
-  if (t.lyrics) return { synced: t.lyrics };
+  const durationSec = toSeconds(t.fullDuration ?? t.duration);
+  if (t.lyrics) {
+    const inlineData: LyricsData = {
+      synced: t.lyrics,
+      matchedTitle: t.title,
+      matchedArtist: t.artist,
+      matchedDurationSec: durationSec,
+      durationDeltaSec: 0,
+      sourceLabel: 'Кэш',
+    };
+    console.info(formatLyricsDebugSummary(inlineData, t));
+    return inlineData;
+  }
   if (!loadLyricsOverrides()[t.id]) {
     await ensureLyricsOverridesRestored();
   }
   const override = loadLyricsOverrides()[t.id];
   if (override) {
-    const overriddenData = lyricsDataFromRecord(override);
-    if (overriddenData) return overriddenData;
+    const overriddenData = lyricsDataFromRecord(override, {
+      playingDurationSec: durationSec,
+      sourceLabel: 'Выбран вручную',
+    });
+    if (overriddenData) {
+      console.info(formatLyricsDebugSummary(overriddenData, t));
+      return overriddenData;
+    }
   }
   if (forceRefresh) {
     lyricsCache.delete(t.id);
   } else {
     const cached = resolvePersistentLyricsCacheEntry(loadPersistentLyricsCache(), t.id, Date.now(), false);
     if (cached.hit) {
-      return cached.data;
+      if (!cached.data) return null;
+      const cachedData: LyricsData = {
+        ...cached.data,
+        sourceLabel: 'Кэш',
+        durationDeltaSec:
+          typeof cached.data.durationDeltaSec === 'number'
+            ? cached.data.durationDeltaSec
+            : durationSec > 0 && cached.data.matchedDurationSec
+              ? Number((durationSec - cached.data.matchedDurationSec).toFixed(1))
+              : 0,
+      };
+      console.info(formatLyricsDebugSummary(cachedData, t));
+      return cachedData;
     }
   }
   let p = lyricsCache.get(t.id);
@@ -386,6 +467,7 @@ export async function getLyrics(t: Track, forceRefresh = false): Promise<LyricsD
         );
         savePersistentLyricsCache(nextCache);
         if (!value) lyricsCache.delete(t.id);
+        else console.info(formatLyricsDebugSummary(value, t));
         return value;
       },
       () => {
@@ -412,10 +494,26 @@ async function fetchSoundCloudLyrics(track: Track): Promise<LyricsData | null> {
     });
     if (result.isSynced && result.lines.length) {
       const synced = withGaps(result.lines.map((line) => ({ t: line.startMs / 1000, text: line.text })));
-      if (synced.length) return { synced };
+      if (synced.length) {
+        return {
+          synced,
+          matchedTitle: track.title,
+          matchedArtist: track.artist,
+          durationDeltaSec: 0,
+          sourceLabel: 'Deezer',
+        };
+      }
     }
     const plain = result.lines.map((line) => line.text.trim()).filter(Boolean);
-    if (plain.length) return { plain };
+    if (plain.length) {
+      return {
+        plain,
+        matchedTitle: track.title,
+        matchedArtist: track.artist,
+        durationDeltaSec: 0,
+        sourceLabel: 'Deezer',
+      };
+    }
   } catch {
     // Fall back to direct LRCLIB lookup when sidecar fails
   }
@@ -489,5 +587,9 @@ async function fetchLyrics(t: Track): Promise<LyricsData | null> {
       syncedLyrics: scaleSyncedLrcTimestamps(rec.syncedLyrics, durationSec, rec.duration, true),
     };
   }
-  return lyricsDataFromRecord(rec);
+  return lyricsDataFromRecord(rec, {
+    playingDurationSec: durationSec,
+    sourceLabel: 'LRCLIB',
+    possibleOffsetWarning: Boolean(rec.possibleOffsetWarning),
+  });
 }

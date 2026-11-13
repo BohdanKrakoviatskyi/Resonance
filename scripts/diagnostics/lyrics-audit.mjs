@@ -367,6 +367,242 @@ function buildDeepCleanProbes(track) {
   return probes;
 }
 
+// --- Sidecar Go algorithm exact port (from api/lyrics.go) for Step 1B comparison ---
+const GO_VERSION_WORDS = [
+  'slowed', 'sped up', 'speed up', 'reverb', 'bass boosted', 'remix', 'edit', 'flip',
+  'mashup', 'slow version', 'rework', 're-work', 'bootleg', 'vip', 'nightcore', '8d',
+  'reversed', 'acapella', 'capella', 'spedup', 'slowedit', 'alt ver', 'alt version',
+];
+
+function goStripLyricsNoise(value) {
+  let v = String(value || '');
+  v = v.replace(/\[[^\]]*\]/g, ' ');
+  v = v.replace(/\([^)]*\)/g, ' ');
+  v = v.replace(/#\S+/g, ' ');
+  v = v.replace(/\+\S+/g, ' ');
+  v = v.replace(/https?:\/\/\S+/gi, ' ');
+  v = v.replace(/\b(?:prod|tgk|tg|vk|inst|sc|by)\.?\s*[:.]?\s*[\p{L}\p{N}_.@/-]+/giu, ' ');
+  v = v.replace(/\b(?:ft|feat|featuring|with)\.?\s+[\p{L}\p{N}&,'’. -]+/giu, ' ');
+  return v.trim().replace(/\s+/g, ' ').replace(/^[ .\-_–—]+|[ .\-_–—]+$/g, '');
+}
+
+function goStripLyricsVersionMarkers(value) {
+  let v = String(value || '');
+  for (const marker of GO_VERSION_WORDS) {
+    const clean = marker.replace(/\.+$/, '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const re = new RegExp(`\\b${clean}\\b`, 'gi');
+    v = v.replace(re, ' ');
+  }
+  return v.trim().replace(/\s+/g, ' ').replace(/^[ .\-_–—]+|[ .\-_–—]+$/g, '');
+}
+
+function goNormalizePunctuation(value) {
+  return String(value || '')
+    .toLowerCase()
+    .split(/[^\p{L}\p{N}]+/u)
+    .filter(Boolean)
+    .join(' ');
+}
+
+function goHasVersionMarker(value) {
+  const norm = ` ${goNormalizePunctuation(value)} `;
+  for (const w of GO_VERSION_WORDS) {
+    const m = ` ${goNormalizePunctuation(w)} `;
+    if (norm.includes(m)) return true;
+  }
+  return false;
+}
+
+function goTokenSet(value) {
+  return new Set(
+    String(value || '')
+      .toLowerCase()
+      .replace(/ё/g, 'е')
+      .split(/[^\p{L}\p{N}]+/u)
+      .filter(Boolean),
+  );
+}
+
+function goTokenOverlap(want, have) {
+  const a = goTokenSet(goStripLyricsNoise(want));
+  const b = goTokenSet(goStripLyricsNoise(have));
+  if (!a.size || !b.size) return 0;
+  let fwd = 0;
+  let rev = 0;
+  for (const t of a) if (b.has(t)) fwd++;
+  for (const t of b) if (a.has(t)) rev++;
+  const base = (fwd / a.size) * 0.7 + (rev / b.size) * 0.3;
+  const surplus = Math.max(0, b.size - a.size);
+  const penalty = Math.min(0.45, (surplus / b.size) * 0.45);
+  return base * (1 - penalty);
+}
+
+function goTitleSpecificity(value) {
+  const filler = new Set(['a','an','and','are','as','at','be','but','by','can','do','for','from','i','if','in','is','it','me','my','of','on','or','the','to','up','we','what','when','where','who','you','your']);
+  let count = 0;
+  for (const t of goTokenSet(value)) {
+    if (!filler.has(t)) count++;
+  }
+  return count;
+}
+
+function goDurationScore(want, have) {
+  if (want <= 0 || have <= 0) return 0.6;
+  const delta = Math.abs(want - have);
+  if (delta <= 2) return 1;
+  if (delta <= 5) return 0.8;
+  if (delta <= 12) return 0.5;
+  if (delta / (want + have) > 0.35) return 0;
+  return 0.2;
+}
+
+function goScoreLRCLibRecord(query, candidate, requireDuration) {
+  const titleScore = goTokenOverlap(query.title, candidate.trackName || '');
+  if (titleScore < 0.72) return null;
+  const artistScore = goTokenOverlap(query.artist, candidate.artistName || '');
+  const specificity = goTitleSpecificity(query.title);
+  const candDur = Number(candidate.duration || 0);
+  const deltaSec = Math.abs(query.duration - candDur);
+
+  if (requireDuration && query.duration > 0 && candDur > 0) {
+    if (deltaSec > 4) return null;
+  }
+  const durationScore = goDurationScore(query.duration, Math.round(candDur));
+  if (durationScore === 0 && requireDuration) return null;
+
+  if (artistScore < 0.5) {
+    if (specificity < 3 || titleScore < 0.98 || query.duration <= 0 || candDur <= 0 || deltaSec > 1.5) {
+      return null;
+    }
+  }
+  let rank = titleScore * 0.62 + artistScore * 0.33 + durationScore * 0.05;
+  if (candidate.syncedLyrics) rank += 0.04;
+  return { rank, titleScore, artistScore, durationScore, deltaSec };
+}
+
+function goTitleVariants(value) {
+  const parts = String(value || '').split(/\s+[-–—]\s+/);
+  const out = [];
+  const pushUnique = (s) => {
+    const t = String(s || '').trim();
+    if (t && !out.some((x) => x.toLowerCase() === t.toLowerCase())) out.push(t);
+  };
+  pushUnique(value);
+  for (const p of parts) pushUnique(goStripLyricsNoise(p));
+  return out.slice(0, 4);
+}
+
+function goArtistHints(track, title) {
+  const out = [];
+  const pushUnique = (s) => {
+    const t = String(s || '').trim();
+    if (t && !out.some((x) => x.toLowerCase() === t.toLowerCase())) out.push(t);
+  };
+  pushUnique(track.artist);
+  for (const p of String(title || '').split(/\s+[-–—]\s+/)) {
+    pushUnique(goStripLyricsNoise(p));
+  }
+  return out;
+}
+
+async function simulateGoSidecarLyrics(track, durSec) {
+  const duration = durSec > 0 ? Math.round(durSec) : 0;
+  const base = goStripLyricsNoise(track.title);
+  let titles = goTitleVariants(goStripLyricsVersionMarkers(base));
+  if (!titles.length) titles = goTitleVariants(base);
+  const artists = goArtistHints(track, base);
+  const queries = [];
+  let limitReached = false;
+  for (const title of titles) {
+    for (const artist of artists) {
+      if (goTokenOverlap(title, artist) >= 0.75) continue;
+      if (queries.length >= 7) {
+        limitReached = true;
+        break;
+      }
+      queries.push({ title, artist, duration });
+    }
+    if (limitReached) break;
+  }
+  if (queries.length < 8 && titles.length > 0) {
+    queries.push({ title: titles[0], artist: '', duration });
+  }
+
+  let best = null;
+  const seen = new Set();
+  const requireDur = durSec > 0 && !goHasVersionMarker(track.title);
+  for (const q of queries) {
+    const key = `${q.title.toLowerCase()}\0${q.artist.toLowerCase()}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    const params = new URLSearchParams({ track_name: q.title, artist_name: q.artist });
+    const res = await fetchLrclib(`https://lrclib.net/api/search?${params}`);
+    const candidates = Array.isArray(res.data) ? res.data : [];
+    for (const cand of candidates) {
+      if (!cand || cand.instrumental || (!cand.syncedLyrics && !cand.plainLyrics)) continue;
+      const score = goScoreLRCLibRecord(q, cand, requireDur);
+      if (!score) continue;
+      if (!best || score.rank > best.score.rank) {
+        best = { record: cand, score, queryUsed: q };
+      }
+    }
+    if (best && best.score.rank >= 0.93) break;
+  }
+  if (!best) return null;
+  const recDur = Number(best.record.duration || 0);
+  const deltaMs = Math.abs(durSec * 1000 - recDur * 1000);
+  const ratio = recDur > 0 ? durSec / recDur : 1;
+  const wouldForceScale = Boolean(best.record.syncedLyrics && deltaMs > 2000 && ratio >= 0.5 && ratio <= 1.8);
+  return {
+    record: best.record,
+    score: best.score,
+    queryUsed: best.queryUsed,
+    wouldForceScale,
+    scaleRatio: Number(ratio.toFixed(3)),
+  };
+}
+
+// Strict Frontend matcher simulation (without the 3-word foreign artist loophole, ±4s base / 4..10s exact artist+title with warning)
+function strictFrontendFindCandidate(candidates, query, rawDuration) {
+  const wantSec = toSeconds(rawDuration);
+  const queryTitleNorm = normalizeLyricsText(stripTrackNoise(query.title));
+  const queryArtistNorm = normalizeLyricsText(stripTrackNoise(query.artist));
+  if (!queryTitleNorm || !queryArtistNorm) return null;
+
+  const scored = [];
+  for (const candidate of candidates) {
+    if (!candidate || (!candidate.syncedLyrics && !candidate.plainLyrics && !candidate.instrumental)) continue;
+    const candTitle = candidate.trackName ?? '';
+    const candArtist = candidate.artistName ?? '';
+    const candSec = toSeconds(candidate.duration);
+
+    const titleSim = tokenOverlapScore(query.title, candTitle);
+    const exactTitle = normalizeLyricsText(stripTrackNoise(candTitle)) === queryTitleNorm;
+    if (!exactTitle && titleSim < 0.75) continue;
+
+    // STRICT RULE: Artist MUST match! No 3-word loophole.
+    const artistOk = artistsMatch(query.artist, candArtist);
+    if (!artistOk) continue;
+
+    const highConfidenceMatch =
+      (exactTitle || titleSim >= 0.9) &&
+      (normalizeLyricsText(stripTrackNoise(candArtist)) === queryArtistNorm ||
+        tokenOverlapScore(query.artist, candArtist) >= 0.85);
+
+    const deltaSec = wantSec > 0 && candSec > 0 ? Math.abs(wantSec - candSec) : 0;
+    const maxTolerance = highConfidenceMatch ? 10 : 4;
+    if (wantSec > 0 && candSec > 0 && deltaSec > maxTolerance) continue;
+
+    const possibleOffsetWarning = Boolean(candidate.syncedLyrics && wantSec > 0 && candSec > 0 && deltaSec > 4);
+    const durBonus = wantSec > 0 && candSec > 0 ? Math.max(0, 1 - deltaSec / maxTolerance) : 0.5;
+    const syncBonus = candidate.syncedLyrics ? 0.15 : 0;
+    const score = (exactTitle ? 1 : titleSim) * 0.55 + 0.35 + durBonus * 0.1 + syncBonus;
+    scored.push({ candidate, score, deltaSec, possibleOffsetWarning });
+  }
+  scored.sort((a, b) => b.score - a.score);
+  return scored[0] || null;
+}
+
 async function runAudit() {
   const tracks = loadOwnerSampleTracks();
   console.log(`Loaded ${tracks.length} owner tracks for audit.`);
@@ -397,10 +633,11 @@ async function runAudit() {
       }
     }
 
-    // 2. Run Current Updated Algorithm (imported from src/lib/lyrics-match.ts)
+    // 2. Run Current Updated Algorithm (imported from src/lib/lyrics-match.ts) + Strict Frontend Simulation
     const curQueries = lyricsSearchQueries(t);
     let curMatchOff = null;
     let curMatchOn = null;
+    let strictMatch = null;
     for (const q of curQueries) {
       const getParams = new URLSearchParams({
         track_name: q.title,
@@ -431,8 +668,14 @@ async function runAudit() {
           rawArtist: t.artist,
         });
       }
-      if (curMatchOff && curMatchOn) break;
+      if (!strictMatch) {
+        strictMatch = strictFrontendFindCandidate(candidates, q, durSec);
+      }
+      if (curMatchOff && curMatchOn && strictMatch) break;
     }
+
+    // 2b. Simulate Go sidecar path (api/lyrics.go)
+    const sidecarRes = await simulateGoSidecarLyrics(t, durSec);
 
     // 3. Probe LRCLIB with deep-cleaned queries to see if lyrics exist in LRCLIB at all
     const probes = buildDeepCleanProbes(t);
@@ -501,6 +744,17 @@ async function runAudit() {
       currentType: curMatchOff ? (curMatchOff.syncedLyrics ? 'synced' : 'plain') : 'none',
       currentScaledFound: Boolean(curMatchOn),
       currentScaledType: curMatchOn ? (curMatchOn.syncedLyrics ? 'synced' : 'plain') : 'none',
+      sidecarFound: Boolean(sidecarRes),
+      sidecarType: sidecarRes ? (sidecarRes.record.syncedLyrics ? 'synced' : 'plain') : 'none',
+      sidecarTrack: sidecarRes ? `${sidecarRes.record.artistName} — ${sidecarRes.record.trackName}` : '—',
+      sidecarDur: sidecarRes ? Number(toSeconds(sidecarRes.record.duration).toFixed(1)) : null,
+      sidecarForceScale: sidecarRes ? sidecarRes.wouldForceScale : false,
+      sidecarScaleRatio: sidecarRes ? sidecarRes.scaleRatio : null,
+      strictFound: Boolean(strictMatch),
+      strictType: strictMatch ? (strictMatch.candidate.syncedLyrics ? 'synced' : 'plain') : 'none',
+      strictTrack: strictMatch ? `${strictMatch.candidate.artistName} — ${strictMatch.candidate.trackName}` : '—',
+      strictDeltaS: strictMatch ? Number(strictMatch.deltaSec.toFixed(1)) : null,
+      strictOffsetWarn: strictMatch ? strictMatch.possibleOffsetWarning : false,
       lrclibExists: Boolean(bestLrc),
       lrclibType: bestLrc ? (bestLrc.syncedLyrics ? 'synced' : 'plain') : 'none',
       lrclibTrack: bestLrc ? `${bestLrc.artistName} — ${bestLrc.trackName}` : '—',

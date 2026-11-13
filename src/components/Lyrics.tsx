@@ -2,7 +2,7 @@ import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 're
 import { createPortal } from 'react-dom';
 import { Icon } from './Icon';
 import { IconButton, Loader, Shape, usePresence, type Vars } from './ui';
-import { clamp, cx, fmtTime } from '../lib/util';
+import { clamp, cx, fmtTime, useStore } from '../lib/util';
 import { t } from '../lib/i18n';
 import {
   getLyrics,
@@ -12,21 +12,22 @@ import {
   type LyricsData,
   type ManualLyricsChoice,
 } from '../lib/api';
-import { stripTrackNoise } from '../lib/lyrics-match';
+import { stripTrackNoise, toSeconds } from '../lib/lyrics-match';
 import { onFrame, player, seek, toggle } from '../state/player';
+import { ui } from '../state/ui';
 import type { LyricLine, Track } from '../types';
 
 type LState =
   | { status: 'loading' }
-  | { status: 'none'; instrumental?: boolean }
-  | { status: 'synced'; lines: LyricLine[] }
-  | { status: 'plain'; lines: string[]; preview?: boolean };
+  | { status: 'none'; instrumental?: boolean; data?: LyricsData | null }
+  | { status: 'synced'; lines: LyricLine[]; data: LyricsData }
+  | { status: 'plain'; lines: string[]; preview?: boolean; data: LyricsData };
 
 function toLState(d: LyricsData | null): LState {
   if (!d) return { status: 'none' };
-  if (d.synced?.length) return { status: 'synced', lines: d.synced };
-  if (d.plain?.length) return { status: 'plain', lines: d.plain, preview: d.preview };
-  return { status: 'none', instrumental: d.instrumental };
+  if (d.synced?.length) return { status: 'synced', lines: d.synced, data: d };
+  if (d.plain?.length) return { status: 'plain', lines: d.plain, preview: d.preview, data: d };
+  return { status: 'none', instrumental: d.instrumental, data: d };
 }
 
 function useLyrics(track: Track | null, rev: number): LState {
@@ -34,7 +35,14 @@ function useLyrics(track: Track | null, rev: number): LState {
   useEffect(() => {
     if (!track) return;
     if (track.lyrics) {
-      setSt({ id: track.id, rev, v: { status: 'synced', lines: track.lyrics } });
+      const inlineData: LyricsData = {
+        synced: track.lyrics,
+        matchedTitle: track.title,
+        matchedArtist: track.artist,
+        durationDeltaSec: 0,
+        sourceLabel: 'Кэш',
+      };
+      setSt({ id: track.id, rev, v: { status: 'synced', lines: track.lyrics, data: inlineData } });
       return;
     }
     let alive = true;
@@ -47,7 +55,19 @@ function useLyrics(track: Track | null, rev: number): LState {
       alive = false;
     };
   }, [track, rev]);
-  if (track?.lyrics) return { status: 'synced', lines: track.lyrics };
+  if (track?.lyrics) {
+    return {
+      status: 'synced',
+      lines: track.lyrics,
+      data: {
+        synced: track.lyrics,
+        matchedTitle: track.title,
+        matchedArtist: track.artist,
+        durationDeltaSec: 0,
+        sourceLabel: 'Кэш',
+      },
+    };
+  }
   return st.id === track?.id && st.rev === rev ? st.v : { status: 'loading' };
 }
 
@@ -424,7 +444,7 @@ function ManualLyricsPicker({
                       className="lyrics-pop-item sl group flex w-full items-center justify-between gap-3 rounded-2xl px-4 py-3 text-left transition hover:bg-on-surface/8"
                       style={{ '--i': Math.min(i, 12) } as Vars}
                       onClick={() => {
-                        setManualLyricsChoice(track.id, item);
+                        setManualLyricsChoice(track.id, item, toSeconds(track.fullDuration ?? track.duration));
                         setOpen(false);
                         onSelect();
                       }}
@@ -533,7 +553,7 @@ function ManualLyricsPicker({
                       className="lyrics-pop-item sl flex w-full items-center justify-between gap-2 rounded-2xl px-3 py-2 text-left transition hover:bg-on-surface/8"
                       style={{ '--i': Math.min(i, 12) } as Vars}
                       onClick={() => {
-                        setManualLyricsChoice(track.id, item);
+                        setManualLyricsChoice(track.id, item, toSeconds(track.fullDuration ?? track.duration));
                         setOpen(false);
                         onSelect();
                       }}
@@ -566,6 +586,66 @@ function ManualLyricsPicker({
   );
 }
 
+function LyricsDebugInfoBar({
+  track,
+  data,
+  syncType,
+  variant,
+}: {
+  track: Track;
+  data: LyricsData;
+  syncType: 'Synced' | 'Plain';
+  variant: 'panel' | 'imm';
+}) {
+  const show = useStore(ui, (s) => s.showLyricsDebugInfo);
+  if (!show) return null;
+
+  const src = data.sourceLabel ?? 'LRCLIB';
+  const artist = data.matchedArtist || track.artist;
+  const title = data.matchedTitle || track.title;
+  const playingSec = toSeconds(track.fullDuration ?? track.duration);
+  const delta =
+    typeof data.durationDeltaSec === 'number'
+      ? data.durationDeltaSec
+      : playingSec > 0 && data.matchedDurationSec
+        ? Number((playingSec - data.matchedDurationSec).toFixed(1))
+        : 0;
+  const sign = delta > 0 ? '+' : '';
+  const deltaStr = `Δ ${sign}${delta.toFixed(1)} с`;
+
+  return (
+    <div
+      className={cx(
+        'pointer-events-none absolute left-2.5 right-12 top-2.5 z-10 flex flex-wrap items-center gap-1.5 text-[11px] leading-tight',
+        variant === 'imm' && 'right-40 top-3 text-xs',
+      )}
+    >
+      <div className="pointer-events-auto inline-flex max-w-full flex-wrap items-center gap-1.5 rounded-full bg-sc-high/75 px-2.5 py-1 text-on-surface-variant ring-1 ring-white/10 backdrop-blur-md">
+        <span className="font-semibold text-primary">{src}</span>
+        <span className="opacity-50">·</span>
+        <span
+          className={cx(
+            'rounded px-1 py-0.2 text-[10px] font-bold uppercase tracking-wider',
+            syncType === 'Synced' ? 'bg-primary/20 text-primary' : 'bg-on-surface/12 text-on-surface-variant',
+          )}
+        >
+          {syncType}
+        </span>
+        <span className="opacity-50">·</span>
+        <span className="max-w-[180px] truncate text-on-surface" title={`${artist} — ${title}`}>
+          {artist} — {title}
+        </span>
+        <span className="tabular-nums opacity-80">({deltaStr})</span>
+        {data.possibleOffsetWarning && (
+          <span className="rounded-full bg-[#ff9f0a]/20 px-1.5 py-0.2 text-[10px] font-bold text-[#ffb340]">
+            {t('lyricsOffsetWarn')}
+          </span>
+        )}
+      </div>
+    </div>
+  );
+}
+
 export function Lyrics({ track, variant }: { track: Track | null; variant: 'panel' | 'imm' }) {
   const [rev, setRev] = useState(0);
   const st = useLyrics(track, rev);
@@ -574,6 +654,14 @@ export function Lyrics({ track, variant }: { track: Track | null; variant: 'pane
   return (
     <div className="lyrics-stage relative h-full w-full">
       <ManualLyricsPicker track={track} variant={variant} onSelect={() => setRev((r) => r + 1)} />
+      {(st.status === 'synced' || st.status === 'plain') && (
+        <LyricsDebugInfoBar
+          track={track}
+          data={st.data}
+          syncType={st.status === 'synced' ? 'Synced' : 'Plain'}
+          variant={variant}
+        />
+      )}
       {st.status === 'loading' ? (
         variant === 'panel' ? (
           <div className="lyrics-loading" role="progressbar" aria-label={t('lyricsLoading')} aria-busy="true">

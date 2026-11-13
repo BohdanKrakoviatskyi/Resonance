@@ -172,6 +172,7 @@ export type LyricsCandidate = {
   syncedLyrics?: string;
   plainLyrics?: string;
   instrumental?: boolean;
+  possibleOffsetWarning?: boolean;
 };
 
 export type TempoVariant = 'slowed' | 'sped_up' | null;
@@ -299,6 +300,10 @@ export type PersistentLyricsCacheEntry = {
     preview?: boolean;
     matchedTitle?: string;
     matchedArtist?: string;
+    matchedDurationSec?: number;
+    durationDeltaSec?: number;
+    sourceLabel?: 'LRCLIB' | 'Deezer' | 'Кэш' | 'Выбран вручную';
+    possibleOffsetWarning?: boolean;
   } | null;
   savedAt: number;
 };

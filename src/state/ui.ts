@@ -84,6 +84,7 @@ export const ui = createStore({
   foldLocal: false,
   favProvider: 'soundcloud' as 'soundcloud' | 'youtube',
   scaleSlowedLyrics: false,
+  showLyricsDebugInfo: true,
 });
 persist('lyra.ui.v1', ui, (s) => ({
   sidebar: s.sidebar,
@@ -94,6 +95,7 @@ persist('lyra.ui.v1', ui, (s) => ({
   foldLocal: s.foldLocal,
   favProvider: s.favProvider,
   scaleSlowedLyrics: s.scaleSlowedLyrics,
+  showLyricsDebugInfo: s.showLyricsDebugInfo,
 }));
 
 if (ui.get().favProvider !== 'soundcloud' && ui.get().favProvider !== 'youtube') {
