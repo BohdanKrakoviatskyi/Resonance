@@ -229,7 +229,6 @@ export function findLyricsCandidate<T extends LyricsCandidate>(
   const queryTitleNorm = normalizeLyricsText(stripTrackNoise(query.title));
   const queryArtistNorm = normalizeLyricsText(stripTrackNoise(query.artist));
   if (!queryTitleNorm) return null;
-  const wordCount = titleWordCount(query.title);
   const tempoVariant =
     options?.scaleSlowedLyrics
       ? detectTempoVariant(options.rawTitle ?? query.title, options.rawArtist ?? query.artist)
@@ -249,8 +248,11 @@ export function findLyricsCandidate<T extends LyricsCandidate>(
     if (!exactTitle && titleSim < 0.75) continue;
 
     const artistOk = artistsMatch(query.artist, candArtist);
+    // Strict unified anti-false-positive rule:
+    // Both cleaned title AND cleaned artist must match for all automatic lyrics sources.
+    if (!artistOk) continue;
+
     const exactOrFullArtist =
-      artistOk &&
       Boolean(queryArtistNorm) &&
       (normalizeLyricsText(stripTrackNoise(candArtist)) === queryArtistNorm ||
         tokenOverlapScore(query.artist, candArtist) >= 0.85);
@@ -270,16 +272,6 @@ export function findLyricsCandidate<T extends LyricsCandidate>(
 
     if (wantSec > 0 && candSec > 0) {
       if (deltaSec > effectiveTolerance && !tempoRatioOk) continue;
-    }
-
-    // Strict anti-false-positive rule:
-    // If the artist does NOT match, we ONLY allow the candidate when the title has at least
-    // 3 unique words AND exact title match AND duration matches within ±1.5 seconds.
-    // Otherwise (e.g. 1-word title "самолёт" or "молчи" from a different artist), reject immediately!
-    if (!artistOk) {
-      if (wordCount < 3 || !exactTitle || wantSec <= 0 || candSec <= 0 || deltaSec > 1.5) {
-        continue;
-      }
     }
 
     const possibleOffsetWarning = Boolean(

@@ -16,7 +16,6 @@ import { rpc } from './sidecar';
 
 import {
   searchSoundCloudTracks,
-  soundCloudTrackLyrics,
   soundCloudRelatedTracks,
   type SoundCloudTrackCard,
   type SoundCloudSearchTrack,
@@ -458,7 +457,7 @@ export async function getLyrics(t: Track, forceRefresh = false): Promise<LyricsD
   }
   let p = lyricsCache.get(t.id);
   if (!p) {
-    p = (t.source === 'soundcloud' ? fetchSoundCloudLyrics(t) : fetchLyrics(t)).then(
+    p = fetchLyrics(t).then(
       (value) => {
         const nextCache = writePersistentLyricsCacheEntry(
           loadPersistentLyricsCache(),
@@ -478,46 +477,6 @@ export async function getLyrics(t: Track, forceRefresh = false): Promise<LyricsD
     lyricsCache.set(t.id, p);
   }
   return p;
-}
-
-async function fetchSoundCloudLyrics(track: Track): Promise<LyricsData | null> {
-  const match = track.nativeId?.match(/(\d+)$/);
-  const trackId = Number(match?.[1]);
-  const durationSec = toSeconds(track.fullDuration ?? track.duration);
-  if (!trackId) return fetchLyrics(track);
-  try {
-    const result = await soundCloudTrackLyrics({
-      trackId,
-      title: track.title,
-      artist: track.artist,
-      durationMs: Math.round(durationSec * 1000),
-    });
-    if (result.isSynced && result.lines.length) {
-      const synced = withGaps(result.lines.map((line) => ({ t: line.startMs / 1000, text: line.text })));
-      if (synced.length) {
-        return {
-          synced,
-          matchedTitle: track.title,
-          matchedArtist: track.artist,
-          durationDeltaSec: 0,
-          sourceLabel: 'Deezer',
-        };
-      }
-    }
-    const plain = result.lines.map((line) => line.text.trim()).filter(Boolean);
-    if (plain.length) {
-      return {
-        plain,
-        matchedTitle: track.title,
-        matchedArtist: track.artist,
-        durationDeltaSec: 0,
-        sourceLabel: 'Deezer',
-      };
-    }
-  } catch {
-    // Fall back to direct LRCLIB lookup when sidecar fails
-  }
-  return fetchLyrics(track);
 }
 
 async function fetchLyrics(t: Track): Promise<LyricsData | null> {

@@ -277,3 +277,55 @@ test('slowed/sped up scaling: matches slowed candidate only when scaleSlowedLyri
   assert.ok(matched);
   assert.equal(matched.trackName, 'SPINE');
 });
+
+test('rejects foreign artist even when title has >= 3 words and duration matches within <= 1.5s', () => {
+  const candidates = [
+    {
+      trackName: 'Go With The Flow',
+      artistName: 'Completely Different Artist',
+      duration: 187.2,
+      syncedLyrics: '[00:05.00] wrong artist lyrics',
+    },
+    {
+      trackName: 'Let Me Love You Tonight',
+      artistName: 'Random Cover Band',
+      duration: 205.9,
+      syncedLyrics: '[00:08.00] wrong cover lyrics',
+    },
+  ];
+  assert.equal(
+    findLyricsCandidate(candidates, { title: 'Go With The Flow', artist: 'Queens of the Stone Age' }, 187.0, 4),
+    null,
+  );
+  assert.equal(
+    findLyricsCandidate(candidates, { title: 'Let Me Love You Tonight', artist: 'DJ Snake' }, 205.9, 4),
+    null,
+  );
+});
+
+test('applies unified query and strict artist+title rules to both SoundCloud and YouTube tracks', () => {
+  const scTrack = { title: 'Go With The Flow by Queens of the Stone Age', artist: 'Gula', source: 'soundcloud' };
+  const ytTrack = { title: 'Go With The Flow', artist: 'Queens of the Stone Age - Topic', source: 'youtube' };
+  const scQueries = lyricsSearchQueries(scTrack);
+  const ytQueries = lyricsSearchQueries(ytTrack);
+
+  const pool = [
+    {
+      trackName: 'Go With The Flow',
+      artistName: 'Some Impostor',
+      duration: 187.0,
+      syncedLyrics: '[00:01.00] impostor',
+    },
+    {
+      trackName: 'Go With The Flow',
+      artistName: 'Queens of the Stone Age',
+      duration: 187.5,
+      syncedLyrics: '[00:01.00] real qotsa',
+    },
+  ];
+
+  const scMatch = scQueries.map((q) => findLyricsCandidate(pool, q, 187.0, 4)).find(Boolean);
+  const ytMatch = ytQueries.map((q) => findLyricsCandidate(pool, q, 187.0, 4)).find(Boolean);
+  assert.equal(scMatch?.artistName, 'Queens of the Stone Age');
+  assert.equal(ytMatch?.artistName, 'Queens of the Stone Age');
+});
