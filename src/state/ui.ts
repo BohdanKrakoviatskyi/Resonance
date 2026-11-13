@@ -1,5 +1,10 @@
 import { createStore, persist } from '../lib/util';
 import { viewTransition } from '../lib/motion';
+import {
+  clampLyricsOffset,
+  resolveEffectiveLyricsOffset,
+  updateTrackLyricsOffsetsMap,
+} from '../lib/lyrics-match';
 
 export type Route =
   | { name: 'home' }
@@ -84,8 +89,9 @@ export const ui = createStore({
   foldLocal: false,
   favProvider: 'soundcloud' as 'soundcloud' | 'youtube',
   scaleSlowedLyrics: false,
-  showLyricsDebugInfo: true,
+  showLyricsDebugInfo: false,
   lyricsOffsets: {} as Record<string, number>,
+  lyricsLiveDraft: null as { trackId: string; offsetSec: number } | null,
 });
 persist('lyra.ui.v1', ui, (s) => ({
   sidebar: s.sidebar,
@@ -143,21 +149,43 @@ export const openDialog = (d: Dialog) => ui.set({ dialog: d });
 export function getTrackLyricsOffset(trackId: string | null | undefined): number {
   if (!trackId) return 0;
   const val = ui.get().lyricsOffsets?.[trackId];
-  return typeof val === 'number' && Number.isFinite(val) ? val : 0;
+  return typeof val === 'number' && Number.isFinite(val) ? clampLyricsOffset(val) : 0;
+}
+
+export function getEffectiveTrackLyricsOffset(trackId: string | null | undefined): number {
+  const s = ui.get();
+  return resolveEffectiveLyricsOffset(s.lyricsOffsets, trackId, s.lyricsLiveDraft);
+}
+
+export function setLiveTrackLyricsOffset(trackId: string, offsetSec: number) {
+  if (!trackId) return;
+  ui.set({
+    lyricsLiveDraft: {
+      trackId,
+      offsetSec: clampLyricsOffset(offsetSec),
+    },
+  });
+}
+
+export function clearLiveTrackLyricsOffset(trackId?: string) {
+  const draft = ui.get().lyricsLiveDraft;
+  if (!draft) return;
+  if (!trackId || draft.trackId === trackId) {
+    ui.set({ lyricsLiveDraft: null });
+  }
 }
 
 export function setTrackLyricsOffset(trackId: string, offsetSec: number) {
   if (!trackId) return;
-  const rounded = Math.round(Math.max(-30, Math.min(30, offsetSec)) * 10) / 10;
-  const next = { ...(ui.get().lyricsOffsets ?? {}) };
-  if (Math.abs(rounded) < 0.05) {
-    delete next[trackId];
-  } else {
-    next[trackId] = rounded;
-  }
-  ui.set({ lyricsOffsets: next });
+  const snapped = clampLyricsOffset(offsetSec);
+  const next = updateTrackLyricsOffsetsMap(ui.get().lyricsOffsets, trackId, snapped);
+  ui.set({
+    lyricsOffsets: next,
+    lyricsLiveDraft: { trackId, offsetSec: snapped },
+  });
 }
 
 export function adjustTrackLyricsOffset(trackId: string, deltaSec: number) {
-  setTrackLyricsOffset(trackId, getTrackLyricsOffset(trackId) + deltaSec);
+  if (!trackId) return;
+  setLiveTrackLyricsOffset(trackId, getEffectiveTrackLyricsOffset(trackId) + deltaSec);
 }

@@ -50,12 +50,12 @@ export function dispatchShortcut(id: ShortcutId) {
       break;
     case 'lyricsOffsetBack': {
       const track = currentTrack();
-      if (track) adjustTrackLyricsOffset(track.id, -0.5);
+      if (track) adjustTrackLyricsOffset(track.id, -0.25);
       break;
     }
     case 'lyricsOffsetForward': {
       const track = currentTrack();
-      if (track) adjustTrackLyricsOffset(track.id, 0.5);
+      if (track) adjustTrackLyricsOffset(track.id, 0.25);
       break;
     }
   }

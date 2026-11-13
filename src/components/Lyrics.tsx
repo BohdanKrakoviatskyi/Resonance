@@ -12,9 +12,25 @@ import {
   type LyricsData,
   type ManualLyricsChoice,
 } from '../lib/api';
-import { stripTrackNoise, toSeconds } from '../lib/lyrics-match';
-import { onFrame, player, seek, toggle } from '../state/player';
-import { adjustTrackLyricsOffset, getTrackLyricsOffset, setTrackLyricsOffset, ui } from '../state/ui';
+import {
+  LYRICS_OFFSET_MAX_SEC,
+  LYRICS_OFFSET_MIN_SEC,
+  LYRICS_OFFSET_STEP_SEC,
+  clampLyricsOffset,
+  findSyncedLyricLineIndex,
+  getSeekTimeForLyricLine,
+  resolveEffectiveLyricsOffset,
+  stripTrackNoise,
+  toSeconds,
+} from '../lib/lyrics-match';
+import { onFrame, player, seek, toggle, useSecond } from '../state/player';
+import {
+  clearLiveTrackLyricsOffset,
+  getEffectiveTrackLyricsOffset,
+  setLiveTrackLyricsOffset,
+  setTrackLyricsOffset,
+  ui,
+} from '../state/ui';
 import type { LyricLine, Track } from '../types';
 
 type LState =
@@ -71,23 +87,12 @@ function useLyrics(track: Track | null, rev: number): LState {
   return st.id === track?.id && st.rev === rev ? st.v : { status: 'loading' };
 }
 
-function findLine(lines: LyricLine[], time: number) {
-  let lo = 0, hi = lines.length - 1, ans = -1;
-  while (lo <= hi) {
-    const m = (lo + hi) >> 1;
-    if (lines[m].t <= time) {
-      ans = m;
-      lo = m + 1;
-    } else hi = m - 1;
-  }
-  return ans;
-}
-
 function SyncedLyrics({ trackId, lines, variant }: { trackId: string; lines: LyricLine[]; variant: 'panel' | 'imm' }) {
   const box = useRef<HTMLDivElement>(null);
   const list = useRef<HTMLDivElement>(null);
   const refs = useRef<(HTMLParagraphElement | null)[]>([]);
   const activeRef = useRef(-1);
+  const lastRealTimeRef = useRef(0);
   const [active, setActive] = useState(-1);
   const [y, setY] = useState(0);
   const [manual, setManual] = useState(0);
@@ -95,29 +100,34 @@ function SyncedLyrics({ trackId, lines, variant }: { trackId: string; lines: Lyr
   const [h, setH] = useState(0);
   const idle = useRef(0);
   const touchY = useRef(0);
-  const offsetSec = useStore(ui, (s) => s.lyricsOffsets?.[trackId] ?? 0);
+  const offsetSec = useStore(ui, (s) => resolveEffectiveLyricsOffset(s.lyricsOffsets, trackId, s.lyricsLiveDraft));
+  const secondTick = useSecond();
   const leadGap = variant === 'panel' && !!lines[0]?.gap;
   const firstText = leadGap ? Math.max(1, lines.findIndex((l) => !l.gap)) : 0;
   const intro = leadGap && active < firstText;
 
+  const syncAtRealTime = (realTime: number, currentOffset: number) => {
+    lastRealTimeRef.current = realTime;
+    // Negative offset (-0.25s) makes lyrics appear earlier; positive (+0.25s) delays lyrics (shows later).
+    const time = realTime - currentOffset;
+    const i = findSyncedLyricLineIndex(lines, realTime, currentOffset, 0.12);
+    if (i !== activeRef.current) {
+      activeRef.current = i;
+      setActive(i);
+    }
+    if (i >= 0) {
+      const L = lines[i];
+      const end = Math.min(lines[i + 1]?.t ?? L.t + 6, L.t + (L.gap ? 60 : 7));
+      refs.current[i]?.style.setProperty('--lp', String(clamp((time - L.t) / Math.max(0.4, end - L.t), 0, 1)));
+    }
+  };
+
   useEffect(
     () =>
       onFrame((_visualTime, _dur, realTime) => {
-        const userOffset = getTrackLyricsOffset(trackId);
-        // Negative offset (-0.5s) makes lyrics appear 0.5s earlier; positive (+0.5s) delays lyrics by 0.5s.
-        const time = realTime - userOffset;
-        const i = findLine(lines, time + 0.12);
-        if (i !== activeRef.current) {
-          activeRef.current = i;
-          setActive(i);
-        }
-        if (i >= 0) {
-          const L = lines[i];
-          const end = Math.min(lines[i + 1]?.t ?? L.t + 6, L.t + (L.gap ? 60 : 7));
-          refs.current[i]?.style.setProperty('--lp', String(clamp((time - L.t) / Math.max(0.4, end - L.t), 0, 1)));
-        }
+        syncAtRealTime(realTime, getEffectiveTrackLyricsOffset(trackId));
       }),
-    [lines, trackId, offsetSec],
+    [lines, trackId, offsetSec, secondTick],
   );
 
   useLayoutEffect(() => {
@@ -183,7 +193,7 @@ function SyncedLyrics({ trackId, lines, variant }: { trackId: string; lines: Lyr
               data-state={i === active ? 'active' : d < 0 ? 'past' : 'future'}
               style={{ '--d': clamp(d, 0, 10), '--dist': Math.min(Math.abs(d), 5) } as Vars}
               onClick={() => {
-                seek(Math.max(0, l.t + offsetSec));
+                seek(getSeekTimeForLyricLine(l.t, offsetSec));
                 if (!player.get().playing) toggle();
               }}
             >
@@ -347,7 +357,7 @@ function ManualLyricsPicker({
   const isImm = variant === 'imm';
 
   return (
-    <div ref={wrapRef} className=" lyrics-picker-trigger pointer-events-none absolute inset-x-2.5 bottom-2.5 top-2.5 z-20 flex flex-col items-end gap-2">
+    <div ref={wrapRef} className="lyrics-picker-trigger relative inline-flex items-center">
       <button
         ref={btnRef}
         type="button"
@@ -589,112 +599,230 @@ function ManualLyricsPicker({
   );
 }
 
-function LyricsDebugInfoBar({
+function formatLyricsOffsetValue(offsetSec: number): string {
+  const snapped = clampLyricsOffset(offsetSec);
+  if (Math.abs(snapped) < 0.01) return '0.00 с';
+  const sign = snapped > 0 ? '+' : '−';
+  return `${sign}${Math.abs(snapped).toFixed(2)} с`;
+}
+
+function LyricsOffsetPopover({
   track,
   data,
   syncType,
   variant,
 }: {
   track: Track;
-  data: LyricsData;
-  syncType: 'Synced' | 'Plain';
+  data: LyricsData | null;
+  syncType: 'Synced' | 'Plain' | 'None';
   variant: 'panel' | 'imm';
 }) {
-  const show = useStore(ui, (s) => s.showLyricsDebugInfo);
-  const offsetSec = useStore(ui, (s) => s.lyricsOffsets?.[track.id] ?? 0);
+  const [open, setOpen] = useState(false);
+  const [justSaved, setJustSaved] = useState(false);
+  const wrapRef = useRef<HTMLDivElement>(null);
+  const isSynced = syncType === 'Synced';
+  const isImm = variant === 'imm';
 
-  const src = data.sourceLabel ?? 'LRCLIB';
-  const artist = data.matchedArtist || track.artist;
-  const title = data.matchedTitle || track.title;
+  const savedOffsetSec = useStore(ui, (s) => {
+    const v = s.lyricsOffsets?.[track.id];
+    return typeof v === 'number' && Number.isFinite(v) ? clampLyricsOffset(v) : 0;
+  });
+  const liveOffsetSec = useStore(ui, (s) =>
+    resolveEffectiveLyricsOffset(s.lyricsOffsets, track.id, s.lyricsLiveDraft),
+  );
+  const hasSavedOffset = Math.abs(savedOffsetSec) >= 0.01;
+  const hasUnsavedDiff = Math.abs(liveOffsetSec - savedOffsetSec) >= 0.01;
+
+  // Discard any unsaved live draft when switching tracks and close the popover.
+  useEffect(() => {
+    setOpen(false);
+    setJustSaved(false);
+    clearLiveTrackLyricsOffset();
+  }, [track.id]);
+
+  // If lyrics become non-synced, close popover.
+  useEffect(() => {
+    if (!isSynced && open) setOpen(false);
+  }, [isSynced, open]);
+
+  useEffect(() => {
+    if (!open) return;
+    const onDown = (e: PointerEvent) => {
+      const target = e.target as Node;
+      if (!wrapRef.current?.contains(target)) setOpen(false);
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        e.stopPropagation();
+        setOpen(false);
+      }
+    };
+    document.addEventListener('pointerdown', onDown, true);
+    window.addEventListener('keydown', onKey, true);
+    return () => {
+      document.removeEventListener('pointerdown', onDown, true);
+      window.removeEventListener('keydown', onKey, true);
+    };
+  }, [open]);
+
+  const src = data?.sourceLabel ?? 'LRCLIB';
+  const artist = data?.matchedArtist || track.artist;
+  const title = data?.matchedTitle || track.title;
   const playingSec = toSeconds(track.fullDuration ?? track.duration);
   const delta =
-    typeof data.durationDeltaSec === 'number'
+    typeof data?.durationDeltaSec === 'number'
       ? data.durationDeltaSec
-      : playingSec > 0 && data.matchedDurationSec
+      : playingSec > 0 && data?.matchedDurationSec
         ? Number((playingSec - data.matchedDurationSec).toFixed(1))
         : 0;
-  const sign = delta > 0 ? '+' : '';
-  const deltaStr = `Δ ${sign}${delta.toFixed(1)} с`;
-  const offsetSign = offsetSec > 0 ? '+' : '';
-  const hasOffset = Math.abs(offsetSec) >= 0.05;
-  const warnHighlight = Boolean(data.possibleOffsetWarning && !hasOffset);
+  const deltaSign = delta > 0 ? '+' : delta < 0 ? '−' : '±';
+  const deltaStr = `${deltaSign}${Math.abs(delta).toFixed(1)} с`;
+  const sourceLine = `${src} · ${syncType === 'Synced' ? 'SYNCED' : 'PLAIN'} · ${artist} — ${title} · ${t('lyricsDurationDelta', { delta: deltaStr })}`;
 
-  if (!show && syncType !== 'Synced') return null;
+  const handleSliderChange = (nextVal: number) => {
+    setJustSaved(false);
+    setLiveTrackLyricsOffset(track.id, nextVal);
+  };
+
+  const handleReset = () => {
+    setJustSaved(false);
+    setLiveTrackLyricsOffset(track.id, 0);
+  };
+
+  const handleSave = () => {
+    setTrackLyricsOffset(track.id, liveOffsetSec);
+    setJustSaved(true);
+    window.setTimeout(() => setJustSaved(false), 1400);
+  };
 
   return (
-    <div
-      className={cx(
-        'pointer-events-none absolute left-2.5 right-12 top-2.5 z-10 flex flex-wrap items-center gap-1.5 text-[11px] leading-tight',
-        variant === 'imm' && 'right-40 top-3 text-xs',
-      )}
-    >
-      {show && (
-        <div className="pointer-events-auto inline-flex max-w-full flex-wrap items-center gap-1.5 rounded-full bg-sc-high/75 px-2.5 py-1 text-on-surface-variant ring-1 ring-white/10 backdrop-blur-md">
-          <span className="font-semibold text-primary">{src}</span>
-          <span className="opacity-50">·</span>
+    <div ref={wrapRef} className="relative inline-flex items-center">
+      <button
+        type="button"
+        data-ripple={isSynced || undefined}
+        disabled={!isSynced}
+        title={isSynced ? t('lyricsOffsetBtn') : t('lyricsOffsetNoSync')}
+        aria-label={isSynced ? t('lyricsOffsetBtn') : t('lyricsOffsetNoSync')}
+        aria-expanded={open}
+        onClick={() => {
+          if (!isSynced) return;
+          setOpen((v) => !v);
+        }}
+        className={cx(
+          'sl relative shrink-0 inline-grid place-items-center rounded-full backdrop-blur-md transition duration-200',
+          isImm ? 'h-10 w-10' : 'h-8 w-8',
+          !isSynced
+            ? 'cursor-not-allowed bg-sc-high/35 text-on-surface-variant/35 ring-1 ring-white/5 opacity-60'
+            : open || hasSavedOffset || hasUnsavedDiff
+              ? isImm
+                ? 'bg-primary/20 text-primary ring-1 ring-primary/40'
+                : 'bg-primary/22 text-primary ring-1 ring-primary/40'
+              : isImm
+                ? 'bg-on-surface/8 text-on-surface-variant hover:bg-on-surface/14 hover:text-on-surface'
+                : 'bg-sc-high/70 text-on-surface-variant ring-1 ring-white/10 hover:text-on-surface',
+        )}
+      >
+        <Icon name="history" size={isImm ? 18 : 16} />
+        {isSynced && hasSavedOffset && (
           <span
-            className={cx(
-              'rounded px-1 py-0.2 text-[10px] font-bold uppercase tracking-wider',
-              syncType === 'Synced' ? 'bg-primary/20 text-primary' : 'bg-on-surface/12 text-on-surface-variant',
-            )}
-          >
-            {syncType}
-          </span>
-          <span className="opacity-50">·</span>
-          <span className="max-w-[180px] truncate text-on-surface" title={`${artist} — ${title}`}>
-            {artist} — {title}
-          </span>
-          <span className="tabular-nums opacity-80">({deltaStr})</span>
-          {data.possibleOffsetWarning && (
-            <span className="rounded-full bg-[#ff9f0a]/20 px-1.5 py-0.2 text-[10px] font-bold text-[#ffb340]">
-              {t('lyricsOffsetWarn')}
-            </span>
-          )}
-        </div>
-      )}
+            aria-hidden="true"
+            className="pointer-events-none absolute right-0.5 top-0.5 h-2 w-2 rounded-full bg-primary ring-2 ring-surface"
+          />
+        )}
+      </button>
 
-      {syncType === 'Synced' && (
+      {open && isSynced && (
         <div
+          role="dialog"
+          aria-label={t('lyricsOffsetBtn')}
           className={cx(
-            'pointer-events-auto inline-flex items-center gap-1 rounded-full bg-sc-high/75 px-2 py-0.5 text-[11px] tabular-nums backdrop-blur-md transition',
-            warnHighlight
-              ? 'text-[#ffb340] ring-1 ring-[#ff9f0a]/55'
-              : hasOffset
-                ? 'text-primary ring-1 ring-primary/40'
-                : 'text-on-surface-variant ring-1 ring-white/10',
+            'absolute right-0 top-[calc(100%+8px)] z-30 w-[min(320px,calc(100vw-32px))] rounded-2xl bg-sc-high/95 p-3.5 text-xs text-on-surface shadow-2xl ring-1 ring-white/15 backdrop-blur-xl',
+            isImm && 'w-[340px]',
           )}
         >
-          <button
-            type="button"
-            data-ripple
-            className="sl rounded px-1.5 py-0.5 font-semibold hover:bg-on-surface/12 hover:text-on-surface"
-            onClick={() => adjustTrackLyricsOffset(track.id, -0.5)}
-            title="−0.5 с ([)"
-          >
-            −0.5 с
-          </button>
-          <button
-            type="button"
-            data-ripple
-            disabled={!hasOffset}
-            onClick={() => setTrackLyricsOffset(track.id, 0)}
-            title={hasOffset ? t('lyricsOffsetReset') : undefined}
-            className={cx(
-              'rounded px-1 py-0.5 text-[10px] font-bold',
-              hasOffset ? 'cursor-pointer text-primary hover:bg-primary/15' : ' cursor-default opacity-75',
+          {/* 1) Source and sync type summary line + possible offset warning badge */}
+          <div className="mb-3 flex flex-wrap items-center gap-1.5 border-b border-white/10 pb-2.5 text-[11px] leading-snug text-on-surface-variant">
+            <span className="min-w-0 flex-1 break-words" title={sourceLine}>
+              <strong className="font-semibold text-primary">{src}</strong>
+              {' · '}
+              <span className="font-bold uppercase tracking-wider text-on-surface">
+                {syncType === 'Synced' ? 'SYNCED' : 'PLAIN'}
+              </span>
+              {' · '}
+              <span className="text-on-surface">{artist} — {title}</span>
+              {' · '}
+              <span className="tabular-nums opacity-85">{t('lyricsDurationDelta', { delta: deltaStr })}</span>
+            </span>
+            {data?.possibleOffsetWarning && (
+              <span className="shrink-0 rounded-full bg-[#ff9f0a]/20 px-2 py-0.5 text-[10px] font-bold text-[#ffb340]">
+                {t('lyricsOffsetWarn')}
+              </span>
             )}
-          >
-            {hasOffset ? `${offsetSign}${offsetSec.toFixed(1)} с` : '0.0 с'}
-          </button>
-          <button
-            type="button"
-            data-ripple
-            className="sl rounded px-1.5 py-0.5 font-semibold hover:bg-on-surface/12 hover:text-on-surface"
-            onClick={() => adjustTrackLyricsOffset(track.id, 0.5)}
-            title="+0.5 с (])"
-          >
-            +0.5 с
-          </button>
+          </div>
+
+          {/* 2) Slider -10..+10 s with step 0.25 s, center 0, value on the right, labels Earlier / Later */}
+          <div className="space-y-1.5">
+            <div className="flex items-center gap-2.5">
+              <div className="relative flex flex-1 items-center">
+                <input
+                  type="range"
+                  min={LYRICS_OFFSET_MIN_SEC}
+                  max={LYRICS_OFFSET_MAX_SEC}
+                  step={LYRICS_OFFSET_STEP_SEC}
+                  value={liveOffsetSec}
+                  aria-label={t('lyricsOffsetBtn')}
+                  onChange={(e) => handleSliderChange(Number(e.target.value))}
+                  className="h-1.5 w-full cursor-pointer appearance-none rounded-lg bg-on-surface/15 accent-primary focus:outline-none"
+                />
+              </div>
+              <span
+                className={cx(
+                  'w-16 shrink-0 text-right font-mono text-xs font-bold tabular-nums',
+                  Math.abs(liveOffsetSec) >= 0.01 ? 'text-primary' : 'text-on-surface-variant',
+                )}
+              >
+                {formatLyricsOffsetValue(liveOffsetSec)}
+              </span>
+            </div>
+
+            <div className="flex items-center justify-between px-0.5 text-[10px] font-medium text-on-surface-variant">
+              <span>← {t('lyricsOffsetEarlier')} (−)</span>
+              <span className="tabular-nums opacity-70">0</span>
+              <span>(+) {t('lyricsOffsetLater')} →</span>
+            </div>
+          </div>
+
+          {/* 3) Two action buttons: Reset and Save */}
+          <div className="mt-3 flex items-center justify-end gap-2">
+            <button
+              type="button"
+              data-ripple
+              disabled={Math.abs(liveOffsetSec) < 0.01}
+              onClick={handleReset}
+              className={cx(
+                'sl rounded-xl px-3 py-1.5 text-xs font-semibold transition',
+                Math.abs(liveOffsetSec) >= 0.01
+                  ? 'bg-on-surface/10 text-on-surface hover:bg-on-surface/16'
+                  : 'cursor-default bg-on-surface/5 text-on-surface-variant/40',
+              )}
+            >
+              {t('lyricsOffsetReset')}
+            </button>
+            <button
+              type="button"
+              data-ripple
+              onClick={handleSave}
+              className={cx(
+                'sl inline-flex items-center gap-1 rounded-xl px-3.5 py-1.5 text-xs font-semibold transition',
+                justSaved
+                  ? 'bg-primary text-on-primary'
+                  : 'bg-primary/22 text-primary ring-1 ring-primary/40 hover:bg-primary/30',
+              )}
+            >
+              {justSaved && <Icon name="check" size={14} />}
+              <span>{justSaved ? t('lyricsOffsetSaved') : t('lyricsOffsetSave')}</span>
+            </button>
+          </div>
         </div>
       )}
     </div>
@@ -706,40 +834,51 @@ export function Lyrics({ track, variant }: { track: Track | null; variant: 'pane
   const st = useLyrics(track, rev);
   if (!track) return null;
 
+  const syncType: 'Synced' | 'Plain' | 'None' =
+    st.status === 'synced' ? 'Synced' : st.status === 'plain' ? 'Plain' : 'None';
+  const lyricsData = st.status === 'synced' || st.status === 'plain' ? st.data : st.status === 'none' ? (st.data ?? null) : null;
+
   return (
-    <div className="lyrics-stage relative h-full w-full">
-      <ManualLyricsPicker track={track} variant={variant} onSelect={() => setRev((r) => r + 1)} />
-      {(st.status === 'synced' || st.status === 'plain') && (
-        <LyricsDebugInfoBar
+    <div className="lyrics-stage relative flex h-full w-full min-h-0 flex-col">
+      <div
+        className={cx(
+          'lyrics-header flex shrink-0 items-center justify-end gap-1.5',
+          variant === 'imm' ? 'px-2 pb-1.5 pt-1' : 'px-2.5 pb-1 pt-2',
+        )}
+      >
+        <LyricsOffsetPopover
           track={track}
-          data={st.data}
-          syncType={st.status === 'synced' ? 'Synced' : 'Plain'}
+          data={lyricsData}
+          syncType={syncType}
           variant={variant}
         />
-      )}
-      {st.status === 'loading' ? (
-        variant === 'panel' ? (
-          <div className="lyrics-loading" role="progressbar" aria-label={t('lyricsLoading')} aria-busy="true">
-            <span />
-          </div>
-        ) : (
+        <ManualLyricsPicker track={track} variant={variant} onSelect={() => setRev((r) => r + 1)} />
+      </div>
+      <div className="relative min-h-0 flex-1">
+        {st.status === 'loading' ? (
+          variant === 'panel' ? (
+            <div className="lyrics-loading" role="progressbar" aria-label={t('lyricsLoading')} aria-busy="true">
+              <span />
+            </div>
+          ) : (
+            <div className="lyrics-state">
+              <Loader size={64} />
+              <span>{t('lyricsLoading')}</span>
+            </div>
+          )
+        ) : st.status === 'none' ? (
           <div className="lyrics-state">
-            <Loader size={64} />
-            <span>{t('lyricsLoading')}</span>
+            <Shape n={7} amp={0.1} className="spin-slow h-20 w-20 text-secondary-container">
+              <Icon name={st.instrumental ? 'piano' : 'lyrics'} size={34} className="text-on-secondary-container" />
+            </Shape>
+            <span>{st.instrumental ? t('instrumental') : t('noLyrics')}</span>
           </div>
-        )
-      ) : st.status === 'none' ? (
-        <div className="lyrics-state">
-          <Shape n={7} amp={0.1} className="spin-slow h-20 w-20 text-secondary-container">
-            <Icon name={st.instrumental ? 'piano' : 'lyrics'} size={34} className="text-on-secondary-container" />
-          </Shape>
-          <span>{st.instrumental ? t('instrumental') : t('noLyrics')}</span>
-        </div>
-      ) : st.status === 'plain' ? (
-        <PlainLyrics key={`${track.id}:${rev}`} lines={st.lines} preview={st.preview} variant={variant} />
-      ) : (
-        <SyncedLyrics key={`${track.id}:${rev}`} trackId={track.id} lines={st.lines} variant={variant} />
-      )}
+        ) : st.status === 'plain' ? (
+          <PlainLyrics key={`${track.id}:${rev}`} lines={st.lines} preview={st.preview} variant={variant} />
+        ) : (
+          <SyncedLyrics key={`${track.id}:${rev}`} trackId={track.id} lines={st.lines} variant={variant} />
+        )}
+      </div>
     </div>
   );
 }

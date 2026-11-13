@@ -32,8 +32,8 @@ export const SHORTCUTS: ShortcutDefinition[] = [
   { id: 'lyrics', label: 'kbLyrics', scope: 'window', defaultBinding: 'F' },
   { id: 'search', label: 'kbSearch', scope: 'window', defaultBinding: '/' },
   { id: 'mute', label: 'kbMute', scope: 'global', defaultBinding: 'Shift+M' },
-  { id: 'lyricsOffsetBack', label: 'kbLyricsOffsetBack', scope: 'window', defaultBinding: '[' },
-  { id: 'lyricsOffsetForward', label: 'kbLyricsOffsetForward', scope: 'window', defaultBinding: ']' },
+  { id: 'lyricsOffsetBack', label: 'kbLyricsOffsetBack', scope: 'window', defaultBinding: 'Alt+[' },
+  { id: 'lyricsOffsetForward', label: 'kbLyricsOffsetForward', scope: 'window', defaultBinding: 'Alt+]' },
 ];
 
 export type ShortcutBindings = Record<ShortcutId, string>;
@@ -81,6 +81,10 @@ function loadBindings(): ShortcutBindings {
         const value = (stored as Record<string, unknown>)[id];
         if (typeof value === 'string' && isValidShortcut(value)) bindings[id] = normalizeShortcut(value);
       }
+      // Migrate legacy default '[' / ']' lyrics offset bindings to 'Alt+[' / 'Alt+]'
+      // so the single ']' key is reserved exclusively for Mute without collisions.
+      if (bindings.lyricsOffsetBack === '[') bindings.lyricsOffsetBack = 'Alt+[';
+      if (bindings.lyricsOffsetForward === ']') bindings.lyricsOffsetForward = 'Alt+]';
     }
   } catch {
     // Ignore unavailable or malformed local storage and use defaults.

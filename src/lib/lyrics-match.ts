@@ -376,3 +376,78 @@ export function matchesGeniusCandidate(
   const exactTitle = normalizeLyricsText(stripTrackNoise(candTitle)) === normalizeLyricsText(stripTrackNoise(query.title));
   return exactTitle || tokenOverlapScore(query.title, candTitle) >= 0.8;
 }
+
+export const LYRICS_OFFSET_MIN_SEC = -10;
+export const LYRICS_OFFSET_MAX_SEC = 10;
+export const LYRICS_OFFSET_STEP_SEC = 0.25;
+
+/**
+ * Clamps lyrics sync offset to [-10, +10] seconds and snaps to 0.25s steps.
+ * Sign convention:
+ *  - Positive (+offsetSec): lyrics appear LATER (delays active lyric line highlight).
+ *  - Negative (-offsetSec): lyrics appear EARLIER (advances active lyric line highlight).
+ */
+export function clampLyricsOffset(offsetSec: number): number {
+  if (!Number.isFinite(offsetSec)) return 0;
+  const clamped = Math.max(LYRICS_OFFSET_MIN_SEC, Math.min(LYRICS_OFFSET_MAX_SEC, offsetSec));
+  const snapped = Math.round(clamped / LYRICS_OFFSET_STEP_SEC) * LYRICS_OFFSET_STEP_SEC;
+  return Math.abs(snapped) < 0.01 ? 0 : Number(snapped.toFixed(2));
+}
+
+export function findSyncedLyricLineIndex(
+  lines: readonly { t: number }[],
+  realTimeSec: number,
+  offsetSec = 0,
+  leadInSec = 0.12,
+): number {
+  if (!lines.length) return -1;
+  // Positive offset delays lyrics (shifts effective lookup time back);
+  // negative offset advances lyrics (shifts effective lookup time forward).
+  const effectiveTime = realTimeSec - clampLyricsOffset(offsetSec) + leadInSec;
+  let lo = 0;
+  let hi = lines.length - 1;
+  let ans = -1;
+  while (lo <= hi) {
+    const m = (lo + hi) >> 1;
+    if (lines[m].t <= effectiveTime) {
+      ans = m;
+      lo = m + 1;
+    } else {
+      hi = m - 1;
+    }
+  }
+  return ans;
+}
+
+export function getSeekTimeForLyricLine(lineTimeSec: number, offsetSec = 0): number {
+  return Math.max(0, Number((lineTimeSec + clampLyricsOffset(offsetSec)).toFixed(2)));
+}
+
+export function updateTrackLyricsOffsetsMap(
+  currentMap: Record<string, number> | undefined,
+  trackId: string,
+  offsetSec: number,
+): Record<string, number> {
+  const next = { ...(currentMap ?? {}) };
+  if (!trackId) return next;
+  const snapped = clampLyricsOffset(offsetSec);
+  if (Math.abs(snapped) < 0.01) {
+    delete next[trackId];
+  } else {
+    next[trackId] = snapped;
+  }
+  return next;
+}
+
+export function resolveEffectiveLyricsOffset(
+  savedOffsets: Record<string, number> | undefined,
+  activeTrackId: string | null | undefined,
+  draft: { trackId: string; offsetSec: number } | null | undefined,
+): number {
+  if (!activeTrackId) return 0;
+  if (draft && draft.trackId === activeTrackId) {
+    return clampLyricsOffset(draft.offsetSec);
+  }
+  const saved = savedOffsets?.[activeTrackId];
+  return typeof saved === 'number' && Number.isFinite(saved) ? clampLyricsOffset(saved) : 0;
+}
