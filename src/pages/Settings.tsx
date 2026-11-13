@@ -3,7 +3,7 @@ import { Segmented, type Vars } from '../components/ui';
 import { t } from '../lib/i18n';
 import { useStore } from '../lib/util';
 import { appearance } from '../state/appearance';
-import { go, openDialog, ui, type Route } from '../state/ui';
+import { go, openDialog, type Route } from '../state/ui';
 
 type SettingItem = {
   route: Route;
@@ -15,7 +15,6 @@ type SettingItem = {
 
 export default function Settings() {
   const lang = useStore(appearance, (s) => s.lang);
-  const showLyricsDebugInfo = useStore(ui, (s) => s.showLyricsDebugInfo);
 
   const items: SettingItem[] = [
     {
@@ -97,27 +96,7 @@ export default function Settings() {
           />
         </section>
 
-        <section className="card anim-in" style={{ '--i': items.length + 2 } as Vars}>
-          <div className="mb-4 flex items-center gap-3">
-            <span className="grid h-12 w-12 shrink-0 place-items-center rounded-[16px] bg-secondary-container text-on-secondary-container">
-              <Icon name="lyrics" fill size={24} />
-            </span>
-            <div className="min-w-0">
-              <h2 className="headline text-lg leading-tight">{t('lyricsDebugSetting')}</h2>
-              <div className="mt-0.5 text-sm text-on-surface-variant">{t('lyricsDebugSettingSub')}</div>
-            </div>
-          </div>
-          <Segmented
-            value={showLyricsDebugInfo ? 'on' : 'off'}
-            onChange={(v) => ui.set({ showLyricsDebugInfo: v === 'on' })}
-            options={[
-              { value: 'on', label: lang === 'ru' ? 'Показывать' : 'Show' },
-              { value: 'off', label: lang === 'ru' ? 'Скрыть' : 'Hide' },
-            ]}
-          />
-        </section>
-
-        <div className="anim-in mt-1 flex flex-wrap justify-end gap-2.5" style={{ '--i': items.length + 3 } as Vars}>
+        <div className="anim-in mt-1 flex flex-wrap justify-end gap-2.5" style={{ '--i': items.length + 2 } as Vars}>
           <button
             type="button"
             data-ripple
