@@ -1,4 +1,5 @@
 import { clearCache, type CacheClearResult } from '../lib/providers-api';
+import { clearAutomaticLyricsCache } from '../lib/api';
 import { clearPaletteCache } from '../lib/color';
 import { library } from './library';
 
@@ -29,6 +30,7 @@ export async function clearAppCache(signal?: AbortSignal): Promise<AppCacheClear
   // In-memory artwork is dropped so covers are re-fetched on demand.
   library.set({ ytmusicPlaylistArt: {} });
   clearPaletteCache();
+  clearAutomaticLyricsCache();
   const webCachesDeleted = await clearWebCache();
   return { ...backend, webCachesDeleted };
 }

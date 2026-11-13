@@ -224,11 +224,31 @@ export interface ManualLyricsChoice {
 }
 
 const MANUAL_LYRICS_STORAGE_KEY = 'resonance.manual_lyrics.v1';
-const PERSISTENT_LYRICS_CACHE_KEY = 'resonance.lyrics_cache.v1';
+const LEGACY_PERSISTENT_LYRICS_CACHE_KEY = 'resonance.lyrics_cache.v1';
+const PERSISTENT_LYRICS_CACHE_KEY = 'resonance.lyrics_cache.v2';
 const lyricsCache = new Map<string, Promise<LyricsData | null>>();
 let lyricsOverrides: Record<string, ManualLyricsChoice> | null = null;
 let lyricsOverridesRestored: Promise<void> | null = null;
 let persistentLyricsCache: Record<string, PersistentLyricsCacheEntry> | null = null;
+
+try {
+  if (typeof localStorage !== 'undefined') {
+    localStorage.removeItem(LEGACY_PERSISTENT_LYRICS_CACHE_KEY);
+  }
+} catch {
+  /* ignore storage errors */
+}
+
+export function clearAutomaticLyricsCache() {
+  lyricsCache.clear();
+  persistentLyricsCache = {};
+  try {
+    localStorage.removeItem(LEGACY_PERSISTENT_LYRICS_CACHE_KEY);
+    localStorage.removeItem(PERSISTENT_LYRICS_CACHE_KEY);
+  } catch {
+    /* ignore storage errors */
+  }
+}
 
 function loadPersistentLyricsCache(): Record<string, PersistentLyricsCacheEntry> {
   if (persistentLyricsCache) return persistentLyricsCache;
