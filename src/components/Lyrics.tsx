@@ -14,7 +14,7 @@ import {
 } from '../lib/api';
 import { stripTrackNoise, toSeconds } from '../lib/lyrics-match';
 import { onFrame, player, seek, toggle } from '../state/player';
-import { ui } from '../state/ui';
+import { adjustTrackLyricsOffset, getTrackLyricsOffset, setTrackLyricsOffset, ui } from '../state/ui';
 import type { LyricLine, Track } from '../types';
 
 type LState =
@@ -83,7 +83,7 @@ function findLine(lines: LyricLine[], time: number) {
   return ans;
 }
 
-function SyncedLyrics({ lines, variant }: { lines: LyricLine[]; variant: 'panel' | 'imm' }) {
+function SyncedLyrics({ trackId, lines, variant }: { trackId: string; lines: LyricLine[]; variant: 'panel' | 'imm' }) {
   const box = useRef<HTMLDivElement>(null);
   const list = useRef<HTMLDivElement>(null);
   const refs = useRef<(HTMLParagraphElement | null)[]>([]);
@@ -95,6 +95,7 @@ function SyncedLyrics({ lines, variant }: { lines: LyricLine[]; variant: 'panel'
   const [h, setH] = useState(0);
   const idle = useRef(0);
   const touchY = useRef(0);
+  const offsetSec = useStore(ui, (s) => s.lyricsOffsets?.[trackId] ?? 0);
   const leadGap = variant === 'panel' && !!lines[0]?.gap;
   const firstText = leadGap ? Math.max(1, lines.findIndex((l) => !l.gap)) : 0;
   const intro = leadGap && active < firstText;
@@ -102,7 +103,9 @@ function SyncedLyrics({ lines, variant }: { lines: LyricLine[]; variant: 'panel'
   useEffect(
     () =>
       onFrame((_visualTime, _dur, realTime) => {
-        const time = realTime;
+        const userOffset = getTrackLyricsOffset(trackId);
+        // Negative offset (-0.5s) makes lyrics appear 0.5s earlier; positive (+0.5s) delays lyrics by 0.5s.
+        const time = realTime - userOffset;
         const i = findLine(lines, time + 0.12);
         if (i !== activeRef.current) {
           activeRef.current = i;
@@ -114,7 +117,7 @@ function SyncedLyrics({ lines, variant }: { lines: LyricLine[]; variant: 'panel'
           refs.current[i]?.style.setProperty('--lp', String(clamp((time - L.t) / Math.max(0.4, end - L.t), 0, 1)));
         }
       }),
-    [lines],
+    [lines, trackId, offsetSec],
   );
 
   useLayoutEffect(() => {
@@ -180,7 +183,7 @@ function SyncedLyrics({ lines, variant }: { lines: LyricLine[]; variant: 'panel'
               data-state={i === active ? 'active' : d < 0 ? 'past' : 'future'}
               style={{ '--d': clamp(d, 0, 10), '--dist': Math.min(Math.abs(d), 5) } as Vars}
               onClick={() => {
-                seek(l.t);
+                seek(Math.max(0, l.t + offsetSec));
                 if (!player.get().playing) toggle();
               }}
             >
@@ -598,7 +601,7 @@ function LyricsDebugInfoBar({
   variant: 'panel' | 'imm';
 }) {
   const show = useStore(ui, (s) => s.showLyricsDebugInfo);
-  if (!show) return null;
+  const offsetSec = useStore(ui, (s) => s.lyricsOffsets?.[track.id] ?? 0);
 
   const src = data.sourceLabel ?? 'LRCLIB';
   const artist = data.matchedArtist || track.artist;
@@ -612,6 +615,11 @@ function LyricsDebugInfoBar({
         : 0;
   const sign = delta > 0 ? '+' : '';
   const deltaStr = `Δ ${sign}${delta.toFixed(1)} с`;
+  const offsetSign = offsetSec > 0 ? '+' : '';
+  const hasOffset = Math.abs(offsetSec) >= 0.05;
+  const warnHighlight = Boolean(data.possibleOffsetWarning && !hasOffset);
+
+  if (!show && syncType !== 'Synced') return null;
 
   return (
     <div
@@ -620,28 +628,75 @@ function LyricsDebugInfoBar({
         variant === 'imm' && 'right-40 top-3 text-xs',
       )}
     >
-      <div className="pointer-events-auto inline-flex max-w-full flex-wrap items-center gap-1.5 rounded-full bg-sc-high/75 px-2.5 py-1 text-on-surface-variant ring-1 ring-white/10 backdrop-blur-md">
-        <span className="font-semibold text-primary">{src}</span>
-        <span className="opacity-50">·</span>
-        <span
+      {show && (
+        <div className="pointer-events-auto inline-flex max-w-full flex-wrap items-center gap-1.5 rounded-full bg-sc-high/75 px-2.5 py-1 text-on-surface-variant ring-1 ring-white/10 backdrop-blur-md">
+          <span className="font-semibold text-primary">{src}</span>
+          <span className="opacity-50">·</span>
+          <span
+            className={cx(
+              'rounded px-1 py-0.2 text-[10px] font-bold uppercase tracking-wider',
+              syncType === 'Synced' ? 'bg-primary/20 text-primary' : 'bg-on-surface/12 text-on-surface-variant',
+            )}
+          >
+            {syncType}
+          </span>
+          <span className="opacity-50">·</span>
+          <span className="max-w-[180px] truncate text-on-surface" title={`${artist} — ${title}`}>
+            {artist} — {title}
+          </span>
+          <span className="tabular-nums opacity-80">({deltaStr})</span>
+          {data.possibleOffsetWarning && (
+            <span className="rounded-full bg-[#ff9f0a]/20 px-1.5 py-0.2 text-[10px] font-bold text-[#ffb340]">
+              {t('lyricsOffsetWarn')}
+            </span>
+          )}
+        </div>
+      )}
+
+      {syncType === 'Synced' && (
+        <div
           className={cx(
-            'rounded px-1 py-0.2 text-[10px] font-bold uppercase tracking-wider',
-            syncType === 'Synced' ? 'bg-primary/20 text-primary' : 'bg-on-surface/12 text-on-surface-variant',
+            'pointer-events-auto inline-flex items-center gap-1 rounded-full bg-sc-high/75 px-2 py-0.5 text-[11px] tabular-nums backdrop-blur-md transition',
+            warnHighlight
+              ? 'text-[#ffb340] ring-1 ring-[#ff9f0a]/55'
+              : hasOffset
+                ? 'text-primary ring-1 ring-primary/40'
+                : 'text-on-surface-variant ring-1 ring-white/10',
           )}
         >
-          {syncType}
-        </span>
-        <span className="opacity-50">·</span>
-        <span className="max-w-[180px] truncate text-on-surface" title={`${artist} — ${title}`}>
-          {artist} — {title}
-        </span>
-        <span className="tabular-nums opacity-80">({deltaStr})</span>
-        {data.possibleOffsetWarning && (
-          <span className="rounded-full bg-[#ff9f0a]/20 px-1.5 py-0.2 text-[10px] font-bold text-[#ffb340]">
-            {t('lyricsOffsetWarn')}
-          </span>
-        )}
-      </div>
+          <button
+            type="button"
+            data-ripple
+            className="sl rounded px-1.5 py-0.5 font-semibold hover:bg-on-surface/12 hover:text-on-surface"
+            onClick={() => adjustTrackLyricsOffset(track.id, -0.5)}
+            title="−0.5 с ([)"
+          >
+            −0.5 с
+          </button>
+          <button
+            type="button"
+            data-ripple
+            disabled={!hasOffset}
+            onClick={() => setTrackLyricsOffset(track.id, 0)}
+            title={hasOffset ? t('lyricsOffsetReset') : undefined}
+            className={cx(
+              'rounded px-1 py-0.5 text-[10px] font-bold',
+              hasOffset ? 'cursor-pointer text-primary hover:bg-primary/15' : ' cursor-default opacity-75',
+            )}
+          >
+            {hasOffset ? `${offsetSign}${offsetSec.toFixed(1)} с` : '0.0 с'}
+          </button>
+          <button
+            type="button"
+            data-ripple
+            className="sl rounded px-1.5 py-0.5 font-semibold hover:bg-on-surface/12 hover:text-on-surface"
+            onClick={() => adjustTrackLyricsOffset(track.id, 0.5)}
+            title="+0.5 с (])"
+          >
+            +0.5 с
+          </button>
+        </div>
+      )}
     </div>
   );
 }
@@ -683,7 +738,7 @@ export function Lyrics({ track, variant }: { track: Track | null; variant: 'pane
       ) : st.status === 'plain' ? (
         <PlainLyrics key={`${track.id}:${rev}`} lines={st.lines} preview={st.preview} variant={variant} />
       ) : (
-        <SyncedLyrics key={`${track.id}:${rev}`} lines={st.lines} variant={variant} />
+        <SyncedLyrics key={`${track.id}:${rev}`} trackId={track.id} lines={st.lines} variant={variant} />
       )}
     </div>
   );

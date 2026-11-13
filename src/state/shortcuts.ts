@@ -1,7 +1,18 @@
 import { createStore } from '../lib/util';
 import type { Key } from '../lib/i18n';
 
-export type ShortcutId = 'playPause' | 'seekBack' | 'seekForward' | 'previous' | 'next' | 'like' | 'lyrics' | 'search' | 'mute';
+export type ShortcutId =
+  | 'playPause'
+  | 'seekBack'
+  | 'seekForward'
+  | 'previous'
+  | 'next'
+  | 'like'
+  | 'lyrics'
+  | 'search'
+  | 'mute'
+  | 'lyricsOffsetBack'
+  | 'lyricsOffsetForward';
 export type ShortcutScope = 'window' | 'global';
 
 export interface ShortcutDefinition {
@@ -21,6 +32,8 @@ export const SHORTCUTS: ShortcutDefinition[] = [
   { id: 'lyrics', label: 'kbLyrics', scope: 'window', defaultBinding: 'F' },
   { id: 'search', label: 'kbSearch', scope: 'window', defaultBinding: '/' },
   { id: 'mute', label: 'kbMute', scope: 'global', defaultBinding: 'Shift+M' },
+  { id: 'lyricsOffsetBack', label: 'kbLyricsOffsetBack', scope: 'window', defaultBinding: '[' },
+  { id: 'lyricsOffsetForward', label: 'kbLyricsOffsetForward', scope: 'window', defaultBinding: ']' },
 ];
 
 export type ShortcutBindings = Record<ShortcutId, string>;

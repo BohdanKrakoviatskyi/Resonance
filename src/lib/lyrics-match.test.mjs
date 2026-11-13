@@ -185,6 +185,12 @@ test('extends duration tolerance up to ±10s when both artist and title match wi
   const best = findLyricsCandidate(candidates, { title: 'Монополия', artist: 'Монеточка' }, 213.4, 4);
   assert.ok(best);
   assert.equal(best.syncedLyrics, '[00:10.00] synced version');
+  assert.equal(best.possibleOffsetWarning, true);
+
+  // Within ±4s base tolerance, possibleOffsetWarning is not set
+  const exactDur = findLyricsCandidate(candidates, { title: 'Монополия', artist: 'Монеточка' }, 216.0, 4);
+  assert.ok(exactDur);
+  assert.equal(Boolean(exactDur.possibleOffsetWarning), false);
 
   // Rejects candidate when delta > 10s even if artist and title match (e.g. 10-minute loop vs 4-minute original)
   const tooFar = findLyricsCandidate(

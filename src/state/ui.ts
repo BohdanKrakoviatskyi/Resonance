@@ -85,6 +85,7 @@ export const ui = createStore({
   favProvider: 'soundcloud' as 'soundcloud' | 'youtube',
   scaleSlowedLyrics: false,
   showLyricsDebugInfo: true,
+  lyricsOffsets: {} as Record<string, number>,
 });
 persist('lyra.ui.v1', ui, (s) => ({
   sidebar: s.sidebar,
@@ -96,6 +97,7 @@ persist('lyra.ui.v1', ui, (s) => ({
   favProvider: s.favProvider,
   scaleSlowedLyrics: s.scaleSlowedLyrics,
   showLyricsDebugInfo: s.showLyricsDebugInfo,
+  lyricsOffsets: s.lyricsOffsets,
 }));
 
 if (ui.get().favProvider !== 'soundcloud' && ui.get().favProvider !== 'youtube') {
@@ -137,3 +139,25 @@ export function setImmersive(v: boolean) {
 }
 
 export const openDialog = (d: Dialog) => ui.set({ dialog: d });
+
+export function getTrackLyricsOffset(trackId: string | null | undefined): number {
+  if (!trackId) return 0;
+  const val = ui.get().lyricsOffsets?.[trackId];
+  return typeof val === 'number' && Number.isFinite(val) ? val : 0;
+}
+
+export function setTrackLyricsOffset(trackId: string, offsetSec: number) {
+  if (!trackId) return;
+  const rounded = Math.round(Math.max(-30, Math.min(30, offsetSec)) * 10) / 10;
+  const next = { ...(ui.get().lyricsOffsets ?? {}) };
+  if (Math.abs(rounded) < 0.05) {
+    delete next[trackId];
+  } else {
+    next[trackId] = rounded;
+  }
+  ui.set({ lyricsOffsets: next });
+}
+
+export function adjustTrackLyricsOffset(trackId: string, deltaSec: number) {
+  setTrackLyricsOffset(trackId, getTrackLyricsOffset(trackId) + deltaSec);
+}

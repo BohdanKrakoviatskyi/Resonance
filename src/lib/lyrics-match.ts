@@ -227,6 +227,7 @@ export function findLyricsCandidate<T extends LyricsCandidate>(
 ): T | null {
   const wantSec = toSeconds(rawDuration);
   const queryTitleNorm = normalizeLyricsText(stripTrackNoise(query.title));
+  const queryArtistNorm = normalizeLyricsText(stripTrackNoise(query.artist));
   if (!queryTitleNorm) return null;
   const wordCount = titleWordCount(query.title);
   const tempoVariant =
@@ -248,13 +249,19 @@ export function findLyricsCandidate<T extends LyricsCandidate>(
     if (!exactTitle && titleSim < 0.75) continue;
 
     const artistOk = artistsMatch(query.artist, candArtist);
-    const highConfidenceMatch = artistOk && (exactTitle || titleSim >= 0.85);
-    const effectiveTolerance = highConfidenceMatch ? Math.max(tolerance, 10) : tolerance;
+    const exactOrFullArtist =
+      artistOk &&
+      Boolean(queryArtistNorm) &&
+      (normalizeLyricsText(stripTrackNoise(candArtist)) === queryArtistNorm ||
+        tokenOverlapScore(query.artist, candArtist) >= 0.85);
+    const fullCleanMatch = exactOrFullArtist && (exactTitle || titleSim >= 0.9);
+    const baseTolerance = Math.min(Math.max(tolerance, 1), 4);
+    const effectiveTolerance = fullCleanMatch ? 10 : baseTolerance;
     const deltaSec = wantSec > 0 && candSec > 0 ? Math.abs(wantSec - candSec) : 0;
     const ratio = wantSec > 0 && candSec > 0 ? wantSec / candSec : 1;
     const tempoRatioOk =
       Boolean(tempoVariant) &&
-      highConfidenceMatch &&
+      fullCleanMatch &&
       wantSec > 0 &&
       candSec > 0 &&
       (tempoVariant === 'slowed'
@@ -275,6 +282,13 @@ export function findLyricsCandidate<T extends LyricsCandidate>(
       }
     }
 
+    const possibleOffsetWarning = Boolean(
+      candidate.syncedLyrics && wantSec > 0 && candSec > 0 && deltaSec > baseTolerance && !tempoRatioOk,
+    );
+    const enrichedCandidate = possibleOffsetWarning
+      ? ({ ...candidate, possibleOffsetWarning: true } as T)
+      : candidate;
+
     const durBonus =
       wantSec > 0 && candSec > 0
         ? deltaSec <= effectiveTolerance
@@ -285,7 +299,7 @@ export function findLyricsCandidate<T extends LyricsCandidate>(
         : 0.5;
     const syncBonus = candidate.syncedLyrics ? 0.15 : 0;
     const score = (exactTitle ? 1 : titleSim) * 0.55 + (artistOk ? 0.35 : 0) + durBonus * 0.1 + syncBonus;
-    scored.push({ candidate, score });
+    scored.push({ candidate: enrichedCandidate, score });
   }
 
   scored.sort((a, b) => b.score - a.score);

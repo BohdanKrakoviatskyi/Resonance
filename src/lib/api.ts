@@ -522,7 +522,7 @@ async function fetchSoundCloudLyrics(track: Track): Promise<LyricsData | null> {
 
 async function fetchLyrics(t: Track): Promise<LyricsData | null> {
   const durationSec = toSeconds(t.fullDuration ?? t.duration);
-  const tolerance = t.source === 'youtube' ? 8 : 4;
+  const tolerance = 4;
   const queries = lyricsSearchQueries(t);
   const scaleSlowedLyrics = Boolean(ui.get().scaleSlowedLyrics);
   const matchOpts = { scaleSlowedLyrics, rawTitle: t.title, rawArtist: t.artist };

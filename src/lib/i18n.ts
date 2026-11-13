@@ -269,6 +269,8 @@ const S = {
   kbLyrics: ['Текст на весь экран', 'Fullscreen lyrics'],
   kbMute: ['Выключить звук', 'Mute'],
   kbSearch: ['Поиск', 'Search'],
+  kbLyricsOffsetBack: ['Сдвиг текста песни −0.5 с', 'Lyrics offset −0.5s'],
+  kbLyricsOffsetForward: ['Сдвиг текста песни +0.5 с', 'Lyrics offset +0.5s'],
 
   shortcutListening: ['Нажмите сочетание…', 'Press a shortcut…'],
 

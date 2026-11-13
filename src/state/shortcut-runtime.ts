@@ -2,7 +2,7 @@ import { isTauri } from '@tauri-apps/api/core';
 import { register, unregister } from '@tauri-apps/plugin-global-shortcut';
 import { currentTrack, next, prev, seekBy, toggle, toggleMute } from './player';
 import { toggleLike } from './library';
-import { openSearch, setImmersive, ui } from './ui';
+import { adjustTrackLyricsOffset, openSearch, setImmersive, ui } from './ui';
 import {
   DEFAULT_SHORTCUTS,
   SHORTCUTS,
@@ -48,6 +48,16 @@ export function dispatchShortcut(id: ShortcutId) {
     case 'mute':
       toggleMute();
       break;
+    case 'lyricsOffsetBack': {
+      const track = currentTrack();
+      if (track) adjustTrackLyricsOffset(track.id, -0.5);
+      break;
+    }
+    case 'lyricsOffsetForward': {
+      const track = currentTrack();
+      if (track) adjustTrackLyricsOffset(track.id, 0.5);
+      break;
+    }
   }
 }
 
