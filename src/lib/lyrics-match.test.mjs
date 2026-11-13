@@ -2,13 +2,21 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
   LYRICS_NEGATIVE_CACHE_TTL_MS,
+  LYRICS_OFFSET_MAX_SEC,
+  LYRICS_OFFSET_MIN_SEC,
+  LYRICS_OFFSET_STEP_SEC,
+  clampLyricsOffset,
   detectTempoVariant,
   findLyricsCandidate,
+  findSyncedLyricLineIndex,
+  getSeekTimeForLyricLine,
   lyricsSearchQueries,
   matchesGeniusCandidate,
+  resolveEffectiveLyricsOffset,
   resolvePersistentLyricsCacheEntry,
   scaleSyncedLrcTimestamps,
   toSeconds,
+  updateTrackLyricsOffsetsMap,
   writePersistentLyricsCacheEntry,
 } from './lyrics-match.ts';
 
@@ -328,4 +336,99 @@ test('applies unified query and strict artist+title rules to both SoundCloud and
   const ytMatch = ytQueries.map((q) => findLyricsCandidate(pool, q, 187.0, 4)).find(Boolean);
   assert.equal(scMatch?.artistName, 'Queens of the Stone Age');
   assert.equal(ytMatch?.artistName, 'Queens of the Stone Age');
+});
+
+test('clamps lyrics offset to ±10s and snaps to 0.25s steps', () => {
+  assert.equal(LYRICS_OFFSET_MIN_SEC, -10);
+  assert.equal(LYRICS_OFFSET_MAX_SEC, 10);
+  assert.equal(LYRICS_OFFSET_STEP_SEC, 0.25);
+
+  assert.equal(clampLyricsOffset(0), 0);
+  assert.equal(clampLyricsOffset(0.75), 0.75);
+  assert.equal(clampLyricsOffset(-0.25), -0.25);
+  assert.equal(clampLyricsOffset(0.13), 0.25);
+  assert.equal(clampLyricsOffset(-0.12), 0);
+  assert.equal(clampLyricsOffset(14.5), 10);
+  assert.equal(clampLyricsOffset(-12.25), -10);
+  assert.equal(clampLyricsOffset(Number.NaN), 0);
+});
+
+test('shifts active synced lyric line earlier for negative offset and later for positive offset in 0.25s steps', () => {
+  const lines = [
+    { t: 10.0, text: 'Line 1' },
+    { t: 12.0, text: 'Line 2' },
+    { t: 15.0, text: 'Line 3' },
+  ];
+
+  // At realTime = 11.70s (with 0.12s lead-in => 11.82s < 12.0s), active line at 0 offset is Line 1 (index 0)
+  assert.equal(findSyncedLyricLineIndex(lines, 11.7, 0), 0);
+
+  // Negative offset (-0.25s => "Раньше"): lyrics appear 0.25s earlier, so at 11.70s Line 2 (12.0s) is already active
+  assert.equal(findSyncedLyricLineIndex(lines, 11.7, -0.25), 1);
+
+  // Positive offset (+0.75s => "Позже"): lyrics appear 0.75s later, so at 12.40s Line 2 (12.0s) is not yet active
+  assert.equal(findSyncedLyricLineIndex(lines, 12.4, 0), 1);
+  assert.equal(findSyncedLyricLineIndex(lines, 12.4, 0.75), 0);
+  assert.equal(findSyncedLyricLineIndex(lines, 12.7, 0.75), 1);
+
+  // Reset to 0 restores default line index and click-to-seek target
+  assert.equal(findSyncedLyricLineIndex(lines, 12.4, 0), 1);
+  assert.equal(getSeekTimeForLyricLine(12.0, 0.75), 12.75);
+  assert.equal(getSeekTimeForLyricLine(12.0, -0.25), 11.75);
+  assert.equal(getSeekTimeForLyricLine(12.0, 0), 12.0);
+});
+
+test('persists offset per track.id on Save, removes zero entry on Reset+Save, and discards unsaved draft on track switch', () => {
+  let savedMap = {};
+
+  // Track A: user drags slider to +0.75s (live draft only, not yet saved)
+  const draftA = { trackId: 'sc:track-a', offsetSec: 0.75 };
+  assert.equal(resolveEffectiveLyricsOffset(savedMap, 'sc:track-a', draftA), 0.75);
+  assert.equal(savedMap['sc:track-a'], undefined);
+
+  // User switches to Track B without clicking Save -> Track A remains unsaved (0), Track B uses its own saved offset (0)
+  assert.equal(resolveEffectiveLyricsOffset(savedMap, 'yt:track-b', draftA), 0);
+  assert.equal(resolveEffectiveLyricsOffset(savedMap, 'sc:track-a', null), 0);
+
+  // User saves +1.25s on Track A and -2.50s on Track B
+  savedMap = updateTrackLyricsOffsetsMap(savedMap, 'sc:track-a', 1.25);
+  savedMap = updateTrackLyricsOffsetsMap(savedMap, 'yt:track-b', -2.5);
+  assert.deepEqual(savedMap, { 'sc:track-a': 1.25, 'yt:track-b': -2.5 });
+
+  // Unsaved draft on Track A (-0.50s) overrides saved +1.25s while viewing Track A, but switching away restores +1.25s
+  assert.equal(
+    resolveEffectiveLyricsOffset(savedMap, 'sc:track-a', { trackId: 'sc:track-a', offsetSec: -0.5 }),
+    -0.5,
+  );
+  assert.equal(resolveEffectiveLyricsOffset(savedMap, 'sc:track-a', null), 1.25);
+  assert.equal(resolveEffectiveLyricsOffset(savedMap, 'yt:track-b', null), -2.5);
+
+  // Resetting Track A to 0 and clicking Save deletes Track A from persisted map while keeping Track B intact
+  savedMap = updateTrackLyricsOffsetsMap(savedMap, 'sc:track-a', 0);
+  assert.deepEqual(savedMap, { 'yt:track-b': -2.5 });
+});
+
+test('saving or adjusting lyrics offset does not mutate persistent lyrics cache v2 or manual lyrics choices', () => {
+  let cache = {};
+  const cachedLyrics = {
+    synced: [{ t: 5, text: 'Cached line' }],
+    sourceLabel: 'LRCLIB',
+    matchedArtist: 'Artist',
+    matchedTitle: 'Song',
+    durationDeltaSec: 5.2,
+    possibleOffsetWarning: true,
+  };
+  cache = writePersistentLyricsCacheEntry(cache, 'yt:cached-track', { status: 'found', data: cachedLyrics }, 1_000);
+
+  let offsets = {};
+  offsets = updateTrackLyricsOffsetsMap(offsets, 'yt:cached-track', -1.75);
+
+  const resolvedAuto = resolvePersistentLyricsCacheEntry(cache, 'yt:cached-track', 2_000, false);
+  assert.equal(resolvedAuto.hit, true);
+  assert.deepEqual(resolvedAuto.data, cachedLyrics);
+  assert.equal(offsets['yt:cached-track'], -1.75);
+
+  // Manual override flag still bypasses automatic cache as expected
+  const resolvedManual = resolvePersistentLyricsCacheEntry(cache, 'yt:cached-track', 2_000, true);
+  assert.equal(resolvedManual.hit, false);
 });
