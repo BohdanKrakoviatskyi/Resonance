@@ -599,6 +599,31 @@ function ManualLyricsPicker({
   );
 }
 
+/** Clock with left/right arrows — "shift the lyrics in time". Inline SVG keeps it crisp at 16–18 px. */
+function LyricsOffsetGlyph({ size }: { size: number }) {
+  return (
+    <svg
+      aria-hidden="true"
+      width={size}
+      height={size}
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={2}
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className="shrink-0"
+    >
+      <circle cx="12" cy="12" r="5.2" />
+      <path d="M12 9.3V12l1.9 1.2" />
+      <path d="M5.4 12H2.2" />
+      <path d="M4.2 10.8 2.2 12l2 1.2" />
+      <path d="M18.6 12h3.2" />
+      <path d="M19.8 10.8 21.8 12l-2 1.2" />
+    </svg>
+  );
+}
+
 function formatLyricsOffsetValue(offsetSec: number): string {
   const snapped = clampLyricsOffset(offsetSec);
   if (Math.abs(snapped) < 0.01) return '0.00 с';
@@ -722,7 +747,7 @@ function LyricsOffsetPopover({
                 : 'bg-sc-high/70 text-on-surface-variant ring-1 ring-white/10 hover:text-on-surface',
         )}
       >
-        <Icon name="history" size={isImm ? 18 : 16} />
+        <LyricsOffsetGlyph size={isImm ? 18 : 16} />
         {isSynced && hasSavedOffset && (
           <span
             aria-hidden="true"
