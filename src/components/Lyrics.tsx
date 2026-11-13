@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import { Icon } from './Icon';
 import { IconButton, Loader, Shape, usePresence, type Vars } from './ui';
@@ -23,6 +23,10 @@ import {
   stripTrackNoise,
   toSeconds,
 } from '../lib/lyrics-match';
+import {
+  computeLyricsOffsetPopoverPlacement,
+  type LyricsOffsetPopoverPlacement,
+} from '../lib/lyrics-offset-popover';
 import { onFrame, player, seek, toggle, useSecond } from '../state/player';
 import {
   clearLiveTrackLyricsOffset,
@@ -624,11 +628,11 @@ function LyricsOffsetGlyph({ size }: { size: number }) {
   );
 }
 
-function formatLyricsOffsetValue(offsetSec: number): string {
+function formatLyricsOffsetValue(offsetSec: number, unit: string): string {
   const snapped = clampLyricsOffset(offsetSec);
-  if (Math.abs(snapped) < 0.01) return '0.00 с';
+  if (Math.abs(snapped) < 0.01) return `0.00 ${unit}`;
   const sign = snapped > 0 ? '+' : '−';
-  return `${sign}${Math.abs(snapped).toFixed(2)} с`;
+  return `${sign}${Math.abs(snapped).toFixed(2)} ${unit}`;
 }
 
 function LyricsOffsetPopover({
@@ -644,9 +648,13 @@ function LyricsOffsetPopover({
 }) {
   const [open, setOpen] = useState(false);
   const [justSaved, setJustSaved] = useState(false);
+  const [placement, setPlacement] = useState<LyricsOffsetPopoverPlacement | null>(null);
   const wrapRef = useRef<HTMLDivElement>(null);
+  const btnRef = useRef<HTMLButtonElement>(null);
+  const popRef = useRef<HTMLDivElement>(null);
   const isSynced = syncType === 'Synced';
   const isImm = variant === 'imm';
+  const secUnit = t('secShort');
 
   const savedOffsetSec = useStore(ui, (s) => {
     const v = s.lyricsOffsets?.[track.id];
@@ -657,6 +665,35 @@ function LyricsOffsetPopover({
   );
   const hasSavedOffset = Math.abs(savedOffsetSec) >= 0.01;
   const hasUnsavedDiff = Math.abs(liveOffsetSec - savedOffsetSec) >= 0.01;
+
+  // The lyrics panel is clipped (`overflow: hidden` + backdrop blur), so the popover
+  // lives in a portal on document.body and is positioned from viewport coordinates.
+  const updatePlacement = useCallback(() => {
+    const btn = btnRef.current;
+    if (!btn) return;
+    const anchorRect = btn.getBoundingClientRect();
+    const host = (btn.closest('.lyrics-stage') as HTMLElement | null)?.getBoundingClientRect() ?? null;
+    const next = computeLyricsOffsetPopoverPlacement({
+      anchor: {
+        left: anchorRect.left,
+        top: anchorRect.top,
+        right: anchorRect.right,
+        bottom: anchorRect.bottom,
+      },
+      container: host ? { left: host.left, right: host.right } : null,
+      viewport: { width: window.innerWidth, height: window.innerHeight },
+      popoverHeight: popRef.current?.offsetHeight ?? 0,
+    });
+    setPlacement((prev) =>
+      prev &&
+      prev.left === next.left &&
+      prev.top === next.top &&
+      prev.width === next.width &&
+      prev.maxHeight === next.maxHeight
+        ? prev
+        : next,
+    );
+  }, []);
 
   // Discard any unsaved live draft when switching tracks and close the popover.
   useEffect(() => {
@@ -670,11 +707,40 @@ function LyricsOffsetPopover({
     if (!isSynced && open) setOpen(false);
   }, [isSynced, open]);
 
+  useLayoutEffect(() => {
+    if (!open) {
+      setPlacement(null);
+      return;
+    }
+    updatePlacement();
+  }, [open, updatePlacement, isImm]);
+
+  // Re-measure once the popover has a height (first paint uses height 0).
+  useLayoutEffect(() => {
+    if (open) updatePlacement();
+  });
+
+  useEffect(() => {
+    if (!open) return;
+    const onReflow = () => updatePlacement();
+    window.addEventListener('resize', onReflow);
+    document.addEventListener('scroll', onReflow, true);
+    const ro = new ResizeObserver(onReflow);
+    const host = btnRef.current?.closest('.lyrics-stage');
+    if (host) ro.observe(host);
+    if (popRef.current) ro.observe(popRef.current);
+    return () => {
+      window.removeEventListener('resize', onReflow);
+      document.removeEventListener('scroll', onReflow, true);
+      ro.disconnect();
+    };
+  }, [open, updatePlacement]);
+
   useEffect(() => {
     if (!open) return;
     const onDown = (e: PointerEvent) => {
       const target = e.target as Node;
-      if (!wrapRef.current?.contains(target)) setOpen(false);
+      if (!wrapRef.current?.contains(target) && !popRef.current?.contains(target)) setOpen(false);
     };
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
@@ -701,7 +767,7 @@ function LyricsOffsetPopover({
         ? Number((playingSec - data.matchedDurationSec).toFixed(1))
         : 0;
   const deltaSign = delta > 0 ? '+' : delta < 0 ? '−' : '±';
-  const deltaStr = `${deltaSign}${Math.abs(delta).toFixed(1)} с`;
+  const deltaStr = `${deltaSign}${Math.abs(delta).toFixed(1)} ${secUnit}`;
   const sourceLine = `${src} · ${syncType === 'Synced' ? 'SYNCED' : 'PLAIN'} · ${artist} — ${title} · ${t('lyricsDurationDelta', { delta: deltaStr })}`;
 
   const handleSliderChange = (nextVal: number) => {
@@ -723,6 +789,7 @@ function LyricsOffsetPopover({
   return (
     <div ref={wrapRef} className="relative inline-flex items-center">
       <button
+        ref={btnRef}
         type="button"
         data-ripple={isSynced || undefined}
         disabled={!isSynced}
@@ -756,39 +823,46 @@ function LyricsOffsetPopover({
         )}
       </button>
 
-      {open && isSynced && (
-        <div
-          role="dialog"
-          aria-label={t('lyricsOffsetBtn')}
-          className={cx(
-            'absolute right-0 top-[calc(100%+8px)] z-30 w-[min(320px,calc(100vw-32px))] rounded-2xl bg-sc-high/95 p-3.5 text-xs text-on-surface shadow-2xl ring-1 ring-white/15 backdrop-blur-xl',
-            isImm && 'w-[340px]',
-          )}
-        >
-          {/* 1) Source and sync type summary line + possible offset warning badge */}
-          <div className="mb-3 flex flex-wrap items-center gap-1.5 border-b border-white/10 pb-2.5 text-[11px] leading-snug text-on-surface-variant">
-            <span className="min-w-0 flex-1 break-words" title={sourceLine}>
-              <strong className="font-semibold text-primary">{src}</strong>
-              {' · '}
-              <span className="font-bold uppercase tracking-wider text-on-surface">
-                {syncType === 'Synced' ? 'SYNCED' : 'PLAIN'}
+      {open &&
+        isSynced &&
+        placement &&
+        createPortal(
+          <div
+            ref={popRef}
+            role="dialog"
+            aria-label={t('lyricsOffsetBtn')}
+            style={{
+              position: 'fixed',
+              left: placement.left,
+              top: placement.top,
+              width: placement.width,
+              maxHeight: placement.maxHeight,
+            }}
+            className="z-[70] overflow-y-auto overscroll-contain rounded-2xl bg-sc-high/95 p-3 text-xs text-on-surface shadow-2xl ring-1 ring-white/15 backdrop-blur-xl"
+          >
+            {/* 1) Source and sync type summary line + possible offset warning badge */}
+            <div className="mb-3 flex flex-wrap items-start gap-1.5 border-b border-white/10 pb-2.5 text-[11px] leading-snug text-on-surface-variant">
+              <span className="line-clamp-2 min-w-0 flex-1 break-words" title={sourceLine}>
+                <strong className="font-semibold text-primary">{src}</strong>
+                {' · '}
+                <span className="font-bold uppercase tracking-wider text-on-surface">
+                  {syncType === 'Synced' ? 'SYNCED' : 'PLAIN'}
+                </span>
+                {' · '}
+                <span className="text-on-surface">{artist} — {title}</span>
+                {' · '}
+                <span className="tabular-nums opacity-85">{t('lyricsDurationDelta', { delta: deltaStr })}</span>
               </span>
-              {' · '}
-              <span className="text-on-surface">{artist} — {title}</span>
-              {' · '}
-              <span className="tabular-nums opacity-85">{t('lyricsDurationDelta', { delta: deltaStr })}</span>
-            </span>
-            {data?.possibleOffsetWarning && (
-              <span className="shrink-0 rounded-full bg-[#ff9f0a]/20 px-2 py-0.5 text-[10px] font-bold text-[#ffb340]">
-                {t('lyricsOffsetWarn')}
-              </span>
-            )}
-          </div>
+              {data?.possibleOffsetWarning && (
+                <span className="shrink-0 rounded-full bg-[#ff9f0a]/20 px-2 py-0.5 text-[10px] font-bold text-[#ffb340]">
+                  {t('lyricsOffsetWarn')}
+                </span>
+              )}
+            </div>
 
-          {/* 2) Slider -10..+10 s with step 0.25 s, center 0, value on the right, labels Earlier / Later */}
-          <div className="space-y-1.5">
-            <div className="flex items-center gap-2.5">
-              <div className="relative flex flex-1 items-center">
+            {/* 2) Slider -10..+10 s with step 0.25 s, center 0, value on the right, labels Earlier / Later */}
+            <div className="space-y-1.5">
+              <div className="flex items-center gap-2">
                 <input
                   type="range"
                   min={LYRICS_OFFSET_MIN_SEC}
@@ -797,59 +871,59 @@ function LyricsOffsetPopover({
                   value={liveOffsetSec}
                   aria-label={t('lyricsOffsetBtn')}
                   onChange={(e) => handleSliderChange(Number(e.target.value))}
-                  className="h-1.5 w-full cursor-pointer appearance-none rounded-lg bg-on-surface/15 accent-primary focus:outline-none"
+                  className="h-1.5 min-w-0 flex-1 cursor-pointer appearance-none rounded-lg bg-on-surface/15 accent-primary focus:outline-none"
                 />
+                <span
+                  className={cx(
+                    'w-14 shrink-0 text-right font-mono text-xs font-bold tabular-nums',
+                    Math.abs(liveOffsetSec) >= 0.01 ? 'text-primary' : 'text-on-surface-variant',
+                  )}
+                >
+                  {formatLyricsOffsetValue(liveOffsetSec, secUnit)}
+                </span>
               </div>
-              <span
+
+              <div className="flex items-center justify-between gap-1 px-0.5 text-[10px] font-medium text-on-surface-variant">
+                <span className="truncate">← {t('lyricsOffsetEarlier')} (−)</span>
+                <span className="shrink-0 tabular-nums opacity-70">0</span>
+                <span className="truncate text-right">(+) {t('lyricsOffsetLater')} →</span>
+              </div>
+            </div>
+
+            {/* 3) Two action buttons: Reset and Save */}
+            <div className="mt-3 flex flex-wrap items-center justify-end gap-2">
+              <button
+                type="button"
+                data-ripple
+                disabled={Math.abs(liveOffsetSec) < 0.01}
+                onClick={handleReset}
                 className={cx(
-                  'w-16 shrink-0 text-right font-mono text-xs font-bold tabular-nums',
-                  Math.abs(liveOffsetSec) >= 0.01 ? 'text-primary' : 'text-on-surface-variant',
+                  'sl rounded-xl px-3 py-1.5 text-xs font-semibold transition',
+                  Math.abs(liveOffsetSec) >= 0.01
+                    ? 'bg-on-surface/10 text-on-surface hover:bg-on-surface/16'
+                    : 'cursor-default bg-on-surface/5 text-on-surface-variant/40',
                 )}
               >
-                {formatLyricsOffsetValue(liveOffsetSec)}
-              </span>
+                {t('lyricsOffsetReset')}
+              </button>
+              <button
+                type="button"
+                data-ripple
+                onClick={handleSave}
+                className={cx(
+                  'sl inline-flex items-center gap-1 rounded-xl px-3.5 py-1.5 text-xs font-semibold transition',
+                  justSaved
+                    ? 'bg-primary text-on-primary'
+                    : 'bg-primary/22 text-primary ring-1 ring-primary/40 hover:bg-primary/30',
+                )}
+              >
+                {justSaved && <Icon name="check" size={14} />}
+                <span>{justSaved ? t('lyricsOffsetSaved') : t('lyricsOffsetSave')}</span>
+              </button>
             </div>
-
-            <div className="flex items-center justify-between px-0.5 text-[10px] font-medium text-on-surface-variant">
-              <span>← {t('lyricsOffsetEarlier')} (−)</span>
-              <span className="tabular-nums opacity-70">0</span>
-              <span>(+) {t('lyricsOffsetLater')} →</span>
-            </div>
-          </div>
-
-          {/* 3) Two action buttons: Reset and Save */}
-          <div className="mt-3 flex items-center justify-end gap-2">
-            <button
-              type="button"
-              data-ripple
-              disabled={Math.abs(liveOffsetSec) < 0.01}
-              onClick={handleReset}
-              className={cx(
-                'sl rounded-xl px-3 py-1.5 text-xs font-semibold transition',
-                Math.abs(liveOffsetSec) >= 0.01
-                  ? 'bg-on-surface/10 text-on-surface hover:bg-on-surface/16'
-                  : 'cursor-default bg-on-surface/5 text-on-surface-variant/40',
-              )}
-            >
-              {t('lyricsOffsetReset')}
-            </button>
-            <button
-              type="button"
-              data-ripple
-              onClick={handleSave}
-              className={cx(
-                'sl inline-flex items-center gap-1 rounded-xl px-3.5 py-1.5 text-xs font-semibold transition',
-                justSaved
-                  ? 'bg-primary text-on-primary'
-                  : 'bg-primary/22 text-primary ring-1 ring-primary/40 hover:bg-primary/30',
-              )}
-            >
-              {justSaved && <Icon name="check" size={14} />}
-              <span>{justSaved ? t('lyricsOffsetSaved') : t('lyricsOffsetSave')}</span>
-            </button>
-          </div>
-        </div>
-      )}
+          </div>,
+          document.body,
+        )}
     </div>
   );
 }

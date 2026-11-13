@@ -97,6 +97,7 @@ const S = {
   lyricsSourceCache: ['Кэш', 'Cache'],
   lyricsSourceManual: ['Выбран вручную', 'Manual'],
   lyricsWarnBadge: ['! Возможен сдвиг', '! Possible offset'],
+  secShort: ['с', 's'],
   lyricsOffsetWarn: ['Возможен сдвиг', 'Possible offset'],
   lyricsOffsetReset: ['Сбросить', 'Reset'],
   lyricsOffsetBtn: ['Сдвиг текста', 'Lyrics offset'],
