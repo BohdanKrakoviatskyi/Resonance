@@ -154,8 +154,80 @@ export function ytMusicLibrarySync(signal?: AbortSignal): Promise<YtMusicLibrary
   return ytMusicRpc('library.sync', {}, signal);
 }
 
-export async function ytMusicPlaylistTracks(playlistId: string, _signal?: AbortSignal): Promise<YtMusicPlaylist> {
-  return invoke<YtMusicPlaylist>('fetch_yt_playlist_tracks', { playlistId });
+type Inflight<T> = { promise: Promise<T>; controller: AbortController; refs: number };
+const inflightPlaylists = new Map<string, Inflight<YtMusicPlaylist>>();
+const inflightTrackStreams = new Map<string, Inflight<YtStreamResolveResult>>();
+const inflightSidecarStreams = new Map<string, Inflight<YtStreamResolveResult>>();
+
+function abortError() {
+  return new DOMException('Aborted', 'AbortError');
+}
+
+function throwIfAborted(signal?: AbortSignal) {
+  if (signal?.aborted) throw abortError();
+}
+
+// Tauri invoke() takes no AbortSignal, so the caller unblocks on abort while invoke settles in the background.
+function invokeAbortable<T>(cmd: string, args: Record<string, unknown>, signal?: AbortSignal): Promise<T> {
+  throwIfAborted(signal);
+  const call = invoke<T>(cmd, args);
+  if (!signal) return call;
+  return new Promise<T>((resolve, reject) => {
+    const onAbort = () => reject(abortError());
+    signal.addEventListener('abort', onAbort, { once: true });
+    call.then(
+      (value) => { signal.removeEventListener('abort', onAbort); resolve(value); },
+      (err) => { signal.removeEventListener('abort', onAbort); reject(err); },
+    );
+  });
+}
+
+// Concurrent callers share one run. The run is aborted only once every waiter has left, so one aborted waiter never fails the others.
+function shareInflight<T>(
+  map: Map<string, Inflight<T>>,
+  key: string,
+  run: (signal: AbortSignal) => Promise<T>,
+  signal?: AbortSignal,
+): Promise<T> {
+  throwIfAborted(signal);
+  let shared = map.get(key);
+  if (!shared) {
+    const controller = new AbortController();
+    const promise: Promise<T> = run(controller.signal).finally(() => {
+      if (map.get(key)?.promise === promise) map.delete(key);
+    });
+    shared = { promise, controller, refs: 0 };
+    map.set(key, shared);
+  }
+  shared.refs++;
+  return new Promise<T>((resolve, reject) => {
+    const onAbort = () => {
+      reject(abortError());
+      if (--shared.refs === 0) {
+        shared.controller.abort();
+        if (map.get(key) === shared) map.delete(key);
+      }
+    };
+    signal?.addEventListener('abort', onAbort, { once: true });
+    shared.promise.then(
+      (value) => { signal?.removeEventListener('abort', onAbort); resolve(value); },
+      (err) => { signal?.removeEventListener('abort', onAbort); reject(err); },
+    );
+  });
+}
+
+export async function ytMusicPlaylistTracks(playlistId: string, signal?: AbortSignal): Promise<YtMusicPlaylist> {
+  return shareInflight(inflightPlaylists, playlistId, async (runSignal) => {
+    try {
+      const playlist = await invokeAbortable<YtMusicPlaylist>('fetch_yt_playlist_tracks', { playlistId }, runSignal);
+      // Rust returns an error for unparseable playlists, so a well-formed tracks array (even empty) is authoritative.
+      if (Array.isArray(playlist?.tracks)) return playlist;
+    } catch {
+      throwIfAborted(runSignal);
+      // Fallback to ytmusic-worker (ytmusicapi / InnerTube browse) for playlists yt-dlp can't parse.
+    }
+    return ytMusicRpc<YtMusicPlaylist>('playlist.tracks', { playlistId }, runSignal);
+  }, signal);
 }
 
 export function ytMusicPlaylistArtwork(playlistId: string, signal?: AbortSignal): Promise<string | null> {
@@ -164,11 +236,13 @@ export function ytMusicPlaylistArtwork(playlistId: string, signal?: AbortSignal)
 
 export async function searchYtDlpTracks(query: string, signal?: AbortSignal): Promise<YouTubeTrack[]> {
   try {
-    const tracks = await invoke<YouTubeTrack[]>('search_yt_tracks', { query });
-    if (tracks && tracks.length > 0) return tracks;
+    const tracks = await invokeAbortable<YouTubeTrack[]>('search_yt_tracks', { query }, signal);
+    if (Array.isArray(tracks)) return tracks;
   } catch {
+    throwIfAborted(signal);
     // Fallback to sidecar yt-dlp search if Rust InnerTube search fails
   }
+  throwIfAborted(signal);
   return rpc('yt.dlp.search', { query }, signal);
 }
 
@@ -189,8 +263,18 @@ export type YtStreamResolveOptions = {
   requestId?: number;
   clickTsMs?: number;
   priority?: boolean;
+  preferSidecar?: boolean;
   signal?: AbortSignal;
 };
+
+// Rust errors that a sidecar retry cannot fix (matched by message prefix).
+const NON_RECOVERABLE_RUST_ERRORS = ['Некорректный ID видео YouTube.'];
+
+function withAttempts(err: unknown, attempts: YtResolveAttemptTiming[]): Error {
+  const error = err instanceof Error ? err : new Error(String(err));
+  (error as Error & { attempts?: YtResolveAttemptTiming[] }).attempts = attempts;
+  return error;
+}
 
 export async function ytDlpTrackStream(
   videoId: string,
@@ -198,15 +282,27 @@ export async function ytDlpTrackStream(
 ): Promise<YtStreamResolveResult> {
   const opts: YtStreamResolveOptions =
     options && 'aborted' in options ? { signal: options } : (options ?? {});
+  throwIfAborted(opts.signal);
+
+  if (opts.preferSidecar) {
+    return ytDlpSidecarStream(videoId, opts);
+  }
+
+  // Different requestId/clickTs produce different proxy URLs, so they are part of the key.
+  const key = [videoId, opts.requestId, opts.clickTsMs, opts.priority ?? true].join('|');
+  return shareInflight(inflightTrackStreams, key, (runSignal) => resolveRustStream(videoId, { ...opts, signal: runSignal }), opts.signal);
+}
+
+async function resolveRustStream(videoId: string, opts: YtStreamResolveOptions): Promise<YtStreamResolveResult> {
   const attempts: YtResolveAttemptTiming[] = [];
   const t0 = performance.now();
   try {
-    const res = await invoke<YtStreamResolveResult>('resolve_yt_stream_url', {
+    const res = await invokeAbortable<YtStreamResolveResult>('resolve_yt_stream_url', {
       videoId,
       requestId: opts.requestId,
       clickTsMs: opts.clickTsMs,
       priority: opts.priority ?? true,
-    });
+    }, opts.signal);
     if (res?.url) {
       return {
         url: res.url,
@@ -217,39 +313,67 @@ export async function ytDlpTrackStream(
           : [{ method: 'rust_yt_proxy', outcome: 'ok', durationMs: Math.round(performance.now() - t0) }],
       };
     }
-  } catch (err) {
-    attempts.push({
+    attempts.push(...(res?.attempts ?? []), {
       method: 'rust_yt_proxy',
-      outcome: `err: ${err instanceof Error ? err.message : String(err)}`,
+      outcome: 'empty',
       durationMs: Math.round(performance.now() - t0),
     });
-  }
-  const t1 = performance.now();
-  try {
-    const fallback = await rpc<{ url: string }>('yt.dlp.stream', { videoId }, opts.signal);
-    const sidecarMs = Math.round(performance.now() - t1);
-    attempts.push({
-      method: 'sidecar: yt.dlp.stream',
-      outcome: fallback?.url ? 'ok' : 'empty',
-      durationMs: sidecarMs,
-    });
-    return {
-      url: fallback.url,
-      cacheHit: false,
-      resolveMs: Math.round(performance.now() - t0),
-      attempts,
-    };
   } catch (err) {
-    const sidecarMs = Math.round(performance.now() - t1);
+    throwIfAborted(opts.signal);
+    const message = err instanceof Error ? err.message : String(err);
+    attempts.push({
+      method: 'rust_yt_proxy',
+      outcome: `err: ${message}`,
+      durationMs: Math.round(performance.now() - t0),
+    });
+    if (NON_RECOVERABLE_RUST_ERRORS.some((prefix) => message.startsWith(prefix))) {
+      throw withAttempts(new Error(message), attempts);
+    }
+  }
+
+  return ytDlpSidecarStream(videoId, opts, attempts, t0);
+}
+
+export async function ytDlpSidecarStream(
+  videoId: string,
+  options?: AbortSignal | YtStreamResolveOptions,
+  priorAttempts: YtResolveAttemptTiming[] = [],
+  startedAt = performance.now(),
+): Promise<YtStreamResolveResult> {
+  const opts: YtStreamResolveOptions =
+    options && 'aborted' in options ? { signal: options } : (options ?? {});
+  const attempts = [...priorAttempts];
+  throwIfAborted(opts.signal);
+  const t1 = performance.now();
+  let fallback: { url: string } | undefined;
+  try {
+    fallback = await shareInflight(
+      inflightSidecarStreams,
+      videoId,
+      (runSignal) => rpc<{ url: string }>('yt.dlp.stream', { videoId }, runSignal),
+      opts.signal,
+    );
+  } catch (err) {
+    if (opts.signal?.aborted) throw abortError();
     attempts.push({
       method: 'sidecar: yt.dlp.stream',
       outcome: `err: ${err instanceof Error ? err.message : String(err)}`,
-      durationMs: sidecarMs,
+      durationMs: Math.round(performance.now() - t1),
     });
-    const error = err instanceof Error ? err : new Error(String(err));
-    (error as Error & { attempts?: YtResolveAttemptTiming[] }).attempts = attempts;
-    throw error;
+    throw withAttempts(err, attempts);
   }
+  const sidecarMs = Math.round(performance.now() - t1);
+  if (!fallback?.url) {
+    attempts.push({ method: 'sidecar: yt.dlp.stream', outcome: 'empty', durationMs: sidecarMs });
+    throw withAttempts(new Error('yt-dlp sidecar returned no stream URL'), attempts);
+  }
+  attempts.push({ method: 'sidecar: yt.dlp.stream', outcome: 'ok', durationMs: sidecarMs });
+  return {
+    url: fallback.url,
+    cacheHit: false,
+    resolveMs: Math.round(performance.now() - startedAt),
+    attempts,
+  };
 }
 
 export type CacheClearResult = {

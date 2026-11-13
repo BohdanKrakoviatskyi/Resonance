@@ -21,6 +21,7 @@ const MAX_TOTAL_YTDLP: usize = 3;
 const PLAYER_ENDPOINT: &str = "https://www.youtube.com/youtubei/v1/player?prettyPrint=false";
 const SEARCH_ENDPOINT: &str = "https://music.youtube.com/youtubei/v1/search?prettyPrint=false";
 const STREAM_CACHE_TTL: Duration = Duration::from_secs(45 * 60);
+const MAX_CACHED_STREAMS: usize = 256;
 const DISK_EXPIRE_SAFETY_MARGIN_SECS: u64 = 15 * 60;
 const YTDLP_UPDATE_INTERVAL_SECS: u64 = 24 * 60 * 60;
 const YTDLP_WARMUP_VIDEO_ID: &str = "jNQXAC9IVRw";
@@ -36,9 +37,96 @@ struct ClientProfile {
     context_client: Value,
 }
 
-/// Профиль клиента YouTube InnerTube (быстрый резервный уровень VISIONOS).
+/// Профили клиента YouTube InnerTube (быстрый Level 1 до yt-dlp). Пробуем несколько клиентов:
+/// разные клиенты по-разному проходят bot-check и могут отдавать прямой URL без cipher.
 fn client_profiles() -> Vec<ClientProfile> {
     vec![
+        ClientProfile {
+            name: "IOS",
+            version: "19.45.4",
+            client_id: "5",
+            user_agent: "com.google.ios.youtube/19.45.4 (iPhone16,2; U; CPU iOS 18_1_0 like Mac OS X)",
+            context_client: json!({
+                "clientName": "IOS",
+                "clientVersion": "19.45.4",
+                "deviceMake": "Apple",
+                "deviceModel": "iPhone16,2",
+                "osName": "iPhone",
+                "osVersion": "18.1.0.22B83",
+                "hl": "en",
+                "gl": "US"
+            }),
+        },
+        ClientProfile {
+            name: "ANDROID",
+            version: "19.44.38",
+            client_id: "3",
+            user_agent: "com.google.android.youtube/19.44.38 (Linux; U; Android 14) gzip",
+            context_client: json!({
+                "clientName": "ANDROID",
+                "clientVersion": "19.44.38",
+                "androidSdkVersion": 34,
+                "hl": "en",
+                "gl": "US",
+                "osName": "Android",
+                "osVersion": "14"
+            }),
+        },
+        ClientProfile {
+            name: "ANDROID_MUSIC",
+            version: "7.27.52",
+            client_id: "21",
+            user_agent: "com.google.android.apps.youtube.music/7.27.52 (Linux; U; Android 14) gzip",
+            context_client: json!({
+                "clientName": "ANDROID_MUSIC",
+                "clientVersion": "7.27.52",
+                "androidSdkVersion": 34,
+                "hl": "en",
+                "gl": "US",
+                "osName": "Android",
+                "osVersion": "14"
+            }),
+        },
+        ClientProfile {
+            name: "IOS_MUSIC",
+            version: "7.27.0",
+            client_id: "26",
+            user_agent: "com.google.ios.youtubemusic/7.27.0 (iPhone16,2; U; CPU iOS 18_1_0 like Mac OS X)",
+            context_client: json!({
+                "clientName": "IOS_MUSIC",
+                "clientVersion": "7.27.0",
+                "deviceMake": "Apple",
+                "deviceModel": "iPhone16,2",
+                "osName": "iPhone",
+                "osVersion": "18.1.0.22B83",
+                "hl": "en",
+                "gl": "US"
+            }),
+        },
+        ClientProfile {
+            name: "MWEB",
+            version: "2.20250101.00.00",
+            client_id: "2",
+            user_agent: "Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Mobile/15E148 Safari/604.1",
+            context_client: json!({
+                "clientName": "MWEB",
+                "clientVersion": "2.20250101.00.00",
+                "hl": "en",
+                "gl": "US"
+            }),
+        },
+        ClientProfile {
+            name: "TVHTML5_SIMPLY_EMBEDDED",
+            version: "2.0",
+            client_id: "85",
+            user_agent: "Mozilla/5.0 (ChromiumStylePlatform) Cobalt/Version",
+            context_client: json!({
+                "clientName": "TVHTML5_SIMPLY_EMBEDDED_PLAYER",
+                "clientVersion": "2.0",
+                "hl": "en",
+                "gl": "US"
+            }),
+        },
         ClientProfile {
             name: "VISIONOS",
             version: "0.1",
@@ -221,6 +309,7 @@ pub struct YtStreamProxy {
     consecutive_403: Arc<Mutex<u32>>,
     disk_cache_path: PathBuf,
     ytdlp_cache_dir: PathBuf,
+    token: String,
 }
 
 impl Default for YtStreamProxy {
@@ -276,6 +365,7 @@ impl YtStreamProxy {
             consecutive_403: Arc::new(Mutex::new(0)),
             disk_cache_path,
             ytdlp_cache_dir,
+            token: uuid::Uuid::new_v4().simple().to_string(),
         }
     }
 
@@ -356,11 +446,7 @@ impl YtStreamProxy {
                     let total_ms = total_start.elapsed().as_millis() as u64;
                     println!(
                         "[AudioProxy][Timing] video={} stage=cache_hit level=\"{}\" ip={:?} elapsed_ms={} total_ms={}",
-                        trimmed,
-                        existing.level_label,
-                        existing.ip_param,
-                        cache_ms,
-                        total_ms
+                        trimmed, existing.level_label, existing.ip_param, cache_ms, total_ms
                     );
                     return Ok((
                         existing.clone(),
@@ -400,10 +486,7 @@ impl YtStreamProxy {
                     let total_ms = total_start.elapsed().as_millis() as u64;
                     println!(
                         "[AudioProxy][Timing] video={} stage=inflight_shared_hit level=\"{}\" wait_ms={} total_ms={}",
-                        trimmed,
-                        existing.level_label,
-                        inflight_wait_ms,
-                        total_ms
+                        trimmed, existing.level_label, inflight_wait_ms, total_ms
                     );
                     return Ok((
                         existing.clone(),
@@ -438,29 +521,29 @@ impl YtStreamProxy {
                 let l1_api_ms = l1_start.elapsed().as_millis() as u64;
                 let probe_start = Instant::now();
                 let (probe_client, ip_family) = self.select_stream_client(&resolved);
-                let probe_res = tokio::time::timeout(
-                    Duration::from_millis(1200),
-                    send_upstream_request(probe_client, &resolved, Some("bytes=0-1023")),
-                )
+                let probe_res = tokio::time::timeout(Duration::from_millis(1200), async {
+                    let mut resp =
+                        send_upstream_request(probe_client, &resolved, Some("bytes=0-1023"))
+                            .await
+                            .ok()?;
+                    let code = resp.status().as_u16();
+                    if code == 206 || code == 200 {
+                        let has_bytes = resp
+                            .chunk()
+                            .await
+                            .ok()
+                            .flatten()
+                            .is_some_and(|b| !b.is_empty());
+                        Some(if has_bytes { code } else { 502 })
+                    } else {
+                        Some(code)
+                    }
+                })
                 .await;
 
                 let probe_status = match probe_res {
-                    Ok(Ok(mut resp)) => {
-                        let code = resp.status().as_u16();
-                        if code == 206 || code == 200 {
-                            let has_bytes = resp
-                                .chunk()
-                                .await
-                                .ok()
-                                .flatten()
-                                .map(|b| !b.is_empty())
-                                .unwrap_or(false);
-                            if has_bytes { code } else { 502 }
-                        } else {
-                            code
-                        }
-                    }
-                    Ok(Err(_)) => 502,
+                    Ok(Some(code)) => code,
+                    Ok(None) => 502,
                     Err(_) => 504,
                 };
                 let probe_ms = probe_start.elapsed().as_millis() as u64;
@@ -503,15 +586,17 @@ impl YtStreamProxy {
                 let l1_ms = l1_start.elapsed().as_millis() as u64;
                 eprintln!(
                     "[AudioProxy][Timing] video={} stage=level1_rust_innertube outcome=err elapsed_ms={} err=\"{}\"",
-                    trimmed,
-                    l1_ms,
-                    innertube_err
+                    trimmed, l1_ms, innertube_err
                 );
                 attempts.push(YtResolveAttemptTiming {
-                    method: "Level 1: VISIONOS".to_string(),
+                    method: "Level 1: InnerTube".to_string(),
                     outcome: format!("err: {innertube_err}"),
                     duration_ms: l1_ms,
                 });
+                if is_permanent_innertube_reason(&innertube_err) {
+                    self.cleanup_inflight_entry(trimmed, &video_lock).await;
+                    return Err(innertube_err);
+                }
             }
         }
 
@@ -523,12 +608,7 @@ impl YtStreamProxy {
                 let total_ms = total_start.elapsed().as_millis() as u64;
                 println!(
                     "[AudioProxy][Timing] video={} stage=level2_ytdlp priority={} outcome=ok ip={:?} elapsed_ms={} total_ms={} expire_unix={:?}",
-                    trimmed,
-                    priority,
-                    resolved.ip_param,
-                    l2_ms,
-                    total_ms,
-                    resolved.expire_unix
+                    trimmed, priority, resolved.ip_param, l2_ms, total_ms, resolved.expire_unix
                 );
                 attempts.push(YtResolveAttemptTiming {
                     method: resolved.level_label.clone(),
@@ -543,11 +623,7 @@ impl YtStreamProxy {
                 let total_ms = total_start.elapsed().as_millis() as u64;
                 eprintln!(
                     "[AudioProxy][Timing] video={} stage=level2_ytdlp priority={} outcome=err elapsed_ms={} total_ms={} err=\"{}\"",
-                    trimmed,
-                    priority,
-                    l2_ms,
-                    total_ms,
-                    l2_err
+                    trimmed, priority, l2_ms, total_ms, l2_err
                 );
                 Err(l2_err)
             }
@@ -559,8 +635,9 @@ impl YtStreamProxy {
 
     async fn cleanup_inflight_entry(&self, video_id: &str, lock_ref: &Arc<Mutex<()>>) {
         let mut inflight = self.inflight.lock().await;
+        // Новые запросы клонируют Arc только под этим же мьютексом карты, поэтому проверка count атомарна.
         if let Some(existing) = inflight.get(video_id) {
-            if Arc::ptr_eq(existing, lock_ref) && Arc::strong_count(existing) <= 2 {
+            if Arc::ptr_eq(existing, lock_ref) && Arc::strong_count(existing) == 2 {
                 inflight.remove(video_id);
             }
         }
@@ -569,10 +646,20 @@ impl YtStreamProxy {
     pub async fn insert_cached_stream(&self, video_id: &str, resolved: ResolvedYtStream) {
         let snapshot = {
             let mut cache = self.cache.lock().await;
+            cache.retain(|_, v| !v.is_expired());
+            if cache.len() >= MAX_CACHED_STREAMS && !cache.contains_key(video_id.trim()) {
+                if let Some(oldest) = cache
+                    .iter()
+                    .min_by_key(|(_, v)| v.expires_at)
+                    .map(|(k, _)| k.clone())
+                {
+                    cache.remove(&oldest);
+                }
+            }
             cache.insert(video_id.trim().to_string(), resolved);
             cache.clone()
         };
-        save_persisted_stream_cache(&self.disk_cache_path, &snapshot);
+        self.persist_stream_cache(snapshot);
     }
 
     pub async fn invalidate_stream(&self, video_id: &str) {
@@ -581,7 +668,12 @@ impl YtStreamProxy {
             cache.remove(video_id.trim());
             cache.clone()
         };
-        save_persisted_stream_cache(&self.disk_cache_path, &snapshot);
+        self.persist_stream_cache(snapshot);
+    }
+
+    fn persist_stream_cache(&self, snapshot: HashMap<String, ResolvedYtStream>) {
+        let path = self.disk_cache_path.clone();
+        tokio::task::spawn_blocking(move || save_persisted_stream_cache(&path, &snapshot));
     }
 
     pub async fn invalidate_streams_matching_ip(
@@ -650,6 +742,10 @@ impl YtStreamProxy {
 
         let watch_url = format!("https://www.youtube.com/watch?v={video_id}");
         let cache_dir_str = self.ytdlp_cache_dir.to_string_lossy().to_string();
+        let cookie_header = tokio::task::spawn_blocking(read_ytmusic_cookie_header)
+            .await
+            .ok()
+            .flatten();
         let cmd_start = Instant::now();
 
         let mut cmd = Command::new(&ytdlp_bin);
@@ -663,12 +759,15 @@ impl YtStreamProxy {
             &cache_dir_str,
             "--no-playlist",
             "--no-warnings",
-            &watch_url,
-        ])
-        .env("PATH", &env_path)
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped());
+        ]);
+        if let Some(cookie) = cookie_header.as_deref() {
+            cmd.args(["--add-header", &format!("Cookie:{cookie}")]);
+        }
+        cmd.arg(&watch_url)
+            .env("PATH", &env_path)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped());
 
         #[cfg(target_os = "windows")]
         cmd.creation_flags(CREATE_NO_WINDOW);
@@ -683,20 +782,23 @@ impl YtStreamProxy {
 
         // Последний уровень: если принудительный player_client=web_embedded не смог отдать поток,
         // пробуем стандартный yt-dlp по умолчанию без принудительных --extractor-args
-        if !output.status.success() {
+        if !output.status.success() && !is_permanent_ytdlp_error(&output.stderr) {
             let l3_start = Instant::now();
             let mut default_cmd = Command::new(&ytdlp_bin);
+            default_cmd.args([
+                "-g",
+                "-f",
+                "251/140/bestaudio[protocol=https]/bestaudio",
+                "--cache-dir",
+                &cache_dir_str,
+                "--no-playlist",
+                "--no-warnings",
+            ]);
+            if let Some(cookie) = cookie_header.as_deref() {
+                default_cmd.args(["--add-header", &format!("Cookie:{cookie}")]);
+            }
             default_cmd
-                .args([
-                    "-g",
-                    "-f",
-                    "251/140/bestaudio[protocol=https]/bestaudio",
-                    "--cache-dir",
-                    &cache_dir_str,
-                    "--no-playlist",
-                    "--no-warnings",
-                    &watch_url,
-                ])
+                .arg(&watch_url)
                 .env("PATH", &env_path)
                 .stdin(std::process::Stdio::null())
                 .stdout(std::process::Stdio::piped())
@@ -746,24 +848,20 @@ impl YtStreamProxy {
         let content_length = extract_query_param_u64(&direct_url, "clen");
         let expire_unix = extract_query_param_u64(&direct_url, "expire");
         let ip_param = extract_query_param_str(&direct_url, "ip");
-        let now_unix = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map(|d| d.as_secs())
-            .unwrap_or(0);
 
-        let ttl = if let Some(exp) = expire_unix {
-            if exp > now_unix + DISK_EXPIRE_SAFETY_MARGIN_SECS + 60 {
-                Duration::from_secs(exp - now_unix - DISK_EXPIRE_SAFETY_MARGIN_SECS)
-            } else {
-                Duration::from_secs(300)
-            }
-        } else {
-            STREAM_CACHE_TTL
-        };
+        let ttl = expire_ttl(expire_unix);
 
         println!(
             "[AudioProxy][Timing] video={} sub=ytdlp_g priority={} sem_wait_ms={} env_ms={} spawn_exec_ms={} itag={} clen={:?} expire={:?} ip={:?}",
-            video_id, priority, sem_wait_ms, env_ms, cmd_ms, itag, content_length, expire_unix, ip_param
+            video_id,
+            priority,
+            sem_wait_ms,
+            env_ms,
+            cmd_ms,
+            itag,
+            content_length,
+            expire_unix,
+            ip_param
         );
 
         Ok(ResolvedYtStream {
@@ -779,181 +877,231 @@ impl YtStreamProxy {
         })
     }
 
-    pub async fn fetch_playlist_tracks(&self, playlist_id: &str) -> Result<YtPlaylistResponse, String> {
+    pub async fn fetch_playlist_tracks(
+        &self,
+        playlist_id: &str,
+    ) -> Result<YtPlaylistResponse, String> {
         let start = Instant::now();
         let raw_id = playlist_id.trim();
         if raw_id.is_empty() {
             return Err("Не указан ID плейлиста YouTube Music.".to_string());
         }
-        let clean_id = raw_id.strip_prefix("VL").unwrap_or(raw_id);
-        let playlist_url = format!("https://music.youtube.com/playlist?list={clean_id}");
+
+        // Не занимаем stream background-lane: загрузка плейлиста не должна блокировать фоновые резолвы треков.
+        let _total_permit = self
+            .total_semaphore
+            .acquire()
+            .await
+            .map_err(|_| "Общий семафор yt-dlp закрыт".to_string())?;
 
         let (ytdlp_bin, env_path) = self.ensure_ytdlp_environment().await?;
         let cache_dir_str = self.ytdlp_cache_dir.to_string_lossy().to_string();
 
-        let mut cmd = Command::new(&ytdlp_bin);
-        cmd.args([
-            "--flat-playlist",
-            "-J",
-            "--cache-dir",
-            &cache_dir_str,
-            "--no-warnings",
-            &playlist_url,
-        ])
-        .env("PATH", &env_path)
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped());
-
-        #[cfg(target_os = "windows")]
-        cmd.creation_flags(CREATE_NO_WINDOW);
-
-        let output = tokio::time::timeout(Duration::from_secs(30), cmd.output())
-            .await
-            .map_err(|_| "Таймаут загрузки плейлиста через yt-dlp (30 сек)".to_string())?
-            .map_err(|e| format!("Не удалось запустить yt-dlp для плейлиста: {e}"))?;
-
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        let stderr = String::from_utf8_lossy(&output.stderr);
-
-        if !output.status.success() && stdout.trim().is_empty() {
-            eprintln!(
-                "[YtPlaylist] yt-dlp --flat-playlist -J failed for {clean_id} ({} ms). stderr: {}",
-                start.elapsed().as_millis(),
-                stderr.trim()
-            );
-            return Err(format!(
-                "Не удалось загрузить плейлист YouTube Music: {}",
-                stderr.trim()
-            ));
-        }
-
-        let data: Value = serde_json::from_str(stdout.trim()).map_err(|e| {
-            let preview: String = stdout.chars().take(600).collect();
-            eprintln!(
-                "[YtPlaylist] JSON parse error for {clean_id}: {e}. Raw stdout preview: {preview} | stderr: {}",
-                stderr.trim()
-            );
-            format!("Ошибка разбора данных плейлиста YouTube Music: {e}")
-        })?;
-
-        let title = data
-            .get("title")
-            .and_then(|v| v.as_str())
-            .map(str::trim)
-            .filter(|s| !s.is_empty())
-            .unwrap_or("Playlist")
-            .to_string();
-
-        let playlist_thumb = extract_best_thumbnail_url(data.get("thumbnails"));
-
-        let mut tracks = Vec::new();
-        let mut seen = std::collections::HashSet::new();
-
-        if let Some(entries) = data.get("entries").and_then(|v| v.as_array()) {
-            for entry in entries {
-                if entry.is_null() {
-                    continue;
-                }
-                let Some(vid) = entry
-                    .get("id")
-                    .and_then(|v| v.as_str())
-                    .map(str::trim)
-                    .filter(|id| is_valid_video_id(id))
-                else {
-                    continue;
-                };
-                if !seen.insert(vid.to_string()) {
-                    continue;
-                }
-
-                let raw_title = entry
-                    .get("title")
-                    .and_then(|v| v.as_str())
-                    .map(str::trim)
-                    .unwrap_or_default();
-
-                // Пропускаем скрытые/удаленные видео, не роняя весь плейлист
-                if raw_title.is_empty()
-                    || raw_title.eq_ignore_ascii_case("[Private video]")
-                    || raw_title.eq_ignore_ascii_case("[Deleted video]")
-                {
-                    continue;
-                }
-
-                let raw_uploader = entry
-                    .get("uploader")
-                    .and_then(|v| v.as_str())
-                    .or_else(|| entry.get("channel").and_then(|v| v.as_str()))
-                    .or_else(|| entry.get("artist").and_then(|v| v.as_str()))
-                    .map(str::trim)
-                    .unwrap_or_default();
-
-                let cleaned_artist = raw_uploader
-                    .trim_end_matches(" - Topic")
-                    .trim();
-                let artist = if cleaned_artist.is_empty() {
-                    "YouTube Music".to_string()
-                } else {
-                    cleaned_artist.to_string()
-                };
-
-                let duration_seconds = entry.get("duration").and_then(|v| v.as_f64());
-
-                let artwork_url = extract_best_thumbnail_url(entry.get("thumbnails"))
-                    .or_else(|| {
-                        entry
-                            .get("thumbnail")
-                            .and_then(|v| v.as_str())
-                            .map(|s| s.to_string())
-                    })
-                    .unwrap_or_else(|| format!("https://i.ytimg.com/vi/{vid}/hqdefault.jpg"));
-
-                tracks.push(YtPlaylistTrackItem {
-                    video_id: vid.to_string(),
-                    title: raw_title.to_string(),
-                    artist: artist.clone(),
-                    artists: vec![artist],
-                    artwork_url: Some(artwork_url),
-                    duration_seconds,
-                    available: true,
-                });
+        let no_vl = raw_id.strip_prefix("VL").unwrap_or(raw_id);
+        let mut id_candidates = Vec::new();
+        for id in [raw_id, no_vl] {
+            if !id.is_empty() && !id_candidates.iter().any(|v| v == id) {
+                id_candidates.push(id.to_string());
             }
         }
 
-        if tracks.is_empty() {
-            let raw_preview: String = stdout.chars().take(1000).collect();
-            eprintln!(
-                "[YtPlaylist] 0 tracks parsed for playlist {clean_id} ({} ms). Raw yt-dlp stdout: {} | stderr: {}",
-                start.elapsed().as_millis(),
-                raw_preview,
-                stderr.trim()
-            );
-            return Err(format!(
-                "Плейлист «{title}» не вернул доступных треков (возможно, он приватный или пуст)."
-            ));
+        let mut url_candidates = Vec::new();
+        for id in &id_candidates {
+            for host in ["music.youtube.com", "www.youtube.com"] {
+                let url = format!("https://{host}/playlist?list={id}");
+                if !url_candidates.iter().any(|v: &String| v == &url) {
+                    url_candidates.push(url);
+                }
+            }
         }
 
-        let artwork_url = playlist_thumb.or_else(|| {
-            tracks
-                .first()
-                .and_then(|t| t.artwork_url.clone())
-        });
+        let mut last_error: Option<String> = None;
 
-        println!(
-            "[YtPlaylist] Loaded playlist {clean_id} (\"{}\"): {} tracks in {} ms",
-            title,
-            tracks.len(),
-            start.elapsed().as_millis()
-        );
+        for playlist_url in &url_candidates {
+            let mut cmd = Command::new(&ytdlp_bin);
+            cmd.args([
+                "--flat-playlist",
+                "-J",
+                "--cache-dir",
+                &cache_dir_str,
+                "--no-warnings",
+                playlist_url,
+            ])
+            .env("PATH", &env_path)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped());
 
-        Ok(YtPlaylistResponse {
-            playlist_id: clean_id.to_string(),
-            title,
-            artwork_url,
-            track_count: tracks.len(),
-            tracks,
-        })
+            #[cfg(target_os = "windows")]
+            cmd.creation_flags(CREATE_NO_WINDOW);
+
+            let output = match tokio::time::timeout(Duration::from_secs(30), cmd.output()).await {
+                Ok(Ok(output)) => output,
+                Ok(Err(e)) => {
+                    last_error = Some(format!("Не удалось запустить yt-dlp для плейлиста: {e}"));
+                    continue;
+                }
+                Err(_) => {
+                    last_error =
+                        Some("Таймаут загрузки плейлиста через yt-dlp (30 сек)".to_string());
+                    continue;
+                }
+            };
+
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            let stderr = String::from_utf8_lossy(&output.stderr);
+
+            if !output.status.success() && stdout.trim().is_empty() {
+                eprintln!(
+                    "[YtPlaylist] yt-dlp --flat-playlist -J failed for {raw_id} ({playlist_url}, {} ms). stderr: {}",
+                    start.elapsed().as_millis(),
+                    stderr.trim()
+                );
+                last_error = Some(format!(
+                    "Не удалось загрузить плейлист YouTube Music: {}",
+                    stderr.trim()
+                ));
+                if is_permanent_ytdlp_error(&output.stderr) {
+                    break;
+                }
+                continue;
+            }
+
+            let data: Value = match serde_json::from_str(stdout.trim()) {
+                Ok(v) => v,
+                Err(e) => {
+                    let preview: String = stdout.chars().take(600).collect();
+                    eprintln!(
+                        "[YtPlaylist] JSON parse error for {raw_id}: {e}. Raw stdout preview: {preview} | stderr: {}",
+                        stderr.trim()
+                    );
+                    last_error = Some(format!(
+                        "Ошибка разбора данных плейлиста YouTube Music: {e}"
+                    ));
+                    continue;
+                }
+            };
+
+            let title = data
+                .get("title")
+                .and_then(|v| v.as_str())
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .unwrap_or("Playlist")
+                .to_string();
+
+            let playlist_thumb = extract_best_thumbnail_url(data.get("thumbnails"));
+
+            let mut tracks = Vec::new();
+            let mut seen = std::collections::HashSet::new();
+
+            if let Some(entries) = data.get("entries").and_then(|v| v.as_array()) {
+                for entry in entries {
+                    if entry.is_null() {
+                        continue;
+                    }
+                    let Some(vid) = entry
+                        .get("id")
+                        .and_then(|v| v.as_str())
+                        .map(str::trim)
+                        .filter(|id| is_valid_video_id(id))
+                    else {
+                        continue;
+                    };
+                    if !seen.insert(vid.to_string()) {
+                        continue;
+                    }
+
+                    let raw_title = entry
+                        .get("title")
+                        .and_then(|v| v.as_str())
+                        .map(str::trim)
+                        .unwrap_or_default();
+
+                    // Пропускаем скрытые/удаленные видео, не роняя весь плейлист
+                    if raw_title.is_empty()
+                        || raw_title.eq_ignore_ascii_case("[Private video]")
+                        || raw_title.eq_ignore_ascii_case("[Deleted video]")
+                    {
+                        continue;
+                    }
+
+                    let raw_uploader = entry
+                        .get("uploader")
+                        .and_then(|v| v.as_str())
+                        .or_else(|| entry.get("channel").and_then(|v| v.as_str()))
+                        .or_else(|| entry.get("artist").and_then(|v| v.as_str()))
+                        .map(str::trim)
+                        .unwrap_or_default();
+
+                    let cleaned_artist = raw_uploader.trim_end_matches(" - Topic").trim();
+                    let artist = if cleaned_artist.is_empty() {
+                        "YouTube Music".to_string()
+                    } else {
+                        cleaned_artist.to_string()
+                    };
+
+                    let duration_seconds = entry.get("duration").and_then(|v| v.as_f64());
+
+                    let artwork_url = extract_best_thumbnail_url(entry.get("thumbnails"))
+                        .or_else(|| {
+                            entry
+                                .get("thumbnail")
+                                .and_then(|v| v.as_str())
+                                .map(|s| s.to_string())
+                        })
+                        .unwrap_or_else(|| format!("https://i.ytimg.com/vi/{vid}/hqdefault.jpg"));
+
+                    tracks.push(YtPlaylistTrackItem {
+                        video_id: vid.to_string(),
+                        title: raw_title.to_string(),
+                        artist: artist.clone(),
+                        artists: vec![artist],
+                        artwork_url: Some(artwork_url),
+                        duration_seconds,
+                        available: true,
+                    });
+                }
+            }
+
+            if tracks.is_empty() {
+                let raw_preview: String = stdout.chars().take(1000).collect();
+                eprintln!(
+                    "[YtPlaylist] 0 tracks parsed for playlist {raw_id} via {playlist_url} ({} ms). Raw yt-dlp stdout: {} | stderr: {}",
+                    start.elapsed().as_millis(),
+                    raw_preview,
+                    stderr.trim()
+                );
+                last_error = Some(format!(
+                    "Плейлист «{title}» не вернул доступных треков (возможно, он приватный или пуст)."
+                ));
+                continue;
+            }
+
+            let artwork_url =
+                playlist_thumb.or_else(|| tracks.first().and_then(|t| t.artwork_url.clone()));
+            let clean_id = no_vl.to_string();
+
+            println!(
+                "[YtPlaylist] Loaded playlist {clean_id} (\"{}\"): {} tracks in {} ms via {}",
+                title,
+                tracks.len(),
+                start.elapsed().as_millis(),
+                playlist_url
+            );
+
+            return Ok(YtPlaylistResponse {
+                playlist_id: clean_id,
+                title,
+                artwork_url,
+                track_count: tracks.len(),
+                tracks,
+            });
+        }
+
+        Err(last_error.unwrap_or_else(|| {
+            "Плейлист YouTube Music не вернул доступных треков (возможно, он приватный или пуст).".to_string()
+        }))
     }
 
     async fn ensure_ytdlp_environment(&self) -> Result<(PathBuf, String), String> {
@@ -962,7 +1110,11 @@ impl YtStreamProxy {
 
         let extra_dirs = collect_tool_directories(&app_bin);
         let current_path = std::env::var("PATH").unwrap_or_default();
-        let sep = if cfg!(target_os = "windows") { ";" } else { ":" };
+        let sep = if cfg!(target_os = "windows") {
+            ";"
+        } else {
+            ":"
+        };
         let mut path_parts: Vec<String> = extra_dirs
             .iter()
             .map(|p| p.to_string_lossy().to_string())
@@ -1020,7 +1172,11 @@ impl YtStreamProxy {
         let Ok((ytdlp_bin, env_path)) = self.ensure_ytdlp_environment().await else {
             return;
         };
+        let total = self.total_semaphore.clone();
         tokio::spawn(async move {
+            let Ok(_all_permits) = total.acquire_many_owned(MAX_TOTAL_YTDLP as u32).await else {
+                return;
+            };
             let mut cmd = Command::new(&ytdlp_bin);
             cmd.arg("-U")
                 .env("PATH", &env_path)
@@ -1041,11 +1197,15 @@ impl YtStreamProxy {
             .ok()
             .and_then(|mut it| it.next())
             .is_some();
+        if has_cached_sigfuncs {
+            return;
+        }
 
         let start = Instant::now();
         match self.resolve_via_ytdlp(YTDLP_WARMUP_VIDEO_ID, false).await {
             Ok(resolved) => {
-                self.insert_cached_stream(YTDLP_WARMUP_VIDEO_ID, resolved).await;
+                self.insert_cached_stream(YTDLP_WARMUP_VIDEO_ID, resolved)
+                    .await;
                 println!(
                     "[AudioProxy][Warmup] yt-dlp solver cache warmed up (had_sigfuncs={}) in {} ms",
                     has_cached_sigfuncs,
@@ -1078,6 +1238,44 @@ fn app_data_root_dir() -> PathBuf {
 
 fn app_data_bin_dir() -> PathBuf {
     app_data_root_dir().join("bin")
+}
+
+fn read_ytmusic_cookie_header() -> Option<String> {
+    let mut candidates: Vec<PathBuf> = Vec::new();
+    if let Ok(dir) = std::env::var("BSC_DATA_DIR") {
+        candidates.push(PathBuf::from(dir).join("ytmusic-auth.json"));
+    }
+    if let Ok(home) = std::env::var("HOME") {
+        candidates.push(PathBuf::from(&home).join("Library/Application Support/Resonance/ytmusic-auth.json"));
+        candidates.push(PathBuf::from(&home).join(".config/Resonance/ytmusic-auth.json"));
+    }
+    if let Ok(appdata) = std::env::var("APPDATA") {
+        candidates.push(PathBuf::from(appdata).join("Resonance/ytmusic-auth.json"));
+    }
+    candidates.push(app_data_root_dir().join("ytmusic-auth.json"));
+
+    for path in candidates {
+        let Ok(raw) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        let Ok(data) = serde_json::from_str::<Value>(&raw) else {
+            continue;
+        };
+        let cookie = data
+            .get("headers")
+            .and_then(|v| v.as_object())
+            .and_then(|h| h.get("Cookie").or_else(|| h.get("cookie")))
+            .and_then(|v| v.as_str())
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(|s| s.to_string());
+        if let Some(cookie) = cookie {
+            if cookie.contains("SAPISID=") || cookie.contains("__Secure-3PAPISID=") {
+                return Some(cookie);
+            }
+        }
+    }
+    None
 }
 
 fn load_persisted_stream_cache(path: &Path) -> HashMap<String, ResolvedYtStream> {
@@ -1125,7 +1323,10 @@ fn save_persisted_stream_cache(path: &Path, cache: &HashMap<String, ResolvedYtSt
         .map(|(k, v)| PersistedYtStreamEntry::from_resolved(k, v))
         .collect();
     if let Ok(serialized) = serde_json::to_string(&entries) {
-        let _ = std::fs::write(path, serialized);
+        let tmp_path = path.with_extension("json.tmp");
+        if std::fs::write(&tmp_path, serialized).is_ok() {
+            let _ = std::fs::rename(&tmp_path, path);
+        }
     }
 }
 
@@ -1173,7 +1374,11 @@ fn collect_tool_directories(app_bin: &Path) -> Vec<PathBuf> {
     }
 
     if let Ok(path_var) = std::env::var("PATH") {
-        let sep = if cfg!(target_os = "windows") { ';' } else { ':' };
+        let sep = if cfg!(target_os = "windows") {
+            ';'
+        } else {
+            ':'
+        };
         for part in path_var.split(sep) {
             let trimmed = part.trim();
             if !trimmed.is_empty() {
@@ -1204,19 +1409,36 @@ async fn download_and_verify_ytdlp(http: &Client, target_path: &Path) -> Result<
         "yt-dlp_linux"
     };
 
-    let bin_url = format!(
-        "https://github.com/yt-dlp/yt-dlp/releases/latest/download/{asset_name}"
-    );
-    let sums_url = "https://github.com/yt-dlp/yt-dlp/releases/latest/download/SHA256SUMS";
+    let bin_url = format!("https://github.com/yt-dlp/yt-dlp/releases/latest/download/{asset_name}");
+    let sums_urls = [
+        "https://github.com/yt-dlp/yt-dlp/releases/latest/download/SHA2-256SUMS",
+        "https://github.com/yt-dlp/yt-dlp/releases/latest/download/SHA256SUMS",
+    ];
 
-    let sums_text = http
-        .get(sums_url)
-        .send()
-        .await
-        .map_err(|e| format!("Не удалось загрузить SHA256SUMS для yt-dlp: {e}"))?
-        .text()
-        .await
-        .map_err(|e| format!("Ошибка чтения SHA256SUMS: {e}"))?;
+    let mut sums_text = None;
+    let mut last_sums_err = String::new();
+    for sums_url in sums_urls {
+        match http.get(sums_url).send().await {
+            Ok(resp) => match resp.error_for_status() {
+                Ok(ok_resp) => match ok_resp.text().await {
+                    Ok(text) => {
+                        sums_text = Some(text);
+                        break;
+                    }
+                    Err(e) => {
+                        last_sums_err = format!("Ошибка чтения контрольных сумм yt-dlp: {e}");
+                    }
+                },
+                Err(e) => {
+                    last_sums_err = format!("Не удалось загрузить контрольные суммы yt-dlp: {e}");
+                }
+            },
+            Err(e) => {
+                last_sums_err = format!("Не удалось загрузить контрольные суммы yt-dlp: {e}");
+            }
+        }
+    }
+    let sums_text = sums_text.ok_or(last_sums_err)?;
 
     let expected_hash = sums_text
         .lines()
@@ -1230,7 +1452,9 @@ async fn download_and_verify_ytdlp(http: &Client, target_path: &Path) -> Result<
                 None
             }
         })
-        .ok_or_else(|| format!("Хэш SHA-256 для {asset_name} не найден в SHA256SUMS"))?;
+        .ok_or_else(|| {
+            format!("Хэш SHA-256 для {asset_name} не найден в контрольных суммах yt-dlp")
+        })?;
 
     let bytes = http
         .get(&bin_url)
@@ -1323,6 +1547,54 @@ fn extract_best_thumbnail_url(thumbs_val: Option<&Value>) -> Option<String> {
     best_url
 }
 
+fn is_permanent_ytdlp_error(stderr: &[u8]) -> bool {
+    let text = String::from_utf8_lossy(stderr).to_lowercase();
+    [
+        "private video",
+        "video unavailable",
+        "this video has been removed",
+        "deleted",
+        "age-restricted",
+        "confirm your age",
+        "not available in your country",
+        "copyright",
+        "members-only",
+        "this video is not available",
+    ]
+    .iter()
+    .any(|needle| text.contains(needle))
+}
+
+fn is_permanent_innertube_reason(reason: &str) -> bool {
+    let r = reason.to_lowercase();
+    [
+        "video unavailable",
+        "this video is not available",
+        "private video",
+        "this video has been removed",
+        "has been removed",
+        "not available in your country",
+        "copyright",
+    ]
+    .iter()
+    .any(|needle| r.contains(needle))
+}
+
+fn expire_ttl(expire_unix: Option<u64>) -> Duration {
+    let Some(exp) = expire_unix else {
+        return STREAM_CACHE_TTL;
+    };
+    let now_unix = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    if exp > now_unix + DISK_EXPIRE_SAFETY_MARGIN_SECS + 60 {
+        Duration::from_secs(exp - now_unix - DISK_EXPIRE_SAFETY_MARGIN_SECS)
+    } else {
+        Duration::from_secs(300)
+    }
+}
+
 fn is_valid_video_id(id: &str) -> bool {
     id.len() == 11
         && id
@@ -1330,117 +1602,171 @@ fn is_valid_video_id(id: &str) -> bool {
             .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
 }
 
+async fn try_resolve_with_profile(
+    http: &Client,
+    video_id: &str,
+    profile: ClientProfile,
+    cookie_header: Option<String>,
+) -> Result<ResolvedYtStream, String> {
+    let payload = json!({
+        "videoId": video_id,
+        "context": {
+            "client": profile.context_client
+        },
+        "contentCheckOk": true,
+        "racyCheckOk": true
+    });
+
+    let mut req = http
+        .post(PLAYER_ENDPOINT)
+        .header("Content-Type", "application/json")
+        .header("User-Agent", profile.user_agent)
+        .header("X-Youtube-Client-Name", profile.client_id)
+        .header("X-Youtube-Client-Version", profile.version)
+        .header("Origin", "https://music.youtube.com")
+        .header("Referer", "https://music.youtube.com/");
+    if let Some(cookie) = cookie_header.as_deref() {
+        req = req.header("Cookie", cookie);
+    }
+    let response = req.json(&payload).send().await;
+
+    let resp = response
+        .map_err(|_| format!("Сетевая ошибка при запросе клиента {}", profile.name))?;
+
+    if !resp.status().is_success() {
+        return Err(format!(
+            "Клиент {} вернул HTTP {}",
+            profile.name,
+            resp.status().as_u16()
+        ));
+    }
+
+    let data = resp
+        .json::<Value>()
+        .await
+        .map_err(|_| format!("Клиент {} вернул невалидный JSON", profile.name))?;
+
+    let status = data
+        .pointer("/playabilityStatus/status")
+        .and_then(|v| v.as_str())
+        .unwrap_or("UNKNOWN");
+
+    if status != "OK" {
+        let reason = data
+            .pointer("/playabilityStatus/reason")
+            .and_then(|v| v.as_str())
+            .unwrap_or(status);
+        return Err(format!("{}: {}", profile.name, reason));
+    }
+
+    let Some(formats) = data
+        .pointer("/streamingData/adaptiveFormats")
+        .and_then(|v| v.as_array())
+    else {
+        return Err(format!("Клиент {}: нет adaptiveFormats", profile.name));
+    };
+
+    let mut best_format: Option<(i64, String, String, Option<u64>)> = None;
+
+    for fmt in formats {
+        let Some(url) = fmt
+            .get("url")
+            .and_then(|v| v.as_str())
+            .filter(|s| !s.is_empty())
+        else {
+            continue;
+        };
+        let mime_raw = fmt
+            .get("mimeType")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default();
+        if !mime_raw.starts_with("audio/") {
+            continue;
+        }
+        let base_mime = mime_raw
+            .split(';')
+            .next()
+            .unwrap_or("audio/mp4")
+            .trim()
+            .to_string();
+
+        let itag = fmt.get("itag").and_then(|v| v.as_i64()).unwrap_or(0);
+        let bitrate = fmt.get("bitrate").and_then(|v| v.as_i64()).unwrap_or(0);
+        let itag_bonus = if itag == 251 || itag == 140 { 500_000 } else { 0 };
+        let score = bitrate + itag_bonus;
+
+        let content_length = fmt
+            .get("contentLength")
+            .and_then(|v| v.as_str())
+            .and_then(|s| s.parse::<u64>().ok())
+            .or_else(|| extract_query_param_u64(url, "clen"));
+
+        if best_format
+            .as_ref()
+            .map_or(true, |(best_score, _, _, _)| score > *best_score)
+        {
+            best_format = Some((score, url.to_string(), base_mime, content_length));
+        }
+    }
+
+    let Some((_, direct_url, mime_type, content_length)) = best_format else {
+        return Err(format!("Клиент {}: нет прямого audio URL", profile.name));
+    };
+
+    let expire_unix = extract_query_param_u64(&direct_url, "expire");
+    let ip_param = extract_query_param_str(&direct_url, "ip");
+    let ttl = expire_ttl(expire_unix);
+    Ok(ResolvedYtStream {
+        direct_url,
+        user_agent: profile.user_agent.to_string(),
+        extra_headers: HashMap::new(),
+        mime_type,
+        content_length,
+        expires_at: Instant::now() + ttl,
+        expire_unix,
+        ip_param,
+        level_label: format!("Level 1: {}", profile.name),
+    })
+}
+
 async fn resolve_youtubei_player_stream(
     http: &Client,
     video_id: &str,
 ) -> Result<ResolvedYtStream, String> {
-    let mut last_error = String::new();
+    use tokio::task::JoinSet;
 
+    let cookie_header = tokio::task::spawn_blocking(read_ytmusic_cookie_header)
+        .await
+        .ok()
+        .flatten();
+
+    let mut set = JoinSet::new();
     for profile in client_profiles() {
-        let payload = json!({
-            "videoId": video_id,
-            "context": {
-                "client": profile.context_client
-            },
-            "contentCheckOk": true,
-            "racyCheckOk": true
-        });
+        let http = http.clone();
+        let vid = video_id.to_string();
+        let cookie = cookie_header.clone();
+        set.spawn(async move { try_resolve_with_profile(&http, &vid, profile, cookie).await });
+    }
 
-        let response = http
-            .post(PLAYER_ENDPOINT)
-            .header("Content-Type", "application/json")
-            .header("User-Agent", profile.user_agent)
-            .header("X-Youtube-Client-Name", profile.client_id)
-            .header("X-Youtube-Client-Version", profile.version)
-            .json(&payload)
-            .send()
-            .await;
-
-        let Ok(resp) = response else {
-            last_error = format!("Сетевая ошибка при запросе клиента {}", profile.name);
-            continue;
-        };
-
-        if !resp.status().is_success() {
-            last_error = format!("Клиент {} вернул HTTP {}", profile.name, resp.status().as_u16());
-            continue;
-        }
-
-        let Ok(data) = resp.json::<Value>().await else {
-            continue;
-        };
-
-        let status = data
-            .pointer("/playabilityStatus/status")
-            .and_then(|v| v.as_str())
-            .unwrap_or("UNKNOWN");
-
-        if status != "OK" {
-            let reason = data
-                .pointer("/playabilityStatus/reason")
-                .and_then(|v| v.as_str())
-                .unwrap_or(status);
-            last_error = format!("{}: {}", profile.name, reason);
-            continue;
-        }
-
-        let Some(formats) = data
-            .pointer("/streamingData/adaptiveFormats")
-            .and_then(|v| v.as_array())
-        else {
-            continue;
-        };
-
-        let mut best_format: Option<(i64, String, String, Option<u64>)> = None;
-
-        for fmt in formats {
-            let Some(url) = fmt.get("url").and_then(|v| v.as_str()).filter(|s| !s.is_empty()) else {
-                continue;
-            };
-            let mime_raw = fmt
-                .get("mimeType")
-                .and_then(|v| v.as_str())
-                .unwrap_or_default();
-            if !mime_raw.starts_with("audio/") {
-                continue;
+    let mut last_error = String::new();
+    while let Some(joined) = set.join_next().await {
+        match joined {
+            Ok(Ok(resolved)) => {
+                set.abort_all();
+                return Ok(resolved);
             }
-            let base_mime = mime_raw
-                .split(';')
-                .next()
-                .unwrap_or("audio/mp4")
-                .trim()
-                .to_string();
-
-            let itag = fmt.get("itag").and_then(|v| v.as_i64()).unwrap_or(0);
-            let bitrate = fmt.get("bitrate").and_then(|v| v.as_i64()).unwrap_or(0);
-            let itag_bonus = if itag == 251 || itag == 140 { 500_000 } else { 0 };
-            let score = bitrate + itag_bonus;
-
-            let content_length = fmt
-                .get("contentLength")
-                .and_then(|v| v.as_str())
-                .and_then(|s| s.parse::<u64>().ok())
-                .or_else(|| extract_query_param_u64(url, "clen"));
-
-            if best_format.as_ref().map_or(true, |(best_score, _, _, _)| score > *best_score) {
-                best_format = Some((score, url.to_string(), base_mime, content_length));
+            Ok(Err(e)) => {
+                // "Sign in to confirm..." — этот клиент заблокирован, но другой может сработать.
+                if is_permanent_innertube_reason(&e) {
+                    last_error = e;
+                    set.abort_all();
+                    break;
+                }
+                last_error = e;
             }
-        }
-
-        if let Some((_, direct_url, mime_type, content_length)) = best_format {
-            let expire_unix = extract_query_param_u64(&direct_url, "expire");
-            let ip_param = extract_query_param_str(&direct_url, "ip");
-            return Ok(ResolvedYtStream {
-                direct_url,
-                user_agent: profile.user_agent.to_string(),
-                extra_headers: HashMap::new(),
-                mime_type,
-                content_length,
-                expires_at: Instant::now() + STREAM_CACHE_TTL,
-                expire_unix,
-                ip_param,
-                level_label: format!("Level 1: {}", profile.name),
-            });
+            Err(e) => {
+                last_error = format!("task join error: {e}");
+            }
         }
     }
 
@@ -1451,13 +1777,29 @@ async fn resolve_youtubei_player_stream(
     })
 }
 
-async fn handle_proxy_connection(mut socket: TcpStream, proxy: YtStreamProxy) -> Result<(), String> {
+async fn handle_proxy_connection(
+    mut socket: TcpStream,
+    proxy: YtStreamProxy,
+) -> Result<(), String> {
     let req_received_at = Instant::now();
     let mut buf = vec![0u8; 8192];
-    let n = socket
-        .read(&mut buf)
-        .await
-        .map_err(|e| format!("read error: {e}"))?;
+    let mut n = 0usize;
+    loop {
+        if n == buf.len() {
+            break;
+        }
+        let read =
+            tokio::time::timeout(Duration::from_millis(500), socket.read(&mut buf[n..])).await;
+        match read {
+            Ok(Ok(0)) => break,
+            Ok(Ok(k)) => n += k,
+            Ok(Err(e)) => return Err(format!("read error: {e}")),
+            Err(_) => break,
+        }
+        if buf[..n].windows(4).any(|w| w == b"\r\n\r\n") {
+            break;
+        }
+    }
     if n == 0 {
         return Ok(());
     }
@@ -1483,6 +1825,13 @@ async fn handle_proxy_connection(mut socket: TcpStream, proxy: YtStreamProxy) ->
         return Ok(());
     }
 
+    if extract_query_param_str(raw_target, "t").as_deref() != Some(proxy.token.as_str()) {
+        let resp =
+            "HTTP/1.1 403 Forbidden\r\nAccess-Control-Allow-Origin: *\r\nContent-Length: 0\r\n\r\n";
+        let _ = socket.write_all(resp.as_bytes()).await;
+        return Ok(());
+    }
+
     let mut range_header: Option<String> = None;
     for line in lines {
         let line = line.trim();
@@ -1498,7 +1847,8 @@ async fn handle_proxy_connection(mut socket: TcpStream, proxy: YtStreamProxy) ->
 
     let path = raw_target.split('?').next().unwrap_or(raw_target);
     let is_prefetch = raw_target.contains("prefetch=1");
-    let req_id_param = extract_query_param_str(raw_target, "reqId").unwrap_or_else(|| "-".to_string());
+    let req_id_param =
+        extract_query_param_str(raw_target, "reqId").unwrap_or_else(|| "-".to_string());
     let click_ts_param = extract_query_param_u64(raw_target, "clickTs");
     let video_id = path.trim_start_matches("/yt-stream/").trim();
 
@@ -1509,7 +1859,10 @@ async fn handle_proxy_connection(mut socket: TcpStream, proxy: YtStreamProxy) ->
     }
 
     let resolve_start = Instant::now();
-    let (mut resolved, mut cache_hit, mut resolve_ms, _) = match proxy.get_or_resolve_stream(video_id, false, !is_prefetch).await {
+    let (mut resolved, mut cache_hit, mut resolve_ms, _) = match proxy
+        .get_or_resolve_stream(video_id, false, !is_prefetch)
+        .await
+    {
         Ok(res) => res,
         Err(_) => {
             let resp = "HTTP/1.1 502 Bad Gateway\r\nAccess-Control-Allow-Origin: *\r\nContent-Length: 0\r\n\r\n";
@@ -1520,7 +1873,8 @@ async fn handle_proxy_connection(mut socket: TcpStream, proxy: YtStreamProxy) ->
     let resolve_wall_ms = resolve_start.elapsed().as_millis();
 
     if is_prefetch {
-        let resp = "HTTP/1.1 202 Accepted\r\nAccess-Control-Allow-Origin: *\r\nContent-Length: 0\r\n\r\n";
+        let resp =
+            "HTTP/1.1 202 Accepted\r\nAccess-Control-Allow-Origin: *\r\nContent-Length: 0\r\n\r\n";
         let _ = socket.write_all(resp.as_bytes()).await;
         return Ok(());
     }
@@ -1530,43 +1884,53 @@ async fn handle_proxy_connection(mut socket: TcpStream, proxy: YtStreamProxy) ->
     let mut upstream_resp =
         send_upstream_request(stream_client, &resolved, range_header.as_deref()).await;
 
-    // Прозрачный фоллбэк внутри ОДНОГО запроса к прокси при 403/401 от кэшированной или устаревшей ссылки
-    // (включая смену внешнего IPv4/IPv6 адреса: сбрасываем все записи кэша со старым ip= и перерезолвим один раз):
-    if upstream_resp
-        .as_ref()
-        .map_or(true, |r| r.status().as_u16() == 403 || r.status().as_u16() == 401)
+    // Прозрачный фоллбэк при 403/401/ошибке CDN: инвалидируем только этот URL, перерезолвим и повторяем
+    // (до 2 попыток), чтобы не отдавать 403 аудиоэлементу из-за просроченного/отклонённого googlevideo URL.
+    let mut refresh_attempts: u32 = 0;
+    while refresh_attempts < 2
+        && upstream_resp
+            .as_ref()
+            .map_or(true, |r| matches!(r.status().as_u16(), 401 | 403))
     {
         let stale_ip = resolved.ip_param.clone();
+        refresh_attempts += 1;
         eprintln!(
-            "[AudioProxy] Upstream returned 403/expired for {video_id} (level=\"{}\" family={} stale_ip={:?}), invalidating stale IP entries and re-resolving once via yt-dlp...",
-            resolved.level_label,
-            ip_family,
-            stale_ip
+            "[AudioProxy] Upstream returned 403/expired for {video_id} (level=\"{}\" family={} stale_ip={:?}, attempt={refresh_attempts}/2), invalidating and re-resolving...",
+            resolved.level_label, ip_family, stale_ip
         );
-        proxy
-            .invalidate_streams_matching_ip(video_id, stale_ip.as_deref())
-            .await;
+        // shortcut: сбрасываем только проблемное видео, не весь кэш с тем же IP, чтобы не терять валидные URL.
+        proxy.invalidate_stream(video_id).await;
         {
             let mut c403 = proxy.consecutive_403.lock().await;
-            *c403 += 1;
+            *c403 = c403.saturating_add(1);
             if *c403 >= 3 {
                 *c403 = 0;
                 proxy.trigger_ytdlp_self_update().await;
             }
         }
         let refresh_start = Instant::now();
-        if let Ok(fresh) = proxy.resolve_via_ytdlp(video_id, true).await {
-            let fresh_ms = refresh_start.elapsed().as_millis() as u64;
-            proxy.insert_cached_stream(video_id, fresh.clone()).await;
-            resolved = fresh;
-            cache_hit = false;
-            resolve_ms += fresh_ms;
-            let (fresh_client, fresh_family) = proxy.select_stream_client(&resolved);
-            ip_family = fresh_family;
-            upstream_resp =
-                send_upstream_request(fresh_client, &resolved, range_header.as_deref()).await;
+        match proxy.get_or_resolve_stream(video_id, false, true).await {
+            Ok((fresh, _, _, _)) => {
+                let fresh_ms = refresh_start.elapsed().as_millis() as u64;
+                resolved = fresh;
+                cache_hit = false;
+                resolve_ms += fresh_ms;
+                let (fresh_client, fresh_family) = proxy.select_stream_client(&resolved);
+                ip_family = fresh_family;
+                upstream_resp =
+                    send_upstream_request(fresh_client, &resolved, range_header.as_deref()).await;
+            }
+            Err(e) => {
+                eprintln!("[AudioProxy] Re-resolve failed for {video_id} on 403 retry: {e}");
+                break;
+            }
         }
-    } else {
+    }
+
+    if !upstream_resp
+        .as_ref()
+        .map_or(true, |r| matches!(r.status().as_u16(), 401 | 403))
+    {
         let mut c403 = proxy.consecutive_403.lock().await;
         *c403 = 0;
     }
@@ -1747,7 +2111,10 @@ pub async fn search_youtube_tracks(
         .map_err(|e| format!("Ошибка поиска YouTube Music: {e}"))?;
 
     if !resp.status().is_success() {
-        return Err(format!("YouTube Music Search вернул HTTP {}", resp.status().as_u16()));
+        return Err(format!(
+            "YouTube Music Search вернул HTTP {}",
+            resp.status().as_u16()
+        ));
     }
 
     let data: Value = resp
@@ -1946,7 +2313,7 @@ pub async fn resolve_yt_stream_url(
         .get_or_resolve_stream(&video_id, false, is_priority)
         .await?;
     let trimmed = video_id.trim();
-    let mut query_parts = Vec::new();
+    let mut query_parts = vec![format!("t={}", state.token)];
     if let Some(req_id) = request_id {
         query_parts.push(format!("reqId={req_id}"));
     }
@@ -1985,4 +2352,3 @@ pub async fn fetch_yt_playlist_tracks(
 ) -> Result<YtPlaylistResponse, String> {
     state.fetch_playlist_tracks(&playlist_id).await
 }
-

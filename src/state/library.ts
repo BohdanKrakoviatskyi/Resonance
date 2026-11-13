@@ -262,11 +262,13 @@ export function loadSoundCloudLibrary(force = false): Promise<void> {
             : '',
       }));
 
-      // В фоне предзагружаем треки всех сохранённых плейлистов SoundCloud
+      // В фоне подгружаем треки плейлистов SoundCloud, которых ещё нет в кэше (без ревалидации всего на старте)
       const playlistsToWarm = library.get().soundcloudPlaylists;
       void (async () => {
         for (const pl of playlistsToWarm) {
           if (!pl.urn) continue;
+          const hasCached = (library.get().soundcloudPlaylistTracks[pl.urn]?.length ?? 0) > 0;
+          if (!force && hasCached) continue;
           try {
             await loadSoundCloudPlaylistTracks(pl.urn, force);
           } catch {
@@ -363,11 +365,13 @@ export function loadYtMusicLibrary(force = false): Promise<void> {
         ytmusicLibraryError: '',
       }));
 
-      // В фоне предзагружаем/обновляем треки для всех сохранённых плейлистов YouTube Music
+      // В фоне подгружаем треки плейлистов YouTube Music, которых ещё нет в кэше (без ревалидации всего на старте)
       const playlistsToWarm = library.get().ytmusicPlaylists;
       void (async () => {
         for (const pl of playlistsToWarm) {
           if (epoch !== ytmusicEpoch || !pl.playlistId) break;
+          const hasCached = (library.get().ytmusicPlaylistTracks[pl.playlistId]?.length ?? 0) > 0;
+          if (!force && hasCached) continue;
           try {
             await loadYtMusicPlaylistTracks(pl.playlistId, force);
           } catch {

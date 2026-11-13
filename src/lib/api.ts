@@ -21,6 +21,7 @@ import {
   type SoundCloudSearchTrack,
   searchYtDlpTracks,
   ytDlpTrackStream,
+  type YouTubeTrack,
 } from './providers-api';
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -72,25 +73,35 @@ export function mapSoundCloudTrack(track: SoundCloudTrackLike): Track {
   };
 }
 
+export function mapYouTubeTrack(item: YouTubeTrack): Track {
+  const duration = item.durationMs / 1000;
+  const artwork = item.artworkUrl || `https://i.ytimg.com/vi/${encodeURIComponent(item.nativeId)}/hqdefault.jpg`;
+  return {
+    id: `yt:${item.nativeId}`, title: item.title, artist: item.artist,
+    cover: artwork, thumb: artwork,
+    src: item.permalink || `https://music.youtube.com/watch?v=${encodeURIComponent(item.nativeId)}`,
+    duration, fullDuration: duration || undefined, nativeId: item.nativeId, playback: 'direct', source: 'youtube',
+  };
+}
+
+function interleave<T>(a: T[], b: T[]): T[] {
+  const out: T[] = [];
+  for (let i = 0; i < Math.max(a.length, b.length); i++) {
+    if (i < a.length) out.push(a[i]);
+    if (i < b.length) out.push(b[i]);
+  }
+  return out;
+}
+
 export async function searchTracks(query: string, signal?: AbortSignal): Promise<Track[]> {
   const results = await Promise.allSettled([
     searchSoundCloudTracks(query, signal),
     searchYtDlpTracks(query, signal),
   ]);
   const [soundcloud, youtube] = results;
-  const tracks: Track[] = [];
-  if (soundcloud.status === 'fulfilled') tracks.push(...soundcloud.value.map(mapSoundCloudTrack));
-  if (youtube.status === 'fulfilled') {
-    for (const track of youtube.value) {
-      const duration = track.durationMs / 1000;
-      tracks.push({
-        id: `yt:${track.nativeId}`, title: track.title, artist: track.artist,
-        cover: track.artworkUrl || undefined, thumb: track.artworkUrl || undefined,
-        src: track.permalink || `https://music.youtube.com/watch?v=${encodeURIComponent(track.nativeId)}`,
-        duration, fullDuration: duration || undefined, nativeId: track.nativeId, playback: 'direct', source: 'youtube',
-      });
-    }
-  }
+  const scTracks = soundcloud.status === 'fulfilled' ? soundcloud.value.map(mapSoundCloudTrack) : [];
+  const ytTracks = youtube.status === 'fulfilled' ? youtube.value.map(mapYouTubeTrack) : [];
+  const tracks = interleave(scTracks, ytTracks);
   if (tracks.length) return tracks;
   const firstError = results.find((result) => result.status === 'rejected');
   if (firstError?.status === 'rejected') throw firstError.reason;
@@ -98,73 +109,124 @@ export async function searchTracks(query: string, signal?: AbortSignal): Promise
 }
 
 
-export async function trackStream(trackUrn: string): Promise<{ url: string; hls: boolean; preview: boolean }> {
-  const result = await rpc<{ url: string; hls?: boolean; preview?: boolean }>('track.stream', { trackUrn });
-  if (!result?.url) throw new Error('SoundCloud did not return an audio stream.');
-  return { url: result.url, hls: Boolean(result.hls), preview: Boolean(result.preview) };
+const streamInflight = new Map<string, Promise<{ url: string; hls: boolean; preview: boolean }>>();
+
+export function trackStream(trackUrn: string): Promise<{ url: string; hls: boolean; preview: boolean }> {
+  let request = streamInflight.get(trackUrn);
+  if (!request) {
+    request = rpc<{ url: string; hls?: boolean; preview?: boolean }>('track.stream', { trackUrn })
+      .then((result) => {
+        if (!result?.url) throw new Error('SoundCloud did not return an audio stream.');
+        return { url: result.url, hls: Boolean(result.hls), preview: Boolean(result.preview) };
+      })
+      .finally(() => streamInflight.delete(trackUrn));
+    streamInflight.set(trackUrn, request);
+  }
+  return request;
 }
 
 export async function relatedSoundCloudTracks(trackId: number): Promise<Track[]> {
   return (await soundCloudRelatedTracks(trackId)).map(mapSoundCloudTrack);
 }
 
-export async function searchYouTubeRecommendations(track: Track): Promise<Track[]> {
-  const results = await searchYtDlpTracks(`${track.artist} songs like ${track.title}`);
-  return results.map((item) => {
-    const duration = item.durationMs / 1000;
-    return {
-      id: `yt:${item.nativeId}`, title: item.title, artist: item.artist,
-      cover: item.artworkUrl || undefined, thumb: item.artworkUrl || undefined,
-      src: item.permalink || `https://music.youtube.com/watch?v=${encodeURIComponent(item.nativeId)}`,
-      duration, fullDuration: duration || undefined, nativeId: item.nativeId, playback: 'direct', source: 'youtube',
-    };
-  });
+const RECOMMENDATION_MAX_MS = 15 * 60_000;
+const NON_SONG_TITLE = /\b(?:mix|reaction|reacts?|playlist|compilation|karaoke|hours?|full album)\b/i;
+
+export async function searchYouTubeRecommendations(track: Track, signal?: AbortSignal): Promise<Track[]> {
+  const query = track.artist ? `${track.artist} official audio` : track.title;
+  const results = await searchYtDlpTracks(query, signal);
+  const seen = new Set<string>();
+  return results
+    .filter((item) => item.nativeId !== track.nativeId && `yt:${item.nativeId}` !== track.id)
+    .filter((item) => !(item.durationMs > RECOMMENDATION_MAX_MS) && !NON_SONG_TITLE.test(item.title))
+    .filter((item) => (seen.has(item.nativeId) ? false : seen.add(item.nativeId)))
+    .map(mapYouTubeTrack);
 }
 
 export { ytDlpTrackStream };
 
-export async function findYouTubeFallback(track: Track): Promise<Track | null> {
+const FALLBACK_MEMO_TTL_MS = 10 * 60_000;
+type FallbackEntry = { promise: Promise<Track | null>; controller: AbortController; refs: number };
+const fallbackInflight = new Map<string, FallbackEntry>();
+const fallbackMemo = new Map<string, { track: Track; expires: number }>();
+
+function abortError() {
+  return new DOMException('Aborted', 'AbortError');
+}
+
+async function searchFallbackRound(track: Track, query: string, signal: AbortSignal) {
+  const [yt, sc] = await Promise.allSettled([searchYtDlpTracks(query, signal), searchSoundCloudTracks(query, signal)]);
+  return {
+    yt: yt.status === 'fulfilled'
+      ? yt.value.filter((c) => `yt:${c.nativeId}` !== track.id && c.nativeId !== track.nativeId)
+      : [],
+    sc: sc.status === 'fulfilled'
+      ? sc.value
+        .filter((c) => c.duration > 60_000 && `sc:${c.id}` !== track.id && c.urn !== track.nativeId)
+        .map((c) => ({ ...c, artist: c.user?.username || 'SoundCloud', durationMs: c.duration }))
+      : [],
+  };
+}
+
+async function runYouTubeFallback(track: Track, signal: AbortSignal): Promise<Track | null> {
   const seed = { ...track, duration: track.fullDuration ?? track.duration };
-  for (const query of youtubeFallbackQueries(seed)) {
-    try {
-      const ytCandidates = (await searchYtDlpTracks(query)).filter(
-        (c) => `yt:${c.nativeId}` !== track.id && c.nativeId !== track.nativeId
-      );
-      const match = findYouTubeFallbackCandidate(seed, ytCandidates);
-      if (match) {
-        const duration = match.durationMs / 1000;
-        const fallbackCover = match.nativeId ? `https://i.ytimg.com/vi/${encodeURIComponent(match.nativeId)}/hqdefault.jpg` : undefined;
-        const artwork = match.artworkUrl || fallbackCover;
-        return {
-          id: `yt:${match.nativeId}`, title: match.title, artist: match.artist,
-          cover: artwork, thumb: artwork,
-          src: match.permalink || `https://music.youtube.com/watch?v=${encodeURIComponent(match.nativeId)}`,
-          duration, fullDuration: duration || undefined, nativeId: match.nativeId, playback: 'direct', source: 'youtube',
-        };
-      }
-    } catch {
-      // Continue to SoundCloud fallback
-    }
-    if (track.id.startsWith('yt:')) {
-      try {
-        const scTracks = await searchSoundCloudTracks(query);
-        const scCandidates = scTracks
-          .filter((sc) => sc.duration > 60_000)
-          .map((sc) => ({
-            ...sc,
-            artist: sc.user?.username || 'SoundCloud',
-            durationMs: sc.duration,
-          }));
-        const scMatch = findYouTubeFallbackCandidate(seed, scCandidates);
-        if (scMatch) {
-          return mapSoundCloudTrack(scMatch);
-        }
-      } catch {
-        // Ignore SoundCloud search error
-      }
-    }
+  const [primary, ...rest] = youtubeFallbackQueries(seed);
+  if (!primary) return null;
+  const pick = (round: Awaited<ReturnType<typeof searchFallbackRound>>): Track | null => {
+    const yt = findYouTubeFallbackCandidate(seed, round.yt);
+    if (yt) return mapYouTubeTrack(yt);
+    const sc = findYouTubeFallbackCandidate(seed, round.sc);
+    return sc ? mapSoundCloudTrack(sc) : null;
+  };
+  const first = pick(await searchFallbackRound(track, primary, signal));
+  if (signal.aborted) throw abortError();
+  if (first || !rest.length) return first;
+  const rounds = await Promise.all(rest.map((query) => searchFallbackRound(track, query, signal)));
+  if (signal.aborted) throw abortError();
+  for (const round of rounds) {
+    const match = pick(round);
+    if (match) return match;
   }
   return null;
+}
+
+export function findYouTubeFallback(track: Track, signal?: AbortSignal): Promise<Track | null> {
+  if (signal?.aborted) return Promise.reject(abortError());
+  const memo = fallbackMemo.get(track.id);
+  if (memo && memo.expires > Date.now()) return Promise.resolve(memo.track);
+  let entry = fallbackInflight.get(track.id);
+  if (!entry) {
+    const key = track.id;
+    const controller = new AbortController();
+    const created: FallbackEntry = {
+      controller,
+      refs: 0,
+      promise: runYouTubeFallback(track, controller.signal)
+        .then((match) => {
+          if (match) fallbackMemo.set(key, { track: match, expires: Date.now() + FALLBACK_MEMO_TTL_MS });
+          return match;
+        })
+        .finally(() => {
+          if (fallbackInflight.get(key) === created) fallbackInflight.delete(key);
+        }),
+    };
+    entry = created;
+    fallbackInflight.set(key, entry);
+  }
+  const shared = entry;
+  shared.refs++;
+  return new Promise<Track | null>((resolve, reject) => {
+    const onAbort = () => {
+      shared.refs--;
+      if (shared.refs === 0) {
+        shared.controller.abort();
+        if (fallbackInflight.get(track.id) === shared) fallbackInflight.delete(track.id);
+      }
+      reject(abortError());
+    };
+    signal?.addEventListener('abort', onAbort, { once: true });
+    shared.promise.then(resolve, reject).finally(() => signal?.removeEventListener('abort', onAbort));
+  });
 }
 
 /* ---------------- lyrics ---------------- */
