@@ -129,7 +129,13 @@ export function snack(text: string, action?: Snack['action']) {
 
 export function setImmersive(v: boolean) {
   if (ui.get().immersive === v) return;
-  viewTransition(() => ui.set({ immersive: v, npDrawer: false, drawer: false }));
+  viewTransition(() => {
+    // Toggle `data-immersive` inside the view-transition update so the panel blur change is
+    // captured in the snapshot instead of popping in a post-paint effect (blur "jump").
+    if (v) document.documentElement.dataset.immersive = '';
+    else delete document.documentElement.dataset.immersive;
+    ui.set({ immersive: v, npDrawer: false, drawer: false });
+  });
 }
 
 export const openDialog = (d: Dialog) => ui.set({ dialog: d });
