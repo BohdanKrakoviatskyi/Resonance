@@ -1,5 +1,5 @@
 import { createStore, persist } from '../lib/util';
-import { viewTransition } from '../lib/motion';
+import { viewTransition, vtBlurSafe } from '../lib/motion';
 
 export type Route =
   | { name: 'home' }
@@ -129,13 +129,25 @@ export function snack(text: string, action?: Snack['action']) {
 
 export function setImmersive(v: boolean) {
   if (ui.get().immersive === v) return;
-  viewTransition(() => {
+  const apply = () => {
     // Toggle `data-immersive` inside the view-transition update so the panel blur change is
     // captured in the snapshot instead of popping in a post-paint effect (blur "jump").
     if (v) document.documentElement.dataset.immersive = '';
     else delete document.documentElement.dataset.immersive;
     ui.set({ immersive: v, npDrawer: false, drawer: false });
-  });
+  };
+  // WKWebView теряет backdrop-filter в VT-снапшотах (webkit bug 302256): стекло на весь
+  // кроссфейд становится прозрачным. Там живой presence-фейд Immersive (он и так есть
+  // как fallback). Флаг data-vt на время фейда подавляет transition backdrop-filter у
+  // .panel::before: при выходе стекло восстанавливается мгновенно, пока shell ещё прикрыт
+  // фейдящимся immersive — без кадра «панели без блюра», смена читается как кроссфейд.
+  if (vtBlurSafe) viewTransition(apply);
+  else {
+    const root = document.documentElement;
+    root.dataset.vt = '';
+    apply();
+    window.setTimeout(() => delete root.dataset.vt, 520);
+  }
 }
 
 export const openDialog = (d: Dialog) => ui.set({ dialog: d });
