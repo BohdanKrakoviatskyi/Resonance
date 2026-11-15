@@ -272,6 +272,18 @@ export default function Collection({ kind, id }: { kind: 'favorites' | 'playlist
       </div>
     );
 
+  const isFirstRenderRef = useRef(true);
+  const hasSwitchedFilterRef = useRef(false);
+  const prevFavProviderRef = useRef(favProvider);
+  if (kind === 'favorites' && prevFavProviderRef.current !== favProvider) {
+    prevFavProviderRef.current = favProvider;
+    hasSwitchedFilterRef.current = true;
+  }
+  useEffect(() => {
+    isFirstRenderRef.current = false;
+  }, []);
+  const animateRows = kind !== 'favorites' || (isFirstRenderRef.current && !hasSwitchedFilterRef.current);
+
   const total = visibleIds.reduce((a, x) => a + (getTrack(x)?.duration ?? 0), 0);
   const name = kind === 'favorites' ? t('favorites') : pl!.name;
 
@@ -400,7 +412,7 @@ export default function Collection({ kind, id }: { kind: 'favorites' | 'playlist
         <div className="min-w-0 flex-1">
           <div className="label-up">{t(kind === 'favorites' ? 'collection' : 'playlist')}</div>
           <h1 className="display my-2 break-words text-[clamp(34px,6.5cqw,72px)]">{name}</h1>
-          <div className="font-medium text-on-surface-variant">
+          <div className="font-medium tabular-nums text-on-surface-variant">
             {tracksLabel(visibleIds.length)}
             {total > 0 && ` · ${durLabel(total)}`}
           </div>
@@ -441,7 +453,11 @@ export default function Collection({ kind, id }: { kind: 'favorites' | 'playlist
           }
         />
       ) : visibleIds.length ? (
-        <TrackList ids={visibleIds} playlistId={kind === 'playlist' && !isProviderPlaylist ? pl!.id : undefined} />
+        <TrackList
+          ids={visibleIds}
+          playlistId={kind === 'playlist' && !isProviderPlaylist ? pl!.id : undefined}
+          animateRows={animateRows}
+        />
       ) : normalizedQuery && ids.length > 0 ? (
         <EmptyState
           icon="search_off"

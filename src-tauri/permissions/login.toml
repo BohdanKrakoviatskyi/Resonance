@@ -20,11 +20,23 @@ commands.allow = ["uninstall_app"]
 
 [[permission]]
 identifier = "allow-yt-proxy-commands"
-description = "Allow YouTube Music stream resolution, search, and playlist commands."
+description = "Allow YouTube Music stream resolution, library, search, and cache commands."
 commands.allow = [
   "resolve_yt_stream_url",
   "search_yt_tracks",
-  "fetch_yt_playlist_tracks"
+  "yt_search_suggestions",
+  "yt_radio_tracks",
+  "fetch_yt_playlist_tracks",
+  "yt_auth_status",
+  "yt_auth_save",
+  "yt_auth_logout",
+  "yt_library_cached",
+  "yt_library_sync",
+  "yt_playlist_tracks_cached",
+  "yt_playlist_tracks_sync",
+  "yt_playlist_artwork",
+  "yt_clear_cache",
+  "frontend_log"
 ]
 
 [[permission]]

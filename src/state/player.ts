@@ -7,7 +7,6 @@ import { snack, openSearch } from './ui';
 import { t } from '../lib/i18n';
 import { findYouTubeFallback, relatedSoundCloudTracks, searchYouTubeRecommendations, trackStream, ytDlpTrackStream } from '../lib/api';
 import type { YtResolveAttemptTiming, YtStreamResolveResult } from '../lib/providers-api';
-import { ytDlpSidecarStream } from '../lib/providers-api';
 import { rankRecommendations } from '../lib/recommendations';
 import { createPendingAudioSeek, pendingAudioSeekFor, type PendingAudioSeek } from '../lib/pending-audio-seek';
 import { onProviderState, providerCommand } from '../lib/provider-player';
@@ -223,9 +222,9 @@ const isYouTubeTrack = (track: Track | null | undefined): boolean =>
 const usesProviderPlayback = (track: Track | null | undefined) =>
   !!track && isYouTubeTrack(track) && track.playback !== 'direct' && !extractYtVideoId(track);
 
-// Предзагружаем следующие N+1..N+3 трека вперёд и N-1 назад в низкоприоритетном пуле (background_semaphore)
-const YT_STREAM_PREFETCH_AHEAD = 2;
-const YT_Playlist_TOP_PREFETCH = 2;
+// Предзагружаем следующие N+1..N+4 трека вперёд и N-1 назад, а также топ-8 треков плейлиста (через быстрый WEB_REMIX без yt-dlp)
+const YT_STREAM_PREFETCH_AHEAD = 4;
+const YT_Playlist_TOP_PREFETCH = 8;
 
 /* ---------------- Web Audio API DSP Normalization + Brickwall Limiter ---------------- */
 let sharedAudioCtx: AudioContext | null = null;
@@ -766,10 +765,10 @@ function prefetchYtStream(id?: string | null) {
   const request = ytDlpTrackStream(id, { priority: false })
     .then(async (res) => {
       if (!res.url) return res;
-      if (res.url.includes('/yt-audio/') && res.url.includes('t=')) {
+      if (res.url.includes('/yt-stream/') && res.url.includes('t=')) {
         try {
-          // Warm-up only: read headers, then drop the body so no audio is downloaded here.
-          const warm = await fetch(`${res.url}&prefetch=1`, { method: 'GET', cache: 'no-store', headers: { Range: 'bytes=0-65535' } });
+          // Warm-up: triggers proxy 256 KiB head cache + waits out TVHTML5 CDN 403 activation window in background.
+          const warm = await fetch(`${res.url}&prefetch=1`, { method: 'GET', cache: 'no-store' });
           void warm.body?.cancel().catch(() => {});
         } catch {
           // Background prefetch; playback path will handle misses.
@@ -1048,31 +1047,40 @@ async function resolvePlayableStream(
  * Ждёт готовности потока на `<audio>` (`canplay` / `loadeddata` или `readyState >= 2`) с проверкой `requestId`
  * перед вызовом `el.play()`, чтобы исключить ложные `pause`/`error` во время резолва.
  */
-async function waitForAudioStreamReady(deck: Deck, expectedRequestId: number, timeoutMs = 12000): Promise<boolean> {
+async function waitForAudioStreamReady(deck: Deck, expectedRequestId: number, timeoutMs = 18000): Promise<boolean> {
   const el = deck.el;
   if (expectedRequestId !== currentRequestId || deck.requestId !== expectedRequestId) return false;
   if (el.readyState >= 2) return true;
 
   return new Promise<boolean>((resolve) => {
     let settled = false;
-    const finish = (ok: boolean) => {
+    const finish = (ok: boolean, reason: string) => {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
-      el.removeEventListener('loadeddata', onReady);
-      el.removeEventListener('canplay', onReady);
+      el.removeEventListener('loadeddata', onLoadedData);
+      el.removeEventListener('canplay', onCanPlay);
       el.removeEventListener('error', onError);
-      resolve(ok && expectedRequestId === currentRequestId && deck.requestId === expectedRequestId);
+      const valid = ok && expectedRequestId === currentRequestId && deck.requestId === expectedRequestId;
+      if (!valid) {
+        logTrackTiming(
+          expectedRequestId,
+          'wait_ready_failed',
+          `reason=${reason} readyState=${el.readyState} networkState=${el.networkState} errCode=${el.error?.code ?? 0} activeReq=${currentRequestId} deckReq=${deck.requestId}`,
+        );
+      }
+      resolve(valid);
     };
-    const onReady = () => finish(true);
-    const onError = () => finish(false);
+    const onLoadedData = () => finish(true, 'loadeddata');
+    const onCanPlay = () => finish(true, 'canplay');
+    const onError = () => finish(false, 'audio_error');
     const timer = setTimeout(() => {
       // Если по таймауту метаданные уже есть — пробуем запустить play()
-      finish(el.readyState >= 1);
+      finish(el.readyState >= 1, 'timeout');
     }, timeoutMs);
 
-    el.addEventListener('loadeddata', onReady, { once: true });
-    el.addEventListener('canplay', onReady, { once: true });
+    el.addEventListener('loadeddata', onLoadedData, { once: true });
+    el.addEventListener('canplay', onCanPlay, { once: true });
     el.addEventListener('error', onError, { once: true });
   });
 }
@@ -1360,6 +1368,12 @@ async function load(i: number, autoplay: boolean, opts?: LoadOptions) {
       const streamReady = await waitForAudioStreamReady(toDeck, reqId);
       if (reqId !== currentRequestId) return;
       if (!streamReady) {
+        logTrackTiming(
+          reqId,
+          'stream_ready_failed',
+          `mode=crossfade track="${tr.title}" readyState=${toDeck.el.readyState} errCode=${toDeck.el.error?.code ?? 0}`,
+          clickPerfMs,
+        );
         stopAndResetDeck(toDeck);
         stopAndResetDeck(fromDeck);
         toDeck.fadeMultiplier = 1;
@@ -1383,6 +1397,13 @@ async function load(i: number, autoplay: boolean, opts?: LoadOptions) {
       );
     } catch (e) {
       if (reqId !== currentRequestId) return;
+      logTrackTiming(
+        reqId,
+        'load_exception',
+        `mode=crossfade track="${tr.title}" err="${e instanceof Error ? e.message : String(e)}"`,
+        clickPerfMs,
+      );
+      stopAndResetDeck(toDeck);
       stopAndResetDeck(fromDeck);
       toDeck.fadeMultiplier = 1;
       syncDeckVolumes();
@@ -1476,6 +1497,15 @@ async function load(i: number, autoplay: boolean, opts?: LoadOptions) {
       const streamReady = await waitForAudioStreamReady(deck, reqId);
       if (reqId !== currentRequestId) return;
       if (!streamReady) {
+        logTrackTiming(
+          reqId,
+          'stream_ready_failed',
+          `mode=direct track="${tr.title}" readyState=${deck.el.readyState} errCode=${deck.el.error?.code ?? 0}`,
+          clickPerfMs,
+        );
+        stopAndResetDeck(deck);
+        deck.fadeMultiplier = 1;
+        syncDeckVolumes();
         setPlayerMachineState('error');
         snack(t('cantPlay'));
         return;
@@ -1498,6 +1528,12 @@ async function load(i: number, autoplay: boolean, opts?: LoadOptions) {
     }
   } catch (e) {
     if (reqId !== currentRequestId) return;
+    logTrackTiming(
+      reqId,
+      'load_exception',
+      `mode=direct track="${tr.title}" err="${e instanceof Error ? e.message : String(e)}"`,
+      clickPerfMs,
+    );
     const errAttempts = (e as Error & { attempts?: YtResolveAttemptTiming[] })?.attempts;
     if (errAttempts?.length) {
       errAttempts.forEach((att, idx) => {
@@ -1513,6 +1549,9 @@ async function load(i: number, autoplay: boolean, opts?: LoadOptions) {
       await fallbackSoundCloud(tr, i, reqId);
       return;
     }
+    stopAndResetDeck(deck);
+    deck.fadeMultiplier = 1;
+    syncDeckVolumes();
     setPlayerMachineState('error');
     snack(e instanceof Error ? e.message : t('cantPlay'));
     return;
@@ -1796,23 +1835,24 @@ function maybeExtendShuffleQueue(track: Track | null | undefined) {
 export function toggle() {
   const s = player.get();
   if (s.index < 0 || !s.queue.length) return;
-  // Запрещаем дёргать <audio> во время резолва трека (state === 'loading'), чтобы не провоцировать ложные pause/error
-  if (s.state === 'loading' || s.loading) return;
   const track = currentTrack();
   if (usesProviderPlayback(track)) {
+    if (s.state === 'loading' || s.loading) return;
     const playing = !s.playing;
     providerCommand(playing ? 'play' : 'pause');
     setPlayerMachineState(playing ? 'playing' : 'paused');
     return;
   }
   const activeEl = getActiveDeck().el;
-  if (!activeEl.src) {
-    const keep = s.pos;
+  if (s.state === 'error' || !activeEl.src) {
+    const keep = s.state === 'error' ? 0 : s.pos;
     const id = s.queue[s.index];
     void load(s.index, true);
-    pendingSeek = id ? createPendingAudioSeek(id, keep) : null;
+    pendingSeek = keep > 0 && id ? createPendingAudioSeek(id, keep) : null;
     return;
   }
+  // Во время 'loading' не дёргаем <audio> до готовности потока
+  if (s.state === 'loading' || s.loading) return;
   if (activeEl.paused) {
     resumeAudioContextIfNeeded();
     resumeCrossfadeIfPaused();
@@ -2213,7 +2253,7 @@ function bindDeckEvents(deck: Deck) {
         void (async () => {
           try {
             logTrackTiming(reqId, 'stream_recover_start', `track="${track.title}" at=${playedSec.toFixed(2)}s`);
-            const fallback = await ytDlpSidecarStream(ytId, { requestId: reqId, priority: true });
+            const fallback = await ytDlpTrackStream(ytId, { requestId: reqId, priority: true });
             if (reqId !== currentRequestId || deck !== getActiveDeck() || deck.trackId !== track.id) return;
             if (!fallback?.url) throw new Error('No fallback stream URL');
             const resumeAt = Math.max(0, playedSec - 1);

@@ -3,36 +3,46 @@ import { Icon } from '../components/Icon';
 import { Button, EmptyState, Section } from '../components/ui';
 import { SkeletonRows, TrackList } from '../components/TrackList';
 import { t } from '../lib/i18n';
-import { searchTracks } from '../lib/api';
+import { mapYouTubeTrack, searchTracks } from '../lib/api';
+import { ytMusicSearchSuggestions } from '../lib/providers-api';
 import { registerTracks, searchLocal } from '../state/library';
+import { openSearch } from '../state/ui';
 import type { Track } from '../types';
 
 const cache = new Map<string, Track[]>();
 
 export function useRemote(q: string) {
   const key = q.toLowerCase();
-  const [st, setSt] = useState<{ key: string; items: Track[] | null; error: boolean }>({ key: '', items: null, error: false });
+  const [st, setSt] = useState<{ key: string; items: Track[] | null; suggestions: string[]; error: boolean }>({ key: '', items: null, suggestions: [], error: false });
   const [retry, setRetry] = useState(0);
   useEffect(() => {
     if (!q) return;
     const hit = cache.get(key);
     if (hit) {
-      setSt({ key, items: hit, error: false });
+      setSt({ key, items: hit, suggestions: [], error: false });
       return;
     }
-    setSt({ key, items: null, error: false });
+    setSt({ key, items: null, suggestions: [], error: false });
     const ac = new AbortController();
+    void ytMusicSearchSuggestions(q, ac.signal)
+      .then((res) => {
+        if (ac.signal.aborted) return;
+        const quickTracks = (res.tracks ?? []).map(mapYouTubeTrack);
+        if (quickTracks.length) registerTracks(quickTracks);
+        setSt((prev) => (prev.key === key && prev.items === null ? { ...prev, suggestions: res.queries ?? [] } : prev));
+      })
+      .catch(() => {});
     searchTracks(q, ac.signal)
       .then((r) => {
         registerTracks(r);
         cache.set(key, r);
-        setSt({ key, items: r, error: false });
+        setSt((prev) => ({ key, items: r, suggestions: prev.key === key ? prev.suggestions : [], error: false }));
       })
-      .catch((e: Error) => e.name !== 'AbortError' && setSt({ key, items: [], error: true }));
+      .catch((e: Error) => e.name !== 'AbortError' && setSt({ key, items: [], suggestions: [], error: true }));
     return () => ac.abort();
   }, [key, q, retry]);
   const fresh = st.key === key;
-  return { items: fresh ? st.items : null, error: fresh && st.error, loading: !!q && (!fresh || st.items === null), retry: () => setRetry((r) => r + 1) };
+  return { items: fresh ? st.items : null, suggestions: fresh ? st.suggestions : [], error: fresh && st.error, loading: !!q && (!fresh || st.items === null), retry: () => setRetry((r) => r + 1) };
 }
 
 function Results({ title, r, i }: { title: string; r: ReturnType<typeof useRemote>; i: number }) {
@@ -85,6 +95,22 @@ export function SearchResults({ q, loading: externalLoading }: { q: string; load
   }
   return (
     <div key={q}>
+      {remote.suggestions.length > 0 && (
+        <div className="mb-4 flex flex-wrap gap-2">
+          {remote.suggestions.map((s) => (
+            <button
+              key={s}
+              type="button"
+              data-ripple
+              className="chip sl text-xs"
+              onClick={() => openSearch(s)}
+            >
+              <Icon name="search" size={15} />
+              <span>{s}</span>
+            </button>
+          ))}
+        </div>
+      )}
       {local.length > 0 && (
         <Section title={t('inLibrary')} i={0}>
           <TrackList ids={local} />

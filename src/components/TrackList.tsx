@@ -30,7 +30,7 @@ export function LikeButton({ id, size = 'md', variant, className }: { id: string
           if (toggleLike(id)) setBurst((b) => b + 1);
         }}
       >
-        <Icon key={liked ? 'on' : 'off'} name="favorite" fill={liked} className={liked ? 'pop text-primary' : ''} />
+        <Icon key={liked ? 'on' : 'off'} name="favorite" fill={liked} className={cx(liked && 'text-primary', burst > 0 && liked && 'pop')} />
       </button>
       {burst > 0 && (
         <span key={burst} className="burst" aria-hidden="true">
@@ -116,11 +116,12 @@ type RowProps = {
   index: number;
   isCurrent: boolean;
   isPlaying: boolean;
+  animateRow?: boolean;
   playlistId?: string;
   onPlayIndex: (index: number) => void;
 };
 
-export const TrackRow = memo(function TrackRow({ id, index, isCurrent, isPlaying, playlistId, onPlayIndex }: RowProps) {
+export const TrackRow = memo(function TrackRow({ id, index, isCurrent, isPlaying, animateRow = true, playlistId, onPlayIndex }: RowProps) {
   const disliked = useStore(library, () => isDisliked(id));
   const [anchor, setAnchor] = useState<HTMLElement | null>(null);
   const hoverTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -139,17 +140,17 @@ export const TrackRow = memo(function TrackRow({ id, index, isCurrent, isPlaying
   return (
     <div
       role="listitem"
-      className="track-row sl anim-in"
+      className={cx('track-row sl', animateRow && 'anim-in')}
       data-ripple
       data-current={isCurrent}
       data-disliked={disliked}
-      style={{ '--i': index, contentVisibility: index > 24 ? 'auto' : undefined, containIntrinsicSize: index > 24 ? 'auto 62px' : undefined } as Vars}
+      style={{ '--i': index } as Vars}
       onMouseEnter={() => {
         if (hoverTimerRef.current !== null) clearTimeout(hoverTimerRef.current);
         hoverTimerRef.current = setTimeout(() => {
           hoverTimerRef.current = null;
           prefetchTrackByIdLowPriority(id);
-        }, 380);
+        }, 120);
       }}
       onMouseLeave={() => {
         // При уходе курсора отменяем только таймер дебаунса, не убивая уже запущенный процесс
@@ -165,8 +166,13 @@ export const TrackRow = memo(function TrackRow({ id, index, isCurrent, isPlaying
         }
         e.preventDefault();
         e.stopPropagation();
-        if (isCurrent) toggle();
-        else onPlayIndex(index);
+        if (isCurrent) {
+          const st = player.get();
+          if (st.state === 'error' || st.state === 'loading' || st.loading) onPlayIndex(index);
+          else toggle();
+        } else {
+          onPlayIndex(index);
+        }
       }}
     >
       <div className="row-idx">
@@ -204,7 +210,7 @@ export const TrackRow = memo(function TrackRow({ id, index, isCurrent, isPlaying
 const INITIAL_BATCH = 48;
 const BATCH_STEP = 80;
 
-export function TrackList({ ids, playlistId }: { ids: string[]; playlistId?: string }) {
+export function TrackList({ ids, playlistId, animateRows = true }: { ids: string[]; playlistId?: string; animateRows?: boolean }) {
   const cur = useStore(player, (s) => s.queue[s.index] ?? null);
   const playing = useStore(player, (s) => s.playing);
   const [visibleCount, setVisibleCount] = useState(() => Math.min(ids.length, INITIAL_BATCH));
@@ -239,9 +245,9 @@ export function TrackList({ ids, playlistId }: { ids: string[]; playlistId?: str
   const slice = visibleCount < ids.length ? ids.slice(0, visibleCount) : ids;
 
   return (
-    <div role="list" className="flex flex-col gap-0.5">
+    <div role="list" className={cx('flex flex-col gap-0.5', !animateRows && 'track-list-no-anim')}>
       {slice.map((id, i) => (
-        <TrackRow key={id} id={id} index={i} isCurrent={id === cur} isPlaying={id === cur && playing} playlistId={playlistId} onPlayIndex={onPlayIndex} />
+        <TrackRow key={id} id={id} index={i} isCurrent={id === cur} isPlaying={id === cur && playing} animateRow={animateRows} playlistId={playlistId} onPlayIndex={onPlayIndex} />
       ))}
     </div>
   );
@@ -273,7 +279,15 @@ export function MediaCard({ track, list, index }: { track: Track; list: string[]
       className="mcard sl anim-in"
       data-current={isCur}
       style={{ '--i': index } as Vars}
-      onClick={() => (isCur ? toggle() : playQueue(list, index))}
+      onClick={() => {
+        if (isCur) {
+          const st = player.get();
+          if (st.state === 'error' || st.state === 'loading' || st.loading) playQueue(list, index);
+          else toggle();
+        } else {
+          playQueue(list, index);
+        }
+      }}
     >
       <div className="relative">
         <Cover src={track.cover} className="mcard-cover" />

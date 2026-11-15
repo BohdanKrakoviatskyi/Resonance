@@ -54,8 +54,7 @@
       "icons/icon.ico"
     ],
     "externalBin": [
-      "binaries/local-api",
-      "binaries/ytmusic-worker"
+      "binaries/local-api"
     ]
   },
   "plugins": {
