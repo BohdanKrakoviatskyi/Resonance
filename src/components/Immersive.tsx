@@ -7,7 +7,7 @@ import { Controls, Seek, TimeNow, TimeTotal } from './Seek';
 import { DislikeButton, LikeButton, PlaylistPicker, SourcePill } from './TrackList';
 import { clamp, cx, useStore } from '../lib/util';
 import { t, type Key } from '../lib/i18n';
-import { supportsVT } from '../lib/motion';
+import { supportsVT, vtBlurSafe } from '../lib/motion';
 import { getTrack, library } from '../state/library';
 import {
   EQ_BANDS,
@@ -36,7 +36,7 @@ const PRESET_OPTIONS: { value: EqPreset; labelKey: Key }[] = [
 ];
 
 /** Interactive 3D Coverflow carousel with Play badge on previewed tracks and a "Back to playing" pill. */
-function CoverCarousel({ activeIndex, queue }: { activeIndex: number; queue: string[] }) {
+function CoverCarousel({ activeIndex, queue, vt }: { activeIndex: number; queue: string[]; vt: boolean }) {
   const [browseIndex, setBrowseIndex] = useState(activeIndex);
 
   useEffect(() => {
@@ -120,7 +120,7 @@ function CoverCarousel({ activeIndex, queue }: { activeIndex: number; queue: str
               }}
             >
               {isCenter && itemIdx === activeIndex ? (
-                <ArtCover src={tr.cover ?? tr.thumb} vt="np-cover" className="h-full w-full" />
+                <ArtCover src={tr.cover ?? tr.thumb} vt={vt ? 'np-cover' : undefined} className="h-full w-full" />
               ) : (
                 <Cover src={tr.cover ?? tr.thumb} className="h-full w-full" />
               )}
@@ -428,7 +428,8 @@ function ImmersiveVolumeControl() {
 /** Fullscreen lyrics & equalizer: interactive cover carousel + controls on the left, lyrics/EQ on the right. */
 export function Immersive() {
   const open = useStore(ui, (s) => s.immersive);
-  const vt = supportsVT();
+  // В WebKit VT-снапшоты теряют блюр (bug 302256) — immersive идёт живым presence-фейдом.
+  const vt = supportsVT() && vtBlurSafe;
   const { mounted, visible } = usePresence(open, vt ? 0 : 480);
   const track = useCurrentTrack();
   const queue = useStore(player, (s) => s.queue);
@@ -499,7 +500,7 @@ export function Immersive() {
       {track && (
         <div className="imm-grid">
           <div className="imm-left">
-            <CoverCarousel activeIndex={activeIndex} queue={queue} />
+            <CoverCarousel activeIndex={activeIndex} queue={queue} vt={vt} />
             <div key={track.id} className="imm-meta meta-in">
               <h1 className="imm-title display">{track.title}</h1>
               <div className="mt-2 flex items-center gap-2 max-[900px]:justify-center">
