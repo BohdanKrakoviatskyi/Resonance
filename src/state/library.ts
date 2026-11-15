@@ -62,8 +62,8 @@ function purgeRetiredSpotifyStorage() {
         delete parsedUi.foldSpotify;
         changedUi = true;
       }
-      if (parsedUi.favProvider !== 'soundcloud' && parsedUi.favProvider !== 'youtube') {
-        parsedUi.favProvider = 'soundcloud';
+      if (parsedUi.favProvider !== 'all' && parsedUi.favProvider !== 'soundcloud' && parsedUi.favProvider !== 'youtube') {
+        parsedUi.favProvider = 'all';
         changedUi = true;
       }
       if (changedUi) {
@@ -505,6 +505,7 @@ let likedIdsSet = new Set<string>();
 let dislikedIdsSet = new Set<string>();
 let favSoundCloudIds: string[] = [];
 let favYouTubeIds: string[] = [];
+let favAllIds: string[] = [];
 
 function ensureLibraryIndexes(s = library.get()) {
   if (
@@ -564,6 +565,27 @@ function ensureLibraryIndexes(s = library.get()) {
 
   favSoundCloudIds = buildFavList('soundcloud', s.soundcloudLiked);
   favYouTubeIds = buildFavList('youtube', s.ytmusicLiked);
+
+  const allSeen = new Set<string>();
+  const allOut: string[] = [];
+  for (const id of s.liked) {
+    if (allSeen.has(id) || dislikedIdsSet.has(id)) continue;
+    if (s.cache[id] ?? volatile.get(id)) {
+      allSeen.add(id);
+      allOut.push(id);
+    }
+  }
+  for (const tr of s.soundcloudLiked) {
+    if (allSeen.has(tr.id) || dislikedIdsSet.has(tr.id)) continue;
+    allSeen.add(tr.id);
+    allOut.push(tr.id);
+  }
+  for (const tr of s.ytmusicLiked) {
+    if (allSeen.has(tr.id) || dislikedIdsSet.has(tr.id)) continue;
+    allSeen.add(tr.id);
+    allOut.push(tr.id);
+  }
+  favAllIds = allOut;
 }
 
 export const isLiked = (id: string) => {
@@ -576,8 +598,9 @@ export const isDisliked = (id: string) => {
   return dislikedIdsSet.has(id);
 };
 
-export const getFavoriteIds = (provider: 'soundcloud' | 'youtube'): string[] => {
+export const getFavoriteIds = (provider: 'all' | 'soundcloud' | 'youtube'): string[] => {
   ensureLibraryIndexes();
+  if (provider === 'all') return favAllIds;
   if (provider === 'soundcloud') return favSoundCloudIds;
   return favYouTubeIds;
 };

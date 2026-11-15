@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { Icon } from '../components/Icon';
 import { Button, EmptyState, IconButton, Loader } from '../components/ui';
 import { FavCover, PlaylistCover } from '../components/Cover';
@@ -49,6 +49,10 @@ export default function Collection({ kind, id }: { kind: 'favorites' | 'playlist
   const [ytLoading, setYtLoading] = useState(false);
   const [ytError, setYtError] = useState('');
   const [manualRefreshing, setManualRefreshing] = useState(false);
+  const [favSearchOpen, setFavSearchOpen] = useState(false);
+  const [favQuery, setFavQuery] = useState('');
+  const favSearchWrapRef = useRef<HTMLDivElement>(null);
+  const favSearchRef = useRef<HTMLInputElement>(null);
   const cache = useStore(library, (s) => s.cache);
 
   const ytCollectionTracks = ytCollection?.kind === 'liked' ? ytmusicLiked : cachedYtTracks ?? [];
@@ -139,6 +143,16 @@ export default function Collection({ kind, id }: { kind: 'favorites' | 'playlist
     return sourceIds.filter((trackId) => !!getTrack(trackId));
   }, [kind, liked, soundcloudLiked, ytmusicLiked, disliked, cache, favProvider, pl]);
 
+  const normalizedQuery = kind === 'favorites' ? favQuery.trim().toLowerCase() : '';
+  const visibleIds = useMemo(() => {
+    if (!normalizedQuery) return ids;
+    return ids.filter((trackId) => {
+      const tr = getTrack(trackId);
+      if (!tr) return false;
+      return `${tr.title} ${tr.artist} ${tr.album ?? ''}`.toLowerCase().includes(normalizedQuery);
+    });
+  }, [ids, normalizedQuery]);
+
   // При открытии плейлиста (с задержкой 300 мс) ставим в фоновый префетч (priority: false) только топ-2 первых трека
   useEffect(() => {
     if (!ids.length) return;
@@ -148,11 +162,13 @@ export default function Collection({ kind, id }: { kind: 'favorites' | 'playlist
     return () => clearTimeout(timer);
   }, [kind, id, favProvider, ids[0], ids[1]]);
 
-  const playingHere = useStore(player, (s) => s.playing && ids.includes(s.queue[s.index]));
+  const playingHere = useStore(player, (s) => s.playing && visibleIds.includes(s.queue[s.index]));
 
   const virtualCollection = ytCollection?.kind === 'liked';
   const favProviderLoading =
-    favProvider === 'soundcloud'
+    favProvider === 'all'
+      ? soundcloudLibraryLoading && ytmusicLibraryLoading
+      : favProvider === 'soundcloud'
       ? soundcloudLibraryLoading
       : ytmusicLibraryLoading;
   const isRefreshingFavorites = manualRefreshing || soundcloudLibraryLoading || ytmusicLibraryLoading;
@@ -256,42 +272,115 @@ export default function Collection({ kind, id }: { kind: 'favorites' | 'playlist
       </div>
     );
 
-  const total = ids.reduce((a, x) => a + (getTrack(x)?.duration ?? 0), 0);
+  const total = visibleIds.reduce((a, x) => a + (getTrack(x)?.duration ?? 0), 0);
   const name = kind === 'favorites' ? t('favorites') : pl!.name;
 
   return (
     <div className="page">
       <header className="anim-in relative mb-8 mt-2 flex flex-col items-center gap-6 text-center @2xl:flex-row @2xl:items-end @2xl:text-left">
         {kind === 'favorites' && (
-          <div className="flex items-center gap-1.5 self-end @2xl:absolute @2xl:right-0 @2xl:top-0">
-            <div className="seg seg-sm" role="group" aria-label={t('providers')}>
+          <div className="flex flex-wrap items-center justify-end gap-1.5 self-end @2xl:absolute @2xl:right-0 @2xl:top-0">
+            <div className="seg seg-sm fav-seg" role="group" aria-label={t('providers')}>
               <button
                 type="button"
                 data-ripple
                 className="sl"
+                aria-pressed={favProvider === 'all'}
+                onClick={() => ui.set({ favProvider: 'all' })}
+              >
+                <span>{t('favoritesAll')}</span>
+              </button>
+              <button
+                type="button"
+                data-ripple
+                className="sl"
+                aria-label="SoundCloud"
+                data-tip="SoundCloud"
                 aria-pressed={favProvider === 'soundcloud'}
                 onClick={() => ui.set({ favProvider: 'soundcloud' })}
               >
                 <img src={soundcloudLogo} alt="" aria-hidden="true" className="provider-logo" />
-                <span>SoundCloud</span>
               </button>
               <button
                 type="button"
                 data-ripple
                 className="sl"
+                aria-label="YouTube Music"
+                data-tip="YouTube Music"
                 aria-pressed={favProvider === 'youtube'}
                 onClick={() => ui.set({ favProvider: 'youtube' })}
               >
                 <img src={youtubeMusicLogo} alt="" aria-hidden="true" className="provider-logo" />
-                <span>YouTube Music</span>
               </button>
+            </div>
+            <div
+              ref={favSearchWrapRef}
+              className="fav-search-pill"
+              data-open={favSearchOpen || Boolean(favQuery)}
+              onBlur={(e) => {
+                if (!favSearchWrapRef.current?.contains(e.relatedTarget as Node | null) && !favQuery.trim()) {
+                  setFavSearchOpen(false);
+                }
+              }}
+            >
+              <button
+                type="button"
+                data-ripple
+                className="fav-search-trigger sl"
+                aria-label={t('favoritesSearchPlaceholder')}
+                data-tip={favSearchOpen ? undefined : t('favoritesSearchPlaceholder')}
+                tabIndex={favSearchOpen ? -1 : 0}
+                onClick={() => {
+                  setFavSearchOpen(true);
+                  requestAnimationFrame(() => favSearchRef.current?.focus());
+                }}
+              >
+                <Icon name="search" size={18} />
+              </button>
+              <input
+                ref={favSearchRef}
+                className="fav-search-input"
+                value={favQuery}
+                tabIndex={favSearchOpen || Boolean(favQuery) ? 0 : -1}
+                onChange={(e) => setFavQuery(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Escape') {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    setFavQuery('');
+                    setFavSearchOpen(false);
+                    favSearchRef.current?.blur();
+                  }
+                }}
+                placeholder={t('favoritesSearchPlaceholder')}
+                aria-label={t('favoritesSearchPlaceholder')}
+                enterKeyHint="search"
+              />
+              {(favSearchOpen || favQuery) && (
+                <button
+                  type="button"
+                  data-ripple
+                  className="fav-search-clear sl"
+                  aria-label={t('cancel')}
+                  onClick={() => {
+                    if (favQuery) {
+                      setFavQuery('');
+                      favSearchRef.current?.focus();
+                    } else {
+                      setFavSearchOpen(false);
+                    }
+                  }}
+                >
+                  <Icon name="close" size={16} />
+                </button>
+              )}
             </div>
             <button
               type="button"
               data-ripple
               disabled={isRefreshingFavorites}
               aria-label={t('providerRefresh')}
-              title={t('providerRefresh')}
+              data-tip={t('providerRefresh')}
               onClick={() => void refreshFavoritesAndPlaylists()}
               className="sl inline-flex h-[36px] w-[36px] shrink-0 items-center justify-center rounded-full bg-[color-mix(in_oklab,var(--md-on-surface)_8%,transparent)] text-on-surface-variant transition-colors disabled:pointer-events-none disabled:opacity-50"
             >
@@ -312,19 +401,19 @@ export default function Collection({ kind, id }: { kind: 'favorites' | 'playlist
           <div className="label-up">{t(kind === 'favorites' ? 'collection' : 'playlist')}</div>
           <h1 className="display my-2 break-words text-[clamp(34px,6.5cqw,72px)]">{name}</h1>
           <div className="font-medium text-on-surface-variant">
-            {tracksLabel(ids.length)}
+            {tracksLabel(visibleIds.length)}
             {total > 0 && ` · ${durLabel(total)}`}
           </div>
           <div className="mt-5 flex flex-wrap items-center justify-center gap-2 @2xl:justify-start">
             <Button
               size="lg"
               icon={playingHere ? 'pause' : 'play_arrow'}
-              disabled={!ids.length}
-              onClick={() => (playingHere ? toggle() : playQueue(ids, 0, false))}
+              disabled={!visibleIds.length}
+              onClick={() => (playingHere ? toggle() : playQueue(visibleIds, 0, false))}
             >
               {playingHere ? t('pause') : t('play')}
             </Button>
-            <Button size="lg" variant="tonal" icon="shuffle" disabled={!ids.length} onClick={() => shufflePlay(ids)}>
+            <Button size="lg" variant="tonal" icon="shuffle" disabled={!visibleIds.length} onClick={() => shufflePlay(visibleIds)}>
               {t('shuffle')}
             </Button>
             {kind === 'playlist' && !isProviderPlaylist && (
@@ -351,8 +440,19 @@ export default function Collection({ kind, id }: { kind: 'favorites' | 'playlist
             </Button>
           }
         />
-      ) : ids.length ? (
-        <TrackList ids={ids} playlistId={kind === 'playlist' && !isProviderPlaylist ? pl!.id : undefined} />
+      ) : visibleIds.length ? (
+        <TrackList ids={visibleIds} playlistId={kind === 'playlist' && !isProviderPlaylist ? pl!.id : undefined} />
+      ) : normalizedQuery && ids.length > 0 ? (
+        <EmptyState
+          icon="search_off"
+          title={t('noResults')}
+          text={t('noResultsText')}
+          action={
+            <Button variant="tonal" icon="close" onClick={() => setFavQuery('')}>
+              {t('cancel')}
+            </Button>
+          }
+        />
       ) : (
         <EmptyState
           icon={kind === 'favorites' ? 'favorite' : 'queue_music'}

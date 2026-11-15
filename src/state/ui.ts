@@ -82,7 +82,7 @@ export const ui = createStore({
   foldYtMusic: false,
   foldSoundCloud: false,
   foldLocal: false,
-  favProvider: 'soundcloud' as 'soundcloud' | 'youtube',
+  favProvider: 'all' as 'all' | 'soundcloud' | 'youtube',
 });
 persist('lyra.ui.v1', ui, (s) => ({
   sidebar: s.sidebar,
@@ -94,8 +94,8 @@ persist('lyra.ui.v1', ui, (s) => ({
   favProvider: s.favProvider,
 }));
 
-if (ui.get().favProvider !== 'soundcloud' && ui.get().favProvider !== 'youtube') {
-  ui.set({ favProvider: 'soundcloud' });
+if (ui.get().favProvider !== 'all' && ui.get().favProvider !== 'soundcloud' && ui.get().favProvider !== 'youtube') {
+  ui.set({ favProvider: 'all' });
 }
 
 window.addEventListener('hashchange', () => {

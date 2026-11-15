@@ -111,8 +111,8 @@ export function persist<T extends object>(key: string, store: Store<T>, pick: (s
         }
         if (key === 'lyra.ui.v1') {
           delete parsed.foldSpotify;
-          if (parsed.favProvider !== 'soundcloud' && parsed.favProvider !== 'youtube') {
-            parsed.favProvider = 'soundcloud';
+          if (parsed.favProvider !== 'all' && parsed.favProvider !== 'soundcloud' && parsed.favProvider !== 'youtube') {
+            parsed.favProvider = 'all';
           }
         }
         const cleanedRaw = JSON.stringify(parsed);
