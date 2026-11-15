@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -308,6 +309,10 @@ pub struct YtStreamProxy {
     port: Arc<Mutex<Option<u16>>>,
     bin_lock: Arc<Mutex<bool>>,
     consecutive_403: Arc<Mutex<u32>>,
+    /// Generation counter for user-initiated resolves: each `resolve_yt_stream_url` command
+    /// bumps it, so stale resolves from rapid skip-spam can self-cancel instead of queueing
+    /// on the yt-dlp semaphores ahead of the newest (wanted) request.
+    resolve_epoch: Arc<AtomicU64>,
     disk_cache_path: PathBuf,
     ytdlp_cache_dir: PathBuf,
     token: String,
@@ -364,6 +369,7 @@ impl YtStreamProxy {
             port: Arc::new(Mutex::new(None)),
             bin_lock: Arc::new(Mutex::new(false)),
             consecutive_403: Arc::new(Mutex::new(0)),
+            resolve_epoch: Arc::new(AtomicU64::new(0)),
             disk_cache_path,
             ytdlp_cache_dir,
             token: uuid::Uuid::new_v4().simple().to_string(),
@@ -426,16 +432,33 @@ impl YtStreamProxy {
         Ok(local_port)
     }
 
+    /// Called once per user-initiated resolve: increments the generation and returns this
+    /// request's epoch. Any resolve holding an older epoch is stale and should bail.
+    pub fn begin_user_resolve(&self) -> u64 {
+        self.resolve_epoch.fetch_add(1, Ordering::Relaxed) + 1
+    }
+
+    fn is_stale(&self, epoch: Option<u64>) -> bool {
+        match epoch {
+            Some(ep) => self.resolve_epoch.load(Ordering::Relaxed) > ep,
+            None => false,
+        }
+    }
+
     pub async fn get_or_resolve_stream(
         &self,
         video_id: &str,
         force_refresh: bool,
         priority: bool,
+        epoch: Option<u64>,
     ) -> Result<(ResolvedYtStream, bool, u64, Vec<YtResolveAttemptTiming>), String> {
         let total_start = Instant::now();
         let trimmed = video_id.trim();
         if !is_valid_video_id(trimmed) {
             return Err("Некорректный ID видео YouTube.".to_string());
+        }
+        if self.is_stale(epoch) {
+            return Err("Запрос отменён: поступил более новый запрос.".to_string());
         }
 
         if !force_refresh {
@@ -516,6 +539,10 @@ impl YtStreamProxy {
         // 1) Уровень 1 (Быстрый встроенный Rust InnerTube VISIONOS): ~120-250 мс + быстрая проверка Range bytes=0-1023 на 206 Partial Content.
         //    Если /player вернул ошибку или googlevideo.com ответил 403/таймаутом при чтении первого байта — мгновенно переходим на Уровень 2!
         // 2) Уровень 2 (Надёжный фоллбэк через yt-dlp -g с web_embedded и Deno, раздельные семафоры для кликов и фона).
+        if self.is_stale(epoch) {
+            self.cleanup_inflight_entry(trimmed, &video_lock).await;
+            return Err("Запрос отменён: поступил более новый запрос.".to_string());
+        }
         let l1_start = Instant::now();
         match resolve_youtubei_player_stream(&self.http, trimmed).await {
             Ok(resolved) => {
@@ -603,7 +630,7 @@ impl YtStreamProxy {
 
         // Уровень 2 (Надёжный основной фоллбэк с Deno JS-решателем, дисковым --cache-dir и web_embedded):
         let l2_start = Instant::now();
-        let res = match self.resolve_via_ytdlp(trimmed, priority).await {
+        let res = match self.resolve_via_ytdlp(trimmed, priority, epoch).await {
             Ok(resolved) => {
                 let l2_ms = l2_start.elapsed().as_millis() as u64;
                 let total_ms = total_start.elapsed().as_millis() as u64;
@@ -719,6 +746,7 @@ impl YtStreamProxy {
         &self,
         video_id: &str,
         priority: bool,
+        epoch: Option<u64>,
     ) -> Result<ResolvedYtStream, String> {
         let sem_start = Instant::now();
         let lane_sem = if priority {
@@ -736,6 +764,11 @@ impl YtStreamProxy {
             .await
             .map_err(|_| "Общий семафор yt-dlp закрыт".to_string())?;
         let sem_wait_ms = sem_start.elapsed().as_millis();
+        // Stale resolve from skip-spam: release the just-acquired permits immediately so the
+        // newest click is not stuck waiting behind outdated requests.
+        if self.is_stale(epoch) {
+            return Err("Запрос отменён: поступил более новый запрос.".to_string());
+        }
 
         let env_start = Instant::now();
         let (ytdlp_bin, env_path) = self.ensure_ytdlp_environment().await?;
@@ -1203,7 +1236,7 @@ impl YtStreamProxy {
         }
 
         let start = Instant::now();
-        match self.resolve_via_ytdlp(YTDLP_WARMUP_VIDEO_ID, false).await {
+        match self.resolve_via_ytdlp(YTDLP_WARMUP_VIDEO_ID, false, None).await {
             Ok(resolved) => {
                 self.insert_cached_stream(YTDLP_WARMUP_VIDEO_ID, resolved)
                     .await;
@@ -2014,7 +2047,7 @@ async fn handle_proxy_connection(
 
     let resolve_start = Instant::now();
     let (mut resolved, mut cache_hit, mut resolve_ms, _) = match proxy
-        .get_or_resolve_stream(video_id, false, !is_prefetch)
+        .get_or_resolve_stream(video_id, false, !is_prefetch, None)
         .await
     {
         Ok(res) => res,
@@ -2063,7 +2096,7 @@ async fn handle_proxy_connection(
             }
         }
         let refresh_start = Instant::now();
-        match proxy.get_or_resolve_stream(video_id, false, true).await {
+        match proxy.get_or_resolve_stream(video_id, false, true, None).await {
             Ok((fresh, _, _, _)) => {
                 let fresh_ms = refresh_start.elapsed().as_millis() as u64;
                 resolved = fresh;
@@ -2466,9 +2499,12 @@ pub async fn resolve_yt_stream_url(
 ) -> Result<YtProxyStreamResponse, String> {
     let port = state.ensure_server_port().await?;
     let is_priority = priority.unwrap_or(true);
+    // User-initiated (priority) resolves bump the generation so stale resolves from rapid
+    // skipping self-cancel. Background preloads neither bump nor go stale.
+    let epoch = if is_priority { Some(state.begin_user_resolve()) } else { None };
     // Предварительно резолвим и кэшируем поток через Level 1 (VISIONOS) -> Level 2 (yt-dlp web_embedded + cache-dir)
     let (_, cache_hit, resolve_ms, attempts) = state
-        .get_or_resolve_stream(&video_id, false, is_priority)
+        .get_or_resolve_stream(&video_id, false, is_priority, epoch)
         .await?;
     let trimmed = video_id.trim();
     let mut query_parts = vec![format!("t={}", state.token)];

@@ -137,6 +137,9 @@ let errors = 0;
 let currentRequestId = 0;
 let fallbackAttemptedTrackId: string | null = null;
 let fallbackController: AbortController | null = null;
+// Aborted whenever a new load starts, so a stale skip's stream resolve (and its sidecar
+// fallback cascade) stops immediately instead of piling up behind newer requests.
+let resolveAbort: AbortController | null = null;
 const relatedFetched = new Set<string>();
 const recommendationSource = new Map<string, Track>();
 const ytStreamPrefetch = new Map<string, Promise<YtStreamResolveResult>>();
@@ -957,12 +960,13 @@ async function resolvePlayableStream(
   requestId?: number,
   clickEpochMs?: number,
   priority = true,
+  signal?: AbortSignal,
 ): Promise<ResolvedPlayableStream> {
   const t0 = performance.now();
   const ytId = extractYtVideoId(tr);
   if (isYouTubeTrack(tr) && ytId) {
     const reused = priority ? await takePrefetchedYtStream(ytId) : null;
-    const res = reused ?? (await ytDlpTrackStream(ytId, { requestId, clickTsMs: clickEpochMs, priority }));
+    const res = reused ?? (await ytDlpTrackStream(ytId, { requestId, clickTsMs: clickEpochMs, priority, signal }));
     return {
       url: res.url,
       hls: false,
@@ -1210,6 +1214,9 @@ async function load(i: number, autoplay: boolean, opts?: LoadOptions) {
     attempts: [],
   };
 
+  resolveAbort?.abort();
+  resolveAbort = new AbortController();
+
   logTrackTiming(
     reqId,
     'track_click',
@@ -1264,7 +1271,7 @@ async function load(i: number, autoplay: boolean, opts?: LoadOptions) {
       activeTrace.resolveStartedPerfMs = performance.now();
       logTrackTiming(reqId, 'resolve_start', `mode=crossfade source=${tr.source ?? 'unknown'}`, clickPerfMs);
 
-      const stream = await resolvePlayableStream(tr, reqId, clickEpochMs);
+      const stream = await resolvePlayableStream(tr, reqId, clickEpochMs, true, resolveAbort?.signal);
       if (reqId !== currentRequestId) {
         logTrackTiming(reqId, 'stale_aborted', `after=resolve_stream currentRequestId=${currentRequestId}`, clickPerfMs);
         return;
@@ -1382,7 +1389,7 @@ async function load(i: number, autoplay: boolean, opts?: LoadOptions) {
     activeTrace.resolveStartedPerfMs = performance.now();
     logTrackTiming(reqId, 'resolve_start', `mode=direct source=${tr.source ?? 'unknown'}`, clickPerfMs);
 
-    const stream = await resolvePlayableStream(tr, reqId, clickEpochMs);
+    const stream = await resolvePlayableStream(tr, reqId, clickEpochMs, true, resolveAbort?.signal);
     if (reqId !== currentRequestId) {
       logTrackTiming(reqId, 'stale_aborted', `after=resolve_stream currentRequestId=${currentRequestId}`, clickPerfMs);
       return;
