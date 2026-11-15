@@ -2,7 +2,8 @@ import { createStore, persist, uid } from '../lib/util';
 import type { Playlist, SoundCloudPlaylist, Track } from '../types';
 import {
   soundCloudAuthStatus, soundCloudPlaylistTracks, soundCloudPlaylistsMine, soundCloudTracksMine,
-  ytMusicAuthStatus, ytMusicLibrarySync, ytMusicPlaylistArtwork, ytMusicPlaylistTracks,
+  ytMusicAuthStatus, ytMusicLibraryCached, ytMusicLibrarySync, ytMusicPlaylistArtwork,
+  ytMusicPlaylistCached, ytMusicPlaylistTracks,
 } from '../lib/providers-api';
 import { mapSoundCloudTrack } from '../lib/api';
 import { mapYtMusicTracks, normalizeYtMusicPlaylist, type YtMusicPlaylist, type YtMusicProfile } from '../lib/ytmusic-library';
@@ -346,6 +347,21 @@ export function loadYtMusicLibrary(force = false): Promise<void> {
         return;
       }
       library.set({ ytmusicAuthorized: true, ytmusicProfile: auth.profile ?? cached.ytmusicProfile });
+      if (!force && cached.ytmusicLiked.length === 0 && cached.ytmusicPlaylists.length === 0) {
+        const sqlCached = await ytMusicLibraryCached().catch(() => null);
+        if (epoch !== ytmusicEpoch) return;
+        if (sqlCached && (sqlCached.likedSongs?.length || sqlCached.playlists?.length)) {
+          const cachedLiked = mapYtMusicTracks(sqlCached.likedSongs ?? []).filter(
+            (tr) => !CORRUPTED_REPLACED_FAVORITE_IDS.has(tr.id) && !library.get().disliked.includes(tr.id),
+          );
+          if (cachedLiked.length > 0) registerTracks(cachedLiked);
+          library.set({
+            ytmusicLiked: cachedLiked,
+            ytmusicPlaylists: visibleYtMusicPlaylists(sqlCached.playlists ?? []),
+            ytmusicProfile: sqlCached.profile ?? auth.profile ?? cached.ytmusicProfile ?? null,
+          });
+        }
+      }
       const result = await ytMusicLibrarySync();
       if (epoch !== ytmusicEpoch) return;
       const current = library.get();
@@ -432,7 +448,24 @@ export function loadYtMusicPlaylistTracks(playlistId: string, force = false): Pr
   const revalidate = () => {
     const existingPending = ytmusicPlaylistLoads.get(playlistId);
     if (existingPending) return existingPending;
-    const request = ytMusicPlaylistTracks(playlistId).then((playlist) => {
+    const request = (async () => {
+      if (!force && (!cached || cached.length === 0)) {
+        const sqlPl = await ytMusicPlaylistCached(playlistId).catch(() => null);
+        if (epoch === ytmusicEpoch && sqlPl?.tracks?.length) {
+          const sqlTracks = mapYtMusicTracks(sqlPl.tracks);
+          if (sqlTracks.length > 0) {
+            registerTracks(sqlTracks);
+            const sqlArt = sqlPl.artworkUrl || sqlTracks[0]?.cover || null;
+            library.set((state) => ({
+              ytmusicPlaylistTracks: { ...state.ytmusicPlaylistTracks, [playlistId]: sqlTracks },
+              ytmusicPlaylistArt: sqlArt && !state.ytmusicPlaylistArt[playlistId]
+                ? { ...state.ytmusicPlaylistArt, [playlistId]: sqlArt }
+                : state.ytmusicPlaylistArt,
+            }));
+          }
+        }
+      }
+      const playlist = await ytMusicPlaylistTracks(playlistId);
       const tracks = mapYtMusicTracks(playlist.tracks ?? []);
       if (tracks.length === 0) {
         throw new Error('Плейлист YouTube Music вернул 0 треков');
@@ -457,7 +490,7 @@ export function loadYtMusicPlaylistTracks(playlistId: string, force = false): Pr
         }));
       }
       return tracks;
-    }).finally(() => ytmusicPlaylistLoads.delete(playlistId));
+    })().finally(() => ytmusicPlaylistLoads.delete(playlistId));
     ytmusicPlaylistLoads.set(playlistId, request);
     return request;
   };

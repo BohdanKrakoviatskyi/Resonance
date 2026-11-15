@@ -22,8 +22,7 @@
     {
       "identifier": "shell:allow-spawn",
       "allow": [
-        { "name": "binaries/local-api", "sidecar": true, "args": false },
-        { "name": "binaries/ytmusic-worker", "sidecar": true, "args": false }
+        { "name": "binaries/local-api", "sidecar": true, "args": false }
       ]
     },
     "shell:allow-open",

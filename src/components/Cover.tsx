@@ -10,6 +10,7 @@ const loadedCoverUrls = new Set<string>();
 export function Cover({ src, className, style, icon = 'music_note' }: { src?: string; className?: string; style?: CSSProperties; icon?: IconName }) {
   const [okSrc, setOk] = useState<string | null>(() => (src && loadedCoverUrls.has(src) ? src : null));
   const [errSrc, setErr] = useState<string | null>(null);
+  const alreadyLoaded = Boolean(src && (okSrc === src || loadedCoverUrls.has(src)));
   return (
     <div className={cx('cover', className)} style={style}>
       <Icon name={icon} className="cover-ph" />
@@ -18,11 +19,11 @@ export function Cover({ src, className, style, icon = 'music_note' }: { src?: st
           key={src}
           src={src}
           alt=""
-          loading="lazy"
-          decoding="async"
+          loading={alreadyLoaded ? 'eager' : 'lazy'}
+          decoding={alreadyLoaded ? 'sync' : 'async'}
           referrerPolicy="no-referrer"
           draggable={false}
-          className={okSrc === src || loadedCoverUrls.has(src) ? 'ok' : ''}
+          className={alreadyLoaded ? 'ok instant' : ''}
           ref={(el) => {
             if (el?.complete && el.naturalWidth) {
               loadedCoverUrls.add(src);

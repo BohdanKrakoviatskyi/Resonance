@@ -29,7 +29,12 @@ tauri-plugin-global-shortcut = "2"
 tauri-plugin-updater = "2"
 tauri-plugin-process = "2"
 tokio = { version = "1.44", features = ["net", "io-util", "sync", "time", "macros", "rt-multi-thread", "process", "fs"] }
-reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream", "gzip"] }
 sha2 = "0.10"
+sha1 = "0.10"
+bytes = "1"
+futures-util = "0.3"
+rusqlite = { version = "0.32", features = ["bundled"] }
 keyring = { version = "3.6", features = ["windows-native", "apple-native", "sync-secret-service"] }
 url = "2.5"
+rquickjs = "0.14.0"
