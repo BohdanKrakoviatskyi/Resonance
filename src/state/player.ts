@@ -690,11 +690,13 @@ function resolveNextQueueIndex(dir: 1 | -1, auto: boolean): number | 'repeat-one
   for (let k = 0; k < n; k++) {
     i += dir;
     if (i >= n) {
+      // Shuffle is an infinite radio: at the end of the queue we extend it with recommendations
+      // instead of wrapping around (which would replay the same finite list) or stopping.
+      const track = currentTrack();
+      if (s.shuffle && track && (track.source === 'soundcloud' || isYouTubeTrack(track) || recommendationSource.has(track.id))) {
+        return 'end-shuffle';
+      }
       if (auto && s.repeat === 'off') {
-        const track = currentTrack();
-        if (s.shuffle && track && (track.source === 'soundcloud' || isYouTubeTrack(track) || recommendationSource.has(track.id))) {
-          return 'end-shuffle';
-        }
         return null;
       }
       i = 0;
@@ -1337,6 +1339,7 @@ async function load(i: number, autoplay: boolean, opts?: LoadOptions) {
 
     if (reqId !== currentRequestId) return;
     if (tr.source === 'soundcloud' || isYouTubeTrack(tr)) void prefetchRelated(tr);
+    maybeExtendShuffleQueue(tr);
     scheduleLowPriorityUpcomingPrefetch(reqId, i);
     pushRecent(id);
     mediaMeta(tr);
@@ -1458,6 +1461,7 @@ async function load(i: number, autoplay: boolean, opts?: LoadOptions) {
   }
   if (reqId !== currentRequestId) return;
   if (tr.source === 'soundcloud' || isYouTubeTrack(tr)) void prefetchRelated(tr);
+  maybeExtendShuffleQueue(tr);
   scheduleLowPriorityUpcomingPrefetch(reqId, i);
   pushRecent(id);
   mediaMeta(tr);
@@ -1601,10 +1605,14 @@ export function playQueue(ids: string[], start = 0, shuffle?: boolean) {
   let idx = clamp(start, 0, q.length - 1);
   if (sh) {
     original = q.slice();
+    setShuffleAnchors(q);
     const first = q[idx];
     q = [first, ...shuffled(q.filter((_, k) => k !== idx))];
     idx = 0;
-  } else original = null;
+  } else {
+    original = null;
+    setShuffleAnchors(null);
+  }
   player.set({ queue: q, shuffle: sh });
   const manualFade = getCrossfadeDuration() > 0 ? MANUAL_CROSSFADE_SECONDS : 0;
   void load(idx, true, { crossfadeSec: manualFade });
@@ -1613,6 +1621,23 @@ export function playQueue(ids: string[], start = 0, shuffle?: boolean) {
 export const shufflePlay = (ids: string[]) => ids.length && playQueue(ids, Math.floor(Math.random() * ids.length), true);
 
 const relatedRequests = new Map<string, Promise<Track[]>>();
+
+/** Keep at least this many upcoming tracks in the queue while shuffle is on ("infinite radio"). */
+const SHUFFLE_KEEP_AHEAD = 4;
+
+/** Style anchors: tracks from the search/playlist the shuffle was started from. */
+let shuffleAnchorIds: string[] = [];
+
+function sampleAnchors(ids: string[]): string[] {
+  if (ids.length <= 8) return ids.slice();
+  const out: string[] = [];
+  for (let k = 0; k < 8; k += 1) out.push(ids[Math.floor((k * ids.length) / 8)]);
+  return out;
+}
+
+function setShuffleAnchors(ids: string[] | null) {
+  shuffleAnchorIds = ids ? sampleAnchors(ids) : [];
+}
 
 function prefetchRelated(track: Track): Promise<Track[]> {
   if (!track.nativeId || relatedFetched.has(track.id)) return Promise.resolve([]);
@@ -1632,9 +1657,14 @@ function prefetchRelated(track: Track): Promise<Track[]> {
   return request;
 }
 
-async function appendRelatedAndContinue(track: Track) {
+/**
+ * Extends the shuffle queue with style-matched recommendations (YouTube Music radio / SoundCloud related)
+ * seeded by the current track + shuffle anchors (the search/playlist shuffle started from).
+ * Returns how many tracks were appended (0 when nothing was added).
+ */
+async function extendShuffleQueue(track: Track): Promise<number> {
   const state = player.get();
-  if (!state.shuffle || currentTrack()?.id !== track.id) return;
+  if (!state.shuffle || currentTrack()?.id !== track.id) return 0;
 
   const source = recommendationSource.get(track.id) ?? track;
   const libraryState = library.get();
@@ -1646,35 +1676,63 @@ async function appendRelatedAndContinue(track: Track) {
     ...Object.values(libraryState.soundcloudPlaylistTracks).flatMap((items) => items.map((item) => item.id)),
     ...Object.keys(libraryState.cache),
   ]);
+  // Anchor-first but drifting: the search/playlist shuffle started from defines the style,
+  // while recently played tracks rotate through the seeds so each extension pulls a fresh
+  // radio pool instead of re-ranking the same frozen one (which made the queue repeat).
+  const anchorSet = new Set(shuffleAnchorIds);
+  const history = player
+    .get()
+    .queue.slice(0, player.get().index + 1)
+    .reverse()
+    .filter((id) => id !== source.id && !anchorSet.has(id));
   const seedIds = [
-    ...player.get().queue.slice(0, player.get().index + 1).reverse(),
+    source.id,
+    ...shuffleAnchorIds.slice(0, 2),
+    ...history,
     ...libraryState.recent,
     ...libraryState.liked,
     ...libraryState.playlists.flatMap((playlist) => playlist.ids),
     ...libraryState.soundcloudLiked.map((item) => item.id),
   ];
-  const seeds = [...new Set([source.id, ...seedIds])]
+  const seeds = [...new Set(seedIds)]
     .map((id) => getTrack(id))
     .filter((item): item is Track => Boolean(item))
     .slice(0, 5);
   const results = await Promise.allSettled(seeds.map(prefetchRelated));
-  if (currentTrack()?.id !== track.id) return;
+  if (currentTrack()?.id !== track.id) return 0;
 
   const related = [...new Map(results.flatMap((result) => result.status === 'fulfilled' ? result.value : [])
     .map((item) => [item.id, item])).values()];
   const existing = new Set(player.get().queue);
   const disliked = new Set(library.get().disliked);
   const candidates = shuffled(rankRecommendations(seeds, related, existing, disliked, known)).slice(0, 20);
-  if (!candidates.length) {
+  if (!candidates.length) return 0;
+  registerTracks(candidates);
+  const queue = [...player.get().queue, ...candidates.map((candidate) => candidate.id)];
+  if (original) original.push(...candidates.map((candidate) => candidate.id));
+  player.set({ queue });
+  return candidates.length;
+}
+
+async function appendRelatedAndContinue(track: Track) {
+  const appended = await extendShuffleQueue(track);
+  if (appended <= 0) {
     setPlayerMachineState('paused');
     return;
   }
-  registerTracks(candidates);
-  const queue = [...player.get().queue, ...candidates.map((candidate) => candidate.id)];
-  const nextIndex = queue.length - candidates.length;
-  if (original) original.push(...candidates.map((candidate) => candidate.id));
-  player.set({ queue });
+  const queue = player.get().queue;
+  const nextIndex = queue.length - appended;
   void load(nextIndex, true);
+}
+
+/** Keeps the queue topped up while shuffle is on so it behaves like an infinite radio. */
+function maybeExtendShuffleQueue(track: Track | null | undefined) {
+  if (!track) return;
+  const s = player.get();
+  if (!s.shuffle || currentTrack()?.id !== track.id) return;
+  const upcoming = s.queue.length - 1 - s.index;
+  if (upcoming >= SHUFFLE_KEEP_AHEAD) return;
+  void extendShuffleQueue(track).catch(() => {});
 }
 
 export function toggle() {
@@ -1833,12 +1891,14 @@ export function toggleShuffle() {
   const cur = s.queue[s.index];
   if (!s.shuffle) {
     original = s.queue.slice();
+    setShuffleAnchors(original);
     const rest = shuffled(s.queue.filter((_, k) => k !== s.index));
     player.set({ shuffle: true, queue: cur ? [cur, ...rest] : rest, index: cur ? 0 : -1 });
   } else {
     const q = original ?? s.queue;
     player.set({ shuffle: false, queue: q, index: Math.max(0, q.indexOf(cur)) });
     original = null;
+    setShuffleAnchors(null);
   }
   invalidateUpcomingPreload();
 }
