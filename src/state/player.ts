@@ -1,4 +1,5 @@
 import { useSyncExternalStore } from 'react';
+import { invoke } from '@tauri-apps/api/core';
 import Hls from 'hls.js';
 import { createStore, persist, clamp, shuffled, useStore } from '../lib/util';
 import { getTrack, library, pushRecent, isDisliked, ensureCached, registerTracks } from './library';
@@ -174,6 +175,9 @@ function logTrackTiming(reqId: number, stage: string, details: string, basePerfM
         ? Math.round(nowPerf - activeTrace.clickPerfMs)
         : 0;
   console.info(`[PlayerTiming][reqId=${reqId}][+${sinceClick}ms] stage=${stage} ${details}`);
+  // Дублируем в файловый журнал (~/.resonance/player-timing.log): в установленном приложении
+  // консоль вебвью недоступна, а файл позволяет диагностировать долгую загрузку/удвоение таймера.
+  void invoke('frontend_log', { message: `reqId=${reqId} +${sinceClick}ms stage=${stage} ${details}` }).catch(() => {});
 }
 
 type PlayerStatePatch = Omit<Partial<ReturnType<typeof player.get>>, 'state' | 'playing' | 'loading'>;
@@ -2071,6 +2075,11 @@ function bindDeckEvents(deck: Deck) {
     }
     if (isFinite(el.duration) && el.duration > 0) {
       const doubled = webkitDoubledDuration(track, el.duration);
+      logTrackTiming(
+        deck.requestId,
+        'loadedmetadata_duration',
+        `track="${track?.title ?? '?'}" id=${track?.id ?? '?'} src=${el.currentSrc.slice(0, 60)} meta=${track?.duration} elDuration=${el.duration} doubled=${doubled}`,
+      );
       player.set({ duration: doubled ?? el.duration });
     }
     if (!crossfadeSession) {
@@ -2092,6 +2101,7 @@ function bindDeckEvents(deck: Deck) {
       const doubled = webkitDoubledDuration(track, el.duration);
       if (doubled !== null && el.currentTime >= doubled - 0.25) {
         deck.forcedEndDone = true;
+        logTrackTiming(deck.requestId, 'webkit_forced_end', `track="${track.title}" meta=${track.duration} elDuration=${el.duration} at=${el.currentTime.toFixed(2)}`);
         if (deck === getActiveDeck() && deck.requestId === currentRequestId) next(true);
         return;
       }

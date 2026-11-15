@@ -4,7 +4,7 @@ use std::sync::Mutex;
 use std::time::Duration;
 
 use yt_proxy::{
-    YtStreamProxy, fetch_yt_playlist_tracks, resolve_yt_stream_url, search_yt_tracks,
+    YtStreamProxy, fetch_yt_playlist_tracks, frontend_log, resolve_yt_stream_url, search_yt_tracks,
     yt_radio_tracks,
 };
 use tauri::webview::Cookie;
@@ -530,6 +530,7 @@ pub fn run() {
             finish_splash,
             restart_app,
             resolve_yt_stream_url,
+            frontend_log,
             search_yt_tracks,
             yt_radio_tracks,
             fetch_yt_playlist_tracks

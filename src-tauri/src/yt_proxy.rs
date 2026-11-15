@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -313,6 +313,9 @@ pub struct YtStreamProxy {
     /// bumps it, so stale resolves from rapid skip-spam can self-cancel instead of queueing
     /// on the yt-dlp semaphores ahead of the newest (wanted) request.
     resolve_epoch: Arc<AtomicU64>,
+    /// macOS: гарантирует, что быстрый распакованный бандл скачивается в фоне не более
+    /// одного раза за запуск, пока запросы обслуживает более медленный бинарник.
+    bundle_provision_started: Arc<AtomicBool>,
     disk_cache_path: PathBuf,
     ytdlp_cache_dir: PathBuf,
     token: String,
@@ -370,6 +373,7 @@ impl YtStreamProxy {
             bin_lock: Arc::new(Mutex::new(false)),
             consecutive_403: Arc::new(Mutex::new(0)),
             resolve_epoch: Arc::new(AtomicU64::new(0)),
+            bundle_provision_started: Arc::new(AtomicBool::new(false)),
             disk_cache_path,
             ytdlp_cache_dir,
             token: uuid::Uuid::new_v4().simple().to_string(),
@@ -1161,12 +1165,18 @@ impl YtStreamProxy {
         };
 
         if let Some(found) = find_executable_in_dirs(ytdlp_name, &extra_dirs) {
+            // Нашли системный/устаревший бинарник, но бандла ещё нет: качаем быстрый бандл
+            // в фоне, чтобы следующие резолвы использовали его вместо медленного onefile.
+            #[cfg(target_os = "macos")]
+            self.spawn_ytdlp_bundle_provisioning();
             return Ok((found, combined_path));
         }
 
         // Если yt-dlp не найден в системе, скачиваем с официального GitHub Releases с проверкой SHA-256
         let mut lock = self.bin_lock.lock().await;
         if let Some(found) = find_executable_in_dirs(ytdlp_name, &extra_dirs) {
+            #[cfg(target_os = "macos")]
+            self.spawn_ytdlp_bundle_provisioning();
             return Ok((found, combined_path));
         }
 
@@ -1174,6 +1184,30 @@ impl YtStreamProxy {
         *lock = true;
 
         Ok((target_path, combined_path))
+    }
+
+    /// macOS: один раз за запуск скачивает и распаковывает быстрый бандл yt-dlp_macos в фоне.
+    /// Вызывается, когда резолв обслуживается более медленным бинарником (системным или legacy onefile).
+    #[cfg(target_os = "macos")]
+    fn spawn_ytdlp_bundle_provisioning(&self) {
+        if self.bundle_provision_started.swap(true, Ordering::SeqCst) {
+            return;
+        }
+        let http = self.http.clone();
+        let flag = self.bundle_provision_started.clone();
+        tokio::spawn(async move {
+            match download_and_verify_ytdlp(&http).await {
+                Ok(path) => println!(
+                    "[AudioProxy][YtDlp] Фоновая установка быстрого бандла завершена: {}",
+                    path.display()
+                ),
+                Err(e) => {
+                    eprintln!("[AudioProxy][YtDlp] Фоновая установка бандла не удалась: {e}");
+                    // Разрешаем повторную попытку при следующем резолве.
+                    flag.store(false, Ordering::SeqCst);
+                }
+            }
+        });
     }
 
     fn ytdlp_env_path(&self, app_bin: &Path) -> String {
@@ -1257,7 +1291,7 @@ impl YtStreamProxy {
     }
 }
 
-fn app_data_root_dir() -> PathBuf {
+pub(crate) fn app_data_root_dir() -> PathBuf {
     #[cfg(target_os = "windows")]
     {
         if let Ok(appdata) = std::env::var("APPDATA") {
@@ -2487,6 +2521,23 @@ fn parse_duration_ms(text: &str) -> Option<i64> {
         total_secs = total_secs * 60 + num;
     }
     Some(total_secs * 1000)
+}
+
+/// Диагностический журнал фронтенда: пишется в ~/.resonance/player-timing.log, чтобы
+/// поведение установленного приложения (где stdout недоступен) можно было проверить.
+#[tauri::command]
+pub async fn frontend_log(message: String) {
+    let now_ms = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis())
+        .unwrap_or(0);
+    let line = format!("[ts={now_ms}] {message}");
+    println!("[FrontendLog] {line}");
+    let path = app_data_root_dir().join("player-timing.log");
+    if let Ok(mut f) = tokio::fs::OpenOptions::new().create(true).append(true).open(path).await {
+        use tokio::io::AsyncWriteExt;
+        let _ = f.write_all(format!("{line}\n").as_bytes()).await;
+    }
 }
 
 #[tauri::command]
