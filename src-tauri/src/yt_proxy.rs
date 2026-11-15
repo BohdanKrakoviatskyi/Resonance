@@ -1108,21 +1108,17 @@ impl YtStreamProxy {
         let app_bin = app_data_bin_dir();
         let _ = std::fs::create_dir_all(&app_bin);
 
-        let extra_dirs = collect_tool_directories(&app_bin);
-        let current_path = std::env::var("PATH").unwrap_or_default();
-        let sep = if cfg!(target_os = "windows") {
-            ";"
-        } else {
-            ":"
-        };
-        let mut path_parts: Vec<String> = extra_dirs
-            .iter()
-            .map(|p| p.to_string_lossy().to_string())
-            .collect();
-        if !current_path.is_empty() {
-            path_parts.push(current_path);
+        #[cfg(target_os = "macos")]
+        {
+            // Распакованный бандл (yt-dlp_macos.zip) — самый быстрый вариант на macOS (~0.3 с против 11-19 с у onefile).
+            let bundled = app_bin.join("yt-dlp-macos").join("yt-dlp_macos");
+            if bundled.is_file() {
+                return Ok((bundled, self.ytdlp_env_path(&app_bin)));
+            }
         }
-        let combined_path = path_parts.join(sep);
+
+        let extra_dirs = collect_tool_directories(&app_bin);
+        let combined_path = join_search_path(&extra_dirs);
 
         let ytdlp_name = if cfg!(target_os = "windows") {
             "yt-dlp.exe"
@@ -1140,11 +1136,14 @@ impl YtStreamProxy {
             return Ok((found, combined_path));
         }
 
-        let target_path = app_bin.join(ytdlp_name);
-        download_and_verify_ytdlp(&self.http, &target_path).await?;
+        let target_path = download_and_verify_ytdlp(&self.http).await?;
         *lock = true;
 
         Ok((target_path, combined_path))
+    }
+
+    fn ytdlp_env_path(&self, app_bin: &Path) -> String {
+        join_search_path(&collect_tool_directories(app_bin))
     }
 
     pub async fn check_daily_ytdlp_update(&self) {
@@ -1169,6 +1168,7 @@ impl YtStreamProxy {
     }
 
     pub async fn trigger_ytdlp_self_update(&self) {
+        // Работает и для распакованного бандла macOS: onedir-сборки yt-dlp поддерживают `-U`.
         let Ok((ytdlp_bin, env_path)) = self.ensure_ytdlp_environment().await else {
             return;
         };
@@ -1330,8 +1330,33 @@ fn save_persisted_stream_cache(path: &Path, cache: &HashMap<String, ResolvedYtSt
     }
 }
 
+fn join_search_path(dirs: &[PathBuf]) -> String {
+    let sep = if cfg!(target_os = "windows") { ";" } else { ":" };
+    let mut parts: Vec<String> = dirs.iter().map(|p| p.to_string_lossy().to_string()).collect();
+    let current_path = std::env::var("PATH").unwrap_or_default();
+    if !current_path.is_empty() {
+        parts.push(current_path);
+    }
+    parts.join(sep)
+}
+
 fn collect_tool_directories(app_bin: &Path) -> Vec<PathBuf> {
     let mut dirs = Vec::new();
+
+    // На macOS app_bin идёт ПОСЛЕДНИМ: устаревший onefile `yt-dlp_macos` в кэше приложения
+    // стартует 11-19 с, поэтому системному (например, Homebrew) бинарнику приоритет ниже PATH, но выше legacy.
+    if cfg!(target_os = "macos") {
+        if let Ok(path_var) = std::env::var("PATH") {
+            let sep = if cfg!(target_os = "windows") { ';' } else { ':' };
+            for part in path_var.split(sep) {
+                let trimmed = part.trim();
+                if !trimmed.is_empty() {
+                    dirs.push(PathBuf::from(trimmed));
+                }
+            }
+        }
+    }
+
     dirs.push(app_bin.to_path_buf());
 
     #[cfg(target_os = "windows")]
@@ -1373,16 +1398,14 @@ fn collect_tool_directories(app_bin: &Path) -> Vec<PathBuf> {
         }
     }
 
-    if let Ok(path_var) = std::env::var("PATH") {
-        let sep = if cfg!(target_os = "windows") {
-            ';'
-        } else {
-            ':'
-        };
-        for part in path_var.split(sep) {
-            let trimmed = part.trim();
-            if !trimmed.is_empty() {
-                dirs.push(PathBuf::from(trimmed));
+    if !cfg!(target_os = "macos") {
+        if let Ok(path_var) = std::env::var("PATH") {
+            let sep = if cfg!(target_os = "windows") { ';' } else { ':' };
+            for part in path_var.split(sep) {
+                let trimmed = part.trim();
+                if !trimmed.is_empty() {
+                    dirs.push(PathBuf::from(trimmed));
+                }
             }
         }
     }
@@ -1400,14 +1423,144 @@ fn find_executable_in_dirs(exe_name: &str, dirs: &[PathBuf]) -> Option<PathBuf> 
     None
 }
 
-async fn download_and_verify_ytdlp(http: &Client, target_path: &Path) -> Result<(), String> {
-    let asset_name = if cfg!(target_os = "windows") {
-        "yt-dlp.exe"
-    } else if cfg!(target_os = "macos") {
-        "yt-dlp_macos"
-    } else {
-        "yt-dlp_linux"
-    };
+/// Скачивает yt-dlp с официального GitHub Releases с проверкой SHA-256 и возвращает путь к исполняемому файлу.
+/// На macOS используем `yt-dlp_macos.zip` (распакованный PyInstaller-бандл): одиночный `yt-dlp_macos`
+/// распаковывает себя в temp-каталог при КАЖДОМ запуске (11-19 с на старте), а распакованный бандл стартует за ~0.3 с.
+async fn download_and_verify_ytdlp(http: &Client) -> Result<PathBuf, String> {
+    let app_bin = app_data_bin_dir();
+    let _ = std::fs::create_dir_all(&app_bin);
+
+    #[cfg(target_os = "macos")]
+    {
+        let asset_name = "yt-dlp_macos.zip";
+        let sums_urls = [
+            "https://github.com/yt-dlp/yt-dlp/releases/latest/download/SHA2-256SUMS",
+            "https://github.com/yt-dlp/yt-dlp/releases/download/SHA2-256SUMS",
+        ];
+        let sums_text = download_first_ok(http, &sums_urls, "контрольных сумм yt-dlp").await?;
+        let expected_hash = sums_text
+            .lines()
+            .find_map(|line| {
+                let mut parts = line.split_whitespace();
+                let hash = parts.next()?;
+                let file = parts.next()?;
+                if file.trim_start_matches('*') == asset_name {
+                    Some(hash.to_lowercase())
+                } else {
+                    None
+                }
+            })
+            .ok_or_else(|| {
+                format!("Хэш SHA-256 для {asset_name} не найден в контрольных суммах yt-dlp")
+            })?;
+
+        let bin_url = format!(
+            "https://github.com/yt-dlp/yt-dlp/releases/latest/download/{asset_name}"
+        );
+        let bytes = http
+            .get(&bin_url)
+            .send()
+            .await
+            .map_err(|e| format!("Не удалось скачать {asset_name}: {e}"))?
+            .bytes()
+            .await
+            .map_err(|e| format!("Ошибка чтения архива {asset_name}: {e}"))?;
+
+        let mut hasher = Sha256::new();
+        hasher.update(&bytes);
+        let actual_hash = format!("{:x}", hasher.finalize());
+        if actual_hash != expected_hash {
+            return Err(format!(
+                "Проверка SHA-256 для {asset_name} не пройдена (ожидался {expected_hash}, получен {actual_hash})"
+            ));
+        }
+
+        let zip_path = app_bin.join(asset_name);
+        tokio::fs::write(&zip_path, &bytes)
+            .await
+            .map_err(|e| format!("Не удалось сохранить {asset_name}: {e}"))?;
+
+        let extract_dir = app_bin.join("yt-dlp-macos");
+        let _ = std::fs::remove_dir_all(&extract_dir);
+        std::fs::create_dir_all(&extract_dir)
+            .map_err(|e| format!("Не удалось создать каталог {extract_dir:?}: {e}"))?;
+        let unzip = Command::new("/usr/bin/unzip")
+            .arg("-o")
+            .arg("-q")
+            .arg(&zip_path)
+            .arg("-d")
+            .arg(&extract_dir)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .output()
+            .await;
+        let _ = tokio::fs::remove_file(&zip_path).await;
+        let unzipped = unzip.map_err(|e| format!("Не удалось запустить unzip: {e}"))?;
+        if !unzipped.status.success() {
+            return Err(format!(
+                "Распаковка {asset_name} не удалась: {}",
+                String::from_utf8_lossy(&unzipped.stderr).trim()
+            ));
+        }
+
+        let binary_path = extract_dir.join("yt-dlp_macos");
+        if !binary_path.is_file() {
+            return Err(format!(
+                "В распакованном {asset_name} отсутствует исполняемый файл yt-dlp_macos"
+            ));
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut perms = std::fs::metadata(&binary_path)
+                .map_err(|e| format!("Не удалось прочитать атрибуты {binary_path:?}: {e}"))?
+                .permissions();
+            perms.set_mode(0o755);
+            let _ = std::fs::set_permissions(&binary_path, perms);
+        }
+        println!(
+            "[AudioProxy][YtDlp] Установлен распакованный yt-dlp_macos (быстрый старт): {}",
+            binary_path.display()
+        );
+        return Ok(binary_path);
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    {
+        let asset_name = if cfg!(target_os = "windows") {
+            "yt-dlp.exe"
+        } else {
+            "yt-dlp_linux"
+        };
+        return download_single_ytdlp_asset(http, asset_name, &app_bin.join(asset_name)).await
+            .map(|_| app_bin.join(asset_name));
+    }
+}
+
+async fn download_first_ok(http: &Client, urls: &[&str], what: &str) -> Result<String, String> {
+    let mut last_err = String::new();
+    for url in urls {
+        match http.get(*url).send().await {
+            Ok(resp) => match resp.error_for_status() {
+                Ok(ok_resp) => match ok_resp.text().await {
+                    Ok(text) => return Ok(text),
+                    Err(e) => last_err = format!("Ошибка чтения {what}: {e}"),
+                },
+                Err(e) => last_err = format!("Не удалось загрузить {what}: {e}"),
+            },
+            Err(e) => last_err = format!("Не удалось загрузить {what}: {e}"),
+        }
+    }
+    Err(last_err)
+}
+
+#[cfg(not(target_os = "macos"))]
+async fn download_single_ytdlp_asset(
+    http: &Client,
+    asset_name: &str,
+    target_path: &Path,
+) -> Result<(), String> {
 
     let bin_url = format!("https://github.com/yt-dlp/yt-dlp/releases/latest/download/{asset_name}");
     let sums_urls = [
