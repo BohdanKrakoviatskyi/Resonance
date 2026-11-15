@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState } from 'react';
 import { Icon } from './Icon';
 import { IconButton, Slider, type Vars } from './ui';
 import { clamp, cx, fmtTime, useStore } from '../lib/util';
@@ -8,13 +8,16 @@ import { adjustVolumePos, cycleRepeat, dur, next, onFrame, player, prev, seek, s
 /** M3 Expressive wavy progress: the played part is a travelling sine wave that flattens when paused. */
 export function Seek({ big }: { big?: boolean }) {
   const wrap = useRef<HTMLDivElement>(null);
+  const svg = useRef<SVGSVGElement>(null);
   const clip = useRef<SVGRectElement>(null);
   const rest = useRef<SVGLineElement>(null);
+  const stop = useRef<SVGCircleElement>(null);
+  const waveEl = useRef<SVGPathElement>(null);
   const thumb = useRef<HTMLDivElement>(null);
   const bubble = useRef<HTMLDivElement>(null);
   const drag = useRef<number | null>(null);
+  const wRef = useRef(0);
   const [dragging, setDragging] = useState(false);
-  const [w, setW] = useState(0);
   const playing = useStore(player, (s) => s.playing);
   const has = useStore(player, (s) => s.index >= 0);
   const id = 'sk' + useId().replace(/[^a-zA-Z0-9]/g, '');
@@ -23,16 +26,39 @@ export function Seek({ big }: { big?: boolean }) {
   const L = big ? 36 : 28;
   const GAP = big ? 8 : 6;
 
+  // Геометрия (ширина, волна, точки) живёт в ref'ах и пишется напрямую в DOM:
+  // во время width-анимаций панелей ResizeObserver срабатывает каждый кадр —
+  // React-ре-рендер на каждый кадр (прежний setW) и был причиной дёрганья.
+  const syncGeometry = useCallback(() => {
+    const w = wRef.current;
+    svg.current?.setAttribute('width', String(w));
+    if (waveEl.current) {
+      const y = H / 2;
+      let p = `M ${-L} ${y}`;
+      for (let x = -L; x < w + L; x += L) p += ` q ${L / 4} ${-A * 2} ${L / 2} 0 t ${L / 2} 0`;
+      waveEl.current.setAttribute('d', p);
+    }
+    rest.current?.setAttribute('x2', String(Math.max(GAP, w - 4)));
+    stop.current?.setAttribute('cx', String(Math.max(0, w - 2)));
+  }, [H, A, L, GAP]);
+
   useLayoutEffect(() => {
     const el = wrap.current!;
-    const ro = new ResizeObserver(() => setW(el.clientWidth));
+    wRef.current = el.clientWidth;
+    syncGeometry();
+    const ro = new ResizeObserver(() => {
+      const nw = el.clientWidth;
+      if (nw === wRef.current) return;
+      wRef.current = nw;
+      syncGeometry();
+    });
     ro.observe(el);
-    setW(el.clientWidth);
     return () => ro.disconnect();
-  }, []);
+  }, [syncGeometry]);
 
   const paint = useCallback(
     (f: number) => {
+      const w = wRef.current;
       const x = clamp(f, 0, 1) * w;
       clip.current?.setAttribute('width', String(Math.max(0, x - GAP)));
       const x1 = Math.min(w - 4, x + GAP);
@@ -41,17 +67,8 @@ export function Seek({ big }: { big?: boolean }) {
       if (thumb.current) thumb.current.style.transform = `translateX(${x}px)`;
       if (bubble.current) bubble.current.style.transform = `translateX(${x}px) translateX(-50%)`;
     },
-    [w, GAP],
+    [GAP],
   );
-
-  useEffect(() => onFrame((ct, d) => drag.current == null && paint(d ? ct / d : 0)), [paint]);
-
-  const wave = useMemo(() => {
-    const y = H / 2;
-    let p = `M ${-L} ${y}`;
-    for (let x = -L; x < w + L; x += L) p += ` q ${L / 4} ${-A * 2} ${L / 2} 0 t ${L / 2} 0`;
-    return p;
-  }, [w, H, A, L]);
 
   const fx = (cx: number) => {
     const r = wrap.current!.getBoundingClientRect();
@@ -61,6 +78,8 @@ export function Seek({ big }: { big?: boolean }) {
     paint(f);
     if (bubble.current) bubble.current.textContent = fmtTime(f * dur());
   };
+
+  useEffect(() => onFrame((ct, d) => drag.current == null && paint(d ? ct / d : 0)), [paint]);
 
   return (
     <div
@@ -102,7 +121,7 @@ export function Seek({ big }: { big?: boolean }) {
         e.stopPropagation();
       }}
     >
-      <svg width={w} height={H} aria-hidden="true">
+      <svg ref={svg} width={0} height={H} aria-hidden="true">
         <defs>
           <clipPath id={id}>
             <rect ref={clip} x={0} y={-10} height={H + 20} width={0} />
@@ -110,11 +129,11 @@ export function Seek({ big }: { big?: boolean }) {
         </defs>
         <g clipPath={`url(#${id})`}>
           <g className="seek-wave" style={{ transformOrigin: `0 ${H / 2}px` }}>
-            <path d={wave} vectorEffect="non-scaling-stroke" />
+            <path ref={waveEl} vectorEffect="non-scaling-stroke" />
           </g>
         </g>
-        <line ref={rest} className="seek-rest" x1={GAP} x2={Math.max(GAP, w - 4)} y1={H / 2} y2={H / 2} />
-        <circle className="seek-stop" cx={Math.max(0, w - 2)} cy={H / 2} r={big ? 3 : 2} />
+        <line ref={rest} className="seek-rest" x1={GAP} x2={GAP} y1={H / 2} y2={H / 2} />
+        <circle ref={stop} className="seek-stop" cx={0} cy={H / 2} r={big ? 3 : 2} />
       </svg>
       <div ref={thumb} className="seek-thumb" />
       <div ref={bubble} className="seek-bubble" />

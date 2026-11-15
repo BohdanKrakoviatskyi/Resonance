@@ -15,3 +15,5 @@ api/local-api.exe
 *.key
 *.key.pub
 github-secrets.txt
+.playwright-mcp/
+graphify-out/
