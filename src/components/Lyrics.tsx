@@ -74,6 +74,7 @@ function SyncedLyrics({ lines, variant }: { lines: LyricLine[]; variant: 'panel'
   const [isManual, setIsManual] = useState(false);
   const [h, setH] = useState(0);
   const idle = useRef(0);
+  const lpRef = useRef({ i: -1, p: -1 });
   const touchY = useRef(0);
   const leadGap = variant === 'panel' && !!lines[0]?.gap;
   const firstText = leadGap ? Math.max(1, lines.findIndex((l) => !l.gap)) : 0;
@@ -91,7 +92,13 @@ function SyncedLyrics({ lines, variant }: { lines: LyricLine[]; variant: 'panel'
         if (i >= 0) {
           const L = lines[i];
           const end = Math.min(lines[i + 1]?.t ?? L.t + 6, L.t + (L.gap ? 60 : 7));
-          refs.current[i]?.style.setProperty('--lp', String(clamp((time - L.t) / Math.max(0.4, end - L.t), 0, 1)));
+          // Пишем каждый кадр rAF (на 120 Гц — 120 раз/с) для максимальной плавности заливки;
+          // порог 0.002 только отсеивает лишние записи, когда время не сдвинулось.
+          const p = clamp((time - L.t) / Math.max(0.4, end - L.t), 0, 1);
+          if (i !== lpRef.current.i || Math.abs(p - lpRef.current.p) >= 0.002) {
+            lpRef.current = { i, p };
+            refs.current[i]?.style.setProperty('--lp', p.toFixed(4));
+          }
         }
       }),
     [lines],
@@ -248,11 +255,21 @@ function ManualLyricsPicker({
         const topPx = cover ? cover.getBoundingClientRect().bottom - ir.top + 12 : 20;
         setTop(topPx);
         const br = btnRef.current?.getBoundingClientRect();
-        if (br) setOrigin({ by: Math.max(0, br.top - (ir.top + topPx)), bx: Math.max(0, ir.right - 20 - br.right) });
+        if (br) {
+          const by = Math.max(0, br.top - (ir.top + topPx));
+          const bx = Math.max(0, ir.right - 20 - br.right);
+          // Возвращаем прежний объект при неизменных значениях — иначе новый объект
+          // каждый кадр width-анимации панели даёт ре-рендер каждый кадр.
+          setOrigin((o) => (o.by === by && o.bx === bx ? o : { by, bx }));
+        }
       } else {
         setTop(0);
         const br = btnRef.current?.getBoundingClientRect();
-        if (br) setOrigin({ by: Math.max(0, br.top - ir.top), bx: Math.max(0, ir.right - br.right) });
+        if (br) {
+          const by = Math.max(0, br.top - ir.top);
+          const bx = Math.max(0, ir.right - br.right);
+          setOrigin((o) => (o.by === by && o.bx === bx ? o : { by, bx }));
+        }
       }
     };
     measure();

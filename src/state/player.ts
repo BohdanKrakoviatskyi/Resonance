@@ -1,6 +1,6 @@
 import { useSyncExternalStore } from 'react';
 import { invoke } from '@tauri-apps/api/core';
-import Hls from 'hls.js';
+import type Hls from 'hls.js';
 import { createStore, persist, clamp, shuffled, useStore } from '../lib/util';
 import { getTrack, library, pushRecent, isDisliked, ensureCached, registerTracks } from './library';
 import { snack, openSearch } from './ui';
@@ -36,6 +36,21 @@ export const EQ_PRESETS: Record<Exclude<EqPreset, 'custom'>, readonly [number, n
 };
 
 export const DEFAULT_CROSSFADE_DURATION = 4;
+
+/**
+ * hls.js нужен только для HLS-фолбэка SoundCloud, поэтому грузится лениво:
+ * разбор и исполнение модуля откладываются до первого HLS-потока (лямбда-обёртка
+ * сохраняется даже в single-file сборке), поведение при воспроизведении идентично
+ * статическому импорту.
+ */
+type HlsCtor = typeof Hls;
+let hlsCtor: HlsCtor | null = null;
+let hlsLoading: Promise<HlsCtor> | null = null;
+const loadHls = (): Promise<HlsCtor> => {
+  if (hlsCtor) return Promise.resolve(hlsCtor);
+  hlsLoading ??= import('hls.js').then((m) => (hlsCtor = m.default));
+  return hlsLoading;
+};
 const MANUAL_CROSSFADE_SECONDS = 0.8;
 const PRELOAD_AHEAD_SECONDS = 14;
 
@@ -1048,6 +1063,7 @@ async function attachStreamToDeck(deck: Deck, stream: { url: string; hls: boolea
   deck.el.crossOrigin = 'anonymous';
   deck.forcedEndDone = false;
   if (stream.hls && !deck.el.canPlayType('application/vnd.apple.mpegurl')) {
+    const Hls = await loadHls();
     if (!Hls.isSupported()) throw new Error('This device cannot play the SoundCloud HLS stream.');
     const instance = new Hls();
     deck.hls = instance;

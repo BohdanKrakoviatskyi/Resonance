@@ -17,7 +17,10 @@ function spring([k, z]: Spring) {
   let d = 0.05;
   const ok = (t: number) => Math.abs(1 - x(t)) < 0.0015;
   while (d < 2.5 && !(ok(d) && ok(d + 0.04) && ok(d + 0.08))) d += 0.01;
-  const n = Math.max(24, Math.round(d * 90));
+  // Плотность сэмплов = детальность: linear() интерполируется по сегментам, поэтому на
+  // дисплеях 120 Гц (кадр каждые ~8.3мс) нужно ≥240 точек/с, иначе сплинг даёт лёгкое
+  // «огранение». Длительность d и характер движения не меняются — только разрешение кривой.
+  const n = Math.max(48, Math.min(720, Math.round(d * 240)));
   const pts: string[] = [];
   for (let i = 0; i <= n; i++) pts.push(i === n ? '1' : String(Math.round(x((i / n) * d) * 1000) / 1000));
   return { ease: `linear(${pts.join(',')})`, dur: Math.round(d * 1000) };
@@ -48,6 +51,15 @@ export const supportsVT = () =>
   typeof (document as Document & { startViewTransition?: unknown }).startViewTransition === 'function' &&
   document.documentElement.dataset.motion !== 'reduced';
 
+/** WebKit (Safari / WKWebView — движок Tauri на macOS) теряет backdrop-filter в снапшотах
+ *  view transitions (https://bugs.webkit.org/show_bug.cgi?id=302256): стеклянные панели на
+ *  время всего кроссфейда становятся прозрачными, блюр «сбрасывается» и возвращается после.
+ *  Такие переходы должны идти через live-fallback (presence-фейд) вместо VT. */
+export const vtBlurSafe = !(() => {
+  const ua = navigator.userAgent;
+  return ua.includes('Safari') && !ua.includes('Chrome') && !ua.includes('Chromium') && !ua.includes('Edg/');
+})();
+
 /** Runs a state update inside a View Transition (shared-element morphs), with graceful fallback. */
 export function viewTransition(update: () => void) {
   const d = document as Document & { startViewTransition?: (cb: () => void) => { finished: Promise<void> } };
@@ -59,7 +71,9 @@ export function viewTransition(update: () => void) {
   root.dataset.vt = '';
   try {
     const tr = d.startViewTransition(() => flushSync(update));
-    tr.finished.finally(() => delete root.dataset.vt);
+    tr.finished
+      .catch(() => {}) // прерванный/упавший переход не должен давать unhandled rejection
+      .finally(() => delete root.dataset.vt);
   } catch {
     delete root.dataset.vt;
     update();
