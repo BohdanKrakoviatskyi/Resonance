@@ -20,6 +20,7 @@ const MAX_TOTAL_YTDLP: usize = 3;
 
 const PLAYER_ENDPOINT: &str = "https://www.youtube.com/youtubei/v1/player?prettyPrint=false";
 const SEARCH_ENDPOINT: &str = "https://music.youtube.com/youtubei/v1/search?prettyPrint=false";
+const NEXT_ENDPOINT: &str = "https://music.youtube.com/youtubei/v1/next?prettyPrint=false";
 const STREAM_CACHE_TTL: Duration = Duration::from_secs(45 * 60);
 const MAX_CACHED_STREAMS: usize = 256;
 const DISK_EXPIRE_SAFETY_MARGIN_SECS: u64 = 15 * 60;
@@ -2296,18 +2297,22 @@ pub async fn search_youtube_tracks(
 }
 
 fn collect_renderers_recursive<'a>(node: &'a Value, out: &mut Vec<&'a Value>) {
+    collect_renderers_by_key(node, "musicResponsiveListItemRenderer", out);
+}
+
+fn collect_renderers_by_key<'a>(node: &'a Value, key: &str, out: &mut Vec<&'a Value>) {
     match node {
         Value::Object(map) => {
-            if let Some(r) = map.get("musicResponsiveListItemRenderer") {
+            if let Some(r) = map.get(key) {
                 out.push(r);
             }
             for v in map.values() {
-                collect_renderers_recursive(v, out);
+                collect_renderers_by_key(v, key, out);
             }
         }
         Value::Array(arr) => {
             for v in arr {
-                collect_renderers_recursive(v, out);
+                collect_renderers_by_key(v, key, out);
             }
         }
         _ => {}
@@ -2496,6 +2501,133 @@ pub async fn search_yt_tracks(
     query: String,
 ) -> Result<Vec<YtSearchTrack>, String> {
     search_youtube_tracks(&state.http, &query).await
+}
+
+/// Радио YouTube Music (InnerTube `/next` с плейлистом `RDAMVM<videoId>`):
+/// возвращает очередь стилистически близких треков к заданному видео — тот же механизм,
+/// что использует сама YouTube Music для "Start radio".
+async fn yt_radio_tracks_inner(http: &Client, video_id: &str) -> Result<Vec<YtSearchTrack>, String> {
+    let trimmed = video_id.trim();
+    if !is_valid_video_id(trimmed) {
+        return Err("Некорректный ID видео YouTube.".to_string());
+    }
+
+    let payload = json!({
+        "videoId": trimmed,
+        "playlistId": format!("RDAMVM{trimmed}"),
+        "context": {
+            "client": {
+                "clientName": "WEB_REMIX",
+                "clientVersion": "1.20250101.01.00",
+                "hl": "en",
+                "gl": "US"
+            }
+        }
+    });
+
+    let resp = http
+        .post(NEXT_ENDPOINT)
+        .header("Content-Type", "application/json")
+        .header(
+            "User-Agent",
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+        )
+        .header("Origin", "https://music.youtube.com")
+        .header("Referer", "https://music.youtube.com/")
+        .json(&payload)
+        .send()
+        .await
+        .map_err(|e| format!("Ошибка запроса радио YouTube Music: {e}"))?;
+
+    if !resp.status().is_success() {
+        return Err(format!(
+            "YouTube Music Radio вернул HTTP {}",
+            resp.status().as_u16()
+        ));
+    }
+
+    let data: Value = resp
+        .json()
+        .await
+        .map_err(|e| format!("Ошибка разбора ответа радио YouTube Music: {e}"))?;
+
+    let mut panels = Vec::new();
+    collect_renderers_by_key(&data, "playlistPanelVideoRenderer", &mut panels);
+
+    let mut tracks = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    for renderer in panels {
+        if let Some(track) = parse_playlist_panel_video(renderer) {
+            if track.native_id == trimmed {
+                continue;
+            }
+            if seen.insert(track.native_id.clone()) {
+                tracks.push(track);
+            }
+        }
+    }
+
+    if tracks.is_empty() {
+        return Err("Радио YouTube Music не вернуло треков.".to_string());
+    }
+    Ok(tracks)
+}
+
+fn parse_playlist_panel_video(renderer: &Value) -> Option<YtSearchTrack> {
+    let video_id = renderer
+        .get("videoId")
+        .and_then(|v| v.as_str())
+        .filter(|id| is_valid_video_id(id))?
+        .to_string();
+
+    let title = renderer
+        .pointer("/title/runs/0/text")
+        .or_else(|| renderer.pointer("/title/simpleText"))
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())?
+        .to_string();
+
+    let raw_artist = renderer
+        .pointer("/shortBylineText/runs/0/text")
+        .or_else(|| renderer.pointer("/longBylineText/runs/0/text"))
+        .and_then(|v| v.as_str())
+        .unwrap_or_default();
+    let artist = raw_artist.trim_end_matches(" - Topic").trim();
+    let artist = if artist.is_empty() {
+        "YouTube Music".to_string()
+    } else {
+        artist.to_string()
+    };
+
+    let duration_text = renderer
+        .pointer("/lengthText/runs/0/text")
+        .or_else(|| renderer.pointer("/lengthText/simpleText"))
+        .and_then(|v| v.as_str())
+        .unwrap_or_default();
+    let duration_ms = parse_duration_ms(duration_text).unwrap_or(0);
+
+    let artwork_url = extract_best_thumbnail_url(renderer.get("thumbnail"))
+        .unwrap_or_else(|| format!("https://i.ytimg.com/vi/{video_id}/hqdefault.jpg"));
+
+    Some(YtSearchTrack {
+        native_id: video_id.clone(),
+        source: "youtube".to_string(),
+        urn: format!("youtube:track:{video_id}"),
+        title,
+        permalink: format!("https://music.youtube.com/watch?v={video_id}"),
+        artwork_url,
+        duration_ms,
+        artist,
+    })
+}
+
+#[tauri::command]
+pub async fn yt_radio_tracks(
+    state: tauri::State<'_, YtStreamProxy>,
+    video_id: String,
+) -> Result<Vec<YtSearchTrack>, String> {
+    yt_radio_tracks_inner(&state.http, &video_id).await
 }
 
 #[tauri::command]

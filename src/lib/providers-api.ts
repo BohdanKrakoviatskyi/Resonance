@@ -246,6 +246,12 @@ export async function searchYtDlpTracks(query: string, signal?: AbortSignal): Pr
   return rpc('yt.dlp.search', { query }, signal);
 }
 
+/** YouTube Music radio (InnerTube /next, RDAMVM): style-matched queue for a seed video. */
+export async function ytRadioTracks(videoId: string, signal?: AbortSignal): Promise<YouTubeTrack[]> {
+  const tracks = await invokeAbortable<YouTubeTrack[]>('yt_radio_tracks', { videoId }, signal);
+  return Array.isArray(tracks) ? tracks : [];
+}
+
 export type YtResolveAttemptTiming = {
   method: string;
   outcome: string;

@@ -5,6 +5,7 @@ use std::time::Duration;
 
 use yt_proxy::{
     YtStreamProxy, fetch_yt_playlist_tracks, resolve_yt_stream_url, search_yt_tracks,
+    yt_radio_tracks,
 };
 use tauri::webview::Cookie;
 use tauri::{
@@ -530,6 +531,7 @@ pub fn run() {
             restart_app,
             resolve_yt_stream_url,
             search_yt_tracks,
+            yt_radio_tracks,
             fetch_yt_playlist_tracks
         ])
         .run(tauri::generate_context!())

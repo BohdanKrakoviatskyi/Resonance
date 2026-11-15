@@ -11,6 +11,7 @@ import {
   type SoundCloudSearchTrack,
   searchYtDlpTracks,
   ytDlpTrackStream,
+  ytRadioTracks,
   type YouTubeTrack,
 } from './providers-api';
 
@@ -96,6 +97,24 @@ const RECOMMENDATION_MAX_MS = 15 * 60_000;
 const NON_SONG_TITLE = /\b(?:mix|reaction|reacts?|playlist|compilation|karaoke|hours?|full album)\b/i;
 
 export async function searchYouTubeRecommendations(track: Track, signal?: AbortSignal): Promise<Track[]> {
+  // Primary: YouTube Music radio (InnerTube /next) — style-matched queue, same source the
+  // YouTube Music app uses for "Start radio". Fallback: yt-dlp search "{artist} official audio".
+  const nativeId = track.nativeId ?? (track.id.startsWith('yt:') ? track.id.slice(3) : '');
+  if (nativeId && /^[\w-]{11}$/.test(nativeId)) {
+    try {
+      const radio = await ytRadioTracks(nativeId, signal);
+      const seen = new Set<string>();
+      const mapped = radio
+        .filter((item) => item.nativeId !== nativeId)
+        .filter((item) => !(item.durationMs > RECOMMENDATION_MAX_MS) && !NON_SONG_TITLE.test(item.title))
+        .filter((item) => (seen.has(item.nativeId) ? false : seen.add(item.nativeId)))
+        .map(mapYouTubeTrack);
+      if (mapped.length) return mapped;
+    } catch (err) {
+      if (signal?.aborted) throw err;
+      // fall through to search
+    }
+  }
   const query = track.artist ? `${track.artist} official audio` : track.title;
   const results = await searchYtDlpTracks(query, signal);
   const seen = new Set<string>();
