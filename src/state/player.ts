@@ -134,6 +134,12 @@ interface CrossfadeSession {
   elapsedSec: number;
   lastTs: number | null;
   rafId: number;
+  /**
+   * Fallback driver: rAF полностью замирает, когда окно уходит в фон (WebKit/App Nap),
+   * из-за чего фейд зависает на progress=0 и входящий трек играет с gain=0 (тишина).
+   * setInterval продолжает тикать в фоне и доводит фейд до конца.
+   */
+  fallbackTimer: number | null;
   paused: boolean;
   kind: 'auto' | 'manual';
   /** Visual progress ratio (0..1) of the outgoing bar at the exact moment crossfade began. */
@@ -491,6 +497,9 @@ export function cancelCrossfade(stopOutgoing = true) {
     if (crossfadeSession.rafId) {
       cancelAnimationFrame(crossfadeSession.rafId);
     }
+    if (crossfadeSession.fallbackTimer !== null) {
+      clearInterval(crossfadeSession.fallbackTimer);
+    }
     const { fromDeck } = crossfadeSession;
     crossfadeSession = null;
     if (stopOutgoing && fromDeck !== getActiveDeck()) {
@@ -547,9 +556,24 @@ function stepCrossfadeFrame(now: number) {
   session.rafId = requestAnimationFrame(stepCrossfadeFrame);
 }
 
+function startCrossfadeFallbackTimer(session: CrossfadeSession) {
+  if (session.fallbackTimer !== null) return;
+  session.fallbackTimer = window.setInterval(() => {
+    stepCrossfadeFrame(performance.now());
+  }, 250);
+}
+
+function stopCrossfadeFallbackTimer(session: CrossfadeSession) {
+  if (session.fallbackTimer !== null) {
+    clearInterval(session.fallbackTimer);
+    session.fallbackTimer = null;
+  }
+}
+
 function finishCrossfade(session: CrossfadeSession) {
   if (crossfadeSession !== session) return;
   if (session.rafId) cancelAnimationFrame(session.rafId);
+  stopCrossfadeFallbackTimer(session);
   crossfadeSession = null;
   if (session.fromDeck !== getActiveDeck()) {
     stopAndResetDeck(session.fromDeck);
@@ -571,8 +595,11 @@ function startCrossfadeRamp(
   startFadeFraction: number,
   nextTrackDuration: number,
 ) {
-  if (crossfadeSession?.rafId) {
-    cancelAnimationFrame(crossfadeSession.rafId);
+  if (crossfadeSession) {
+    if (crossfadeSession.rafId) {
+      cancelAnimationFrame(crossfadeSession.rafId);
+    }
+    stopCrossfadeFallbackTimer(crossfadeSession);
   }
   if (durationSec <= 0.05) {
     stopAndResetDeck(fromDeck);
@@ -592,6 +619,7 @@ function startCrossfadeRamp(
     elapsedSec: 0,
     lastTs: null,
     rafId: 0,
+    fallbackTimer: null,
     paused: false,
     kind,
     startFadeFraction: safeStart,
@@ -600,6 +628,7 @@ function startCrossfadeRamp(
   crossfadeSession = session;
   player.set({ isCrossfading: true, fadeProgress: 0 });
   session.rafId = requestAnimationFrame(stepCrossfadeFrame);
+  startCrossfadeFallbackTimer(session);
 }
 
 function pauseCrossfadeIfActive() {
@@ -610,6 +639,7 @@ function pauseCrossfadeIfActive() {
     cancelAnimationFrame(crossfadeSession.rafId);
     crossfadeSession.rafId = 0;
   }
+  stopCrossfadeFallbackTimer(crossfadeSession);
   try {
     crossfadeSession.fromDeck.el.pause();
   } catch {
@@ -631,6 +661,7 @@ function resumeCrossfadeIfPaused() {
   if (!crossfadeSession.rafId) {
     crossfadeSession.rafId = requestAnimationFrame(stepCrossfadeFrame);
   }
+  startCrossfadeFallbackTimer(crossfadeSession);
 }
 
 /* ---------------- Public Audio Settings API ---------------- */
