@@ -60,6 +60,7 @@ interface Deck {
   requestId: number;
   preloadedForLoadId?: number;
   recoveryAttempts?: number;
+  forcedEndDone?: boolean;
 }
 
 function createAudioElement(): HTMLAudioElement {
@@ -826,8 +827,30 @@ export function useCurrentTrack(): Track | null {
 }
 
 /* ---------------- time / frame clock & visual rollback during crossfade ---------------- */
+
+/**
+ * WebKit (Safari / macOS & iOS WKWebView) reports ~2x duration for YouTube/googlevideo audio
+ * streams and pads the second half with silence (invidious#913, audioplayers#1730).
+ * Detect the doubling against the known track metadata and clamp to the real duration.
+ */
+function isWebKitPlayback(): boolean {
+  const ua = navigator.userAgent;
+  return ua.includes('Safari') && !ua.includes('Chrome') && !ua.includes('Chromium') && !ua.includes('Edg/');
+}
+
+/** Returns the real duration when WebKit doubled it, otherwise null. */
+function webkitDoubledDuration(track: Track | null | undefined, elDuration: number): number | null {
+  if (!isWebKitPlayback() || !track || !isYouTubeTrack(track)) return null;
+  const meta = track.duration;
+  if (!isFinite(elDuration) || elDuration <= 0 || !meta || meta < 30) return null;
+  if (elDuration >= meta * 1.7 && elDuration <= meta * 2.35) return meta;
+  return null;
+}
+
 export const dur = () => {
   const el = getActiveDeck().el;
+  const doubled = webkitDoubledDuration(currentTrack(), el.duration);
+  if (doubled !== null) return doubled;
   return isFinite(el.duration) && el.duration > 0 ? el.duration : player.get().duration;
 };
 
@@ -1013,6 +1036,7 @@ async function attachStreamToDeck(deck: Deck, stream: { url: string; hls: boolea
   }
   deck.el.loop = false;
   deck.el.crossOrigin = 'anonymous';
+  deck.forcedEndDone = false;
   if (stream.hls && !deck.el.canPlayType('application/vnd.apple.mpegurl')) {
     if (!Hls.isSupported()) throw new Error('This device cannot play the SoundCloud HLS stream.');
     const instance = new Hls();
@@ -1978,7 +2002,10 @@ function bindDeckEvents(deck: Deck) {
       el.currentTime = Math.min(seekTo, el.duration || seekTo);
       pendingSeek = null;
     }
-    if (isFinite(el.duration) && el.duration > 0) player.set({ duration: el.duration });
+    if (isFinite(el.duration) && el.duration > 0) {
+      const doubled = webkitDoubledDuration(track, el.duration);
+      player.set({ duration: doubled ?? el.duration });
+    }
     if (!crossfadeSession) {
       emitFrame();
       emitTime();
@@ -1991,6 +2018,18 @@ function bindDeckEvents(deck: Deck) {
 
     const track = currentTrack();
     const duration = dur();
+
+    // WebKit удваивает длительность YouTube-потоков: 'ended' не наступит до конца "тишины".
+    // Принудительно завершаем трек на реальной длительности.
+    if (track && !el.paused && !deck.forcedEndDone) {
+      const doubled = webkitDoubledDuration(track, el.duration);
+      if (doubled !== null && el.currentTime >= doubled - 0.25) {
+        deck.forcedEndDone = true;
+        if (deck === getActiveDeck() && deck.requestId === currentRequestId) next(true);
+        return;
+      }
+    }
+
     const remaining = duration - el.currentTime;
 
     if (player.get().shuffle && track && (track.source === 'soundcloud' || isYouTubeTrack(track)) && duration > 0 && remaining <= 20) {
