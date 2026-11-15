@@ -833,6 +833,46 @@ html[data-theme=light] { color-scheme: light; }
   .home-search-dock { flex: 0 0 auto; min-width: 0; margin-left: auto; align-self: flex-start; }
   .search-bar-dock { height: 52px; width: min(420px, 42cqw); min-width: 180px; padding: 0 6px 0 16px; border-radius: 26px; }
   .search-bar-dock:focus-within { border-radius: 18px; }
+  .fav-seg > button { flex: 0 0 auto; min-width: 38px; padding: 0 11px; }
+  .fav-seg > button:first-child { padding: 0 14px; }
+  .fav-search-pill {
+    position: relative; display: flex; align-items: center;
+    height: 36px; width: 36px; border-radius: 18px; overflow: hidden;
+    background: color-mix(in oklab, var(--md-on-surface) 8%, transparent);
+    color: var(--md-on-surface-variant);
+    transition: width var(--sp-def-d) var(--sp-def), background-color .25s, box-shadow .25s, color .25s;
+  }
+  .fav-search-pill[data-open=false]:hover {
+    background: color-mix(in oklab, var(--md-on-surface) 12%, transparent);
+    color: var(--md-on-surface);
+  }
+  .fav-search-pill[data-open=true] {
+    width: min(230px, 48cqw);
+    background: color-mix(in oklab, var(--md-on-surface) 10%, transparent);
+    box-shadow: inset 0 0 0 1.5px color-mix(in oklab, var(--md-primary) 75%, transparent);
+    color: var(--md-on-surface);
+  }
+  .fav-search-trigger {
+    width: 36px; height: 36px; flex-shrink: 0;
+    display: inline-grid; place-items: center;
+    color: inherit;
+  }
+  .fav-search-pill[data-open=true] .fav-search-trigger {
+    width: 34px; color: var(--md-primary); pointer-events: none;
+  }
+  .fav-search-input {
+    flex: 1; min-width: 0; height: 100%; border: 0; outline: 0;
+    padding-right: 4px; background: transparent;
+    font-size: 13px; font-weight: 500; color: var(--md-on-surface);
+    opacity: 0; transition: opacity .2s var(--ease-emph);
+  }
+  .fav-search-pill[data-open=true] .fav-search-input { opacity: 1; }
+  .fav-search-input::placeholder { color: var(--md-on-surface-variant); opacity: .75; }
+  .fav-search-clear {
+    width: 28px; height: 28px; margin-right: 4px; flex-shrink: 0;
+    display: inline-grid; place-items: center; border-radius: 999px;
+    color: var(--md-on-surface-variant);
+  }
   .home-search-trigger { display: none; }
   @container main (max-width: 560px) {
     .search-bar-dock { display: none; }

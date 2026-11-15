@@ -148,6 +148,8 @@ const S = {
   showLess: ['Свернуть', 'Show less'],
   favoritesEmpty: ['Пока пусто', 'Nothing here yet'],
   favoritesEmptyText: ['Нажимайте ♥ на треках, которые нравятся, — они соберутся здесь', 'Tap ♥ on songs you love and they\'ll gather here'],
+  favoritesAll: ['Все', 'All'],
+  favoritesSearchPlaceholder: ['Поиск в избранном', 'Search favorites'],
   playlistEmptyText: ['Найдите музыку и добавьте её кнопкой «Добавить в плейлист»', 'Find music and add it with "Add to playlist"'],
   findMusic: ['Найти музыку', 'Find music'],
   playlist: ['Плейлист', 'Playlist'],
