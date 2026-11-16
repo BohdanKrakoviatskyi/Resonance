@@ -373,17 +373,18 @@ type cachedLyrics struct {
 }
 
 type service struct {
-	mu           sync.RWMutex
-	settingsPath string
-	settings     settings
-	authPath     string
-	auth         authState
+	mu                 sync.RWMutex
+	settingsPath       string
+	settings           settings
+	authPath           string
+	auth               authState
 	historyPath        string
 	history            []soundcloudTrackCard
 	frontendBackupPath string
 	frontendBackup     map[string]string
 	apiBase            string
-	httpClient   *http.Client
+	publicClientID     string
+	httpClient         *http.Client
 	// Lyrics are cached separately from everything else and behind their own lock: mu is held
 	// across disk writes and settings updates, so borrowing it for a cache that outlives an HTTP
 	// lookup would queue unrelated work behind the network.
@@ -509,7 +510,9 @@ const saveTrue = true
 // a short read lock, does its paging without a lock, and takes a write lock
 // only when it has to refresh a rejected token.
 var rpcSelfLocked = map[string]bool{
-	"tracks.mine": true,
+	"tracks.mine":         true,
+	"resolve.playlist":    true,
+	"user.likes.by.input": true,
 }
 
 func (s *service) call(method string, params json.RawMessage) (any, error) {

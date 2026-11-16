@@ -127,5 +127,23 @@ export async function clearCache(signal?: AbortSignal): Promise<CacheClearResult
   };
 }
 
+export type ResolvedSoundCloudPlaylist = {
+  title: string;
+  artworkUrl?: string;
+  tracks: SoundCloudTrackCard[];
+};
+
+export type ResolvedSoundCloudLikes = {
+  username: string;
+  avatarUrl?: string;
+  artworkUrl?: string;
+  tracks: SoundCloudTrackCard[];
+};
+
+export const soundCloudResolvePlaylist = (url: string, signal?: AbortSignal): Promise<ResolvedSoundCloudPlaylist> =>
+  rpc('resolve.playlist', { url }, signal);
+export const soundCloudUserLikesByInput = (input: string, signal?: AbortSignal): Promise<ResolvedSoundCloudLikes> =>
+  rpc('user.likes.by.input', { input }, signal);
+
 export const backupFrontendState = (entries: Record<string, string>, signal?: AbortSignal): Promise<Record<string, string>> => rpc('frontend.backup', { entries }, signal);
 export const restoreFrontendState = (signal?: AbortSignal): Promise<Record<string, string>> => rpc('frontend.restore', {}, signal);

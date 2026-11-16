@@ -1,5 +1,5 @@
 import { createStore, persist, uid } from '../lib/util';
-import type { Playlist, SoundCloudPlaylist, Track } from '../types';
+import type { Playlist, PlaylistSection, SoundCloudPlaylist, Track } from '../types';
 import {
   soundCloudAuthStatus, soundCloudPlaylistTracks, soundCloudPlaylistsMine, soundCloudTracksMine,
   ytMusicAuthStatus, ytMusicLibraryCached, ytMusicLibrarySync, ytMusicPlaylistArtwork,
@@ -676,8 +676,53 @@ export function createPlaylist(name: string, trackId?: string) {
   return p.id;
 }
 
+export function createImportedPlaylist(name: string, tracks: Track[], artworkUrl?: string, extraTrackId?: string) {
+  registerTracks(tracks);
+  if (extraTrackId) ensureCached(extraTrackId);
+  const seen = new Set<string>();
+  const ids: string[] = [];
+  for (const tr of tracks) {
+    if (!tr?.id || seen.has(tr.id)) continue;
+    seen.add(tr.id);
+    ids.push(tr.id);
+  }
+  if (extraTrackId && !seen.has(extraTrackId)) {
+    seen.add(extraTrackId);
+    ids.push(extraTrackId);
+  }
+  const p: Playlist = {
+    id: uid(),
+    name: name.trim() || t('newPlaylist'),
+    ids,
+    created: Date.now(),
+    artworkUrl: artworkUrl || undefined,
+  };
+  library.set((s) => {
+    const nextCache = { ...s.cache };
+    for (const tr of tracks) {
+      if (tr?.id) nextCache[tr.id] = tr;
+    }
+    return {
+      cache: nextCache,
+      playlists: [...s.playlists, p],
+    };
+  });
+  snack(t('playlistCreated', { name: p.name }));
+  return p.id;
+}
+
 export function renamePlaylist(id: string, name: string) {
   library.set((s) => ({ playlists: s.playlists.map((p) => (p.id === id ? { ...p, name: name.trim() || p.name } : p)) }));
+}
+
+export function movePlaylistSection(id: string, section: PlaylistSection) {
+  library.set((s) => ({
+    playlists: s.playlists.map((p) => {
+      if (p.id !== id) return p;
+      const nextSection = section === 'local' ? undefined : section;
+      return (p.section ?? undefined) === nextSection ? p : { ...p, section: nextSection };
+    }),
+  }));
 }
 
 export function deletePlaylist(id: string) {

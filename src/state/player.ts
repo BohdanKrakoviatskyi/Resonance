@@ -9,6 +9,7 @@ import { findYouTubeFallback, relatedSoundCloudTracks, searchYouTubeRecommendati
 import type { YtResolveAttemptTiming, YtStreamResolveResult } from '../lib/providers-api';
 import { rankRecommendations } from '../lib/recommendations';
 import { createPendingAudioSeek, pendingAudioSeekFor, type PendingAudioSeek } from '../lib/pending-audio-seek';
+import { canFallbackToOutgoingDeck, evaluateAutoCrossfadeTrigger, planAutoCrossfade } from '../lib/crossfade-plan';
 import { onProviderState, providerCommand } from '../lib/provider-player';
 import type { Track } from '../types';
 
@@ -151,6 +152,14 @@ let crossfadeSession: CrossfadeSession | null = null;
 let crossfadeEpoch = 0;
 let autoCrossfadePreparingForLoadId = -1;
 let preloadingNextForLoadId = -1;
+let autoCrossfadeTimer: number | null = null;
+
+function clearAutoCrossfadeTimer() {
+  if (autoCrossfadeTimer !== null) {
+    clearTimeout(autoCrossfadeTimer);
+    autoCrossfadeTimer = null;
+  }
+}
 
 let original: string[] | null = null;
 let pendingSeek: PendingAudioSeek | null = null;
@@ -492,6 +501,7 @@ export function cancelCrossfade(stopOutgoing = true) {
   crossfadeEpoch += 1;
   autoCrossfadePreparingForLoadId = -1;
   preloadingNextForLoadId = -1;
+  clearAutoCrossfadeTimer();
   if (crossfadeSession) {
     if (crossfadeSession.rafId) {
       cancelAnimationFrame(crossfadeSession.rafId);
@@ -535,6 +545,13 @@ function stepCrossfadeFrame(now: number) {
     session.elapsedSec += dt;
   }
   session.lastTs = now;
+
+  // Keep incoming deck alive if WebKit momentarily throttled or failed to resume it during crossfade
+  const toEl = session.toDeck.el;
+  if (toEl.paused && !toEl.ended && toEl.readyState >= 2 && session.toDeck === getActiveDeck()) {
+    resumeAudioContextIfNeeded();
+    void toEl.play().catch(() => {});
+  }
 
   const progress = session.durationSec > 0 ? clamp(session.elapsedSec / session.durationSec, 0, 1) : 1;
   applyCrossfadeGains(session.fromDeck, session.toDeck, progress);
@@ -580,7 +597,17 @@ function finishCrossfade(session: CrossfadeSession) {
   const active = getActiveDeck();
   active.fadeMultiplier = 1;
   syncDeckVolumes();
-  player.set({ isCrossfading: false, fadeProgress: 0 });
+  const isActuallyPaused = active.el.paused && !active.el.ended;
+  if (!isActuallyPaused) {
+    player.set({ isCrossfading: false, fadeProgress: 0 });
+  } else if (active.el.readyState >= 2) {
+    resumeAudioContextIfNeeded();
+    void active.el.play().catch(() => {});
+    player.set({ isCrossfading: false, fadeProgress: 0 });
+  } else {
+    player.set({ isCrossfading: false, fadeProgress: 0 });
+  }
+  scheduleAutoCrossfadeCheck();
   emitFrame();
   emitTime();
   kick();
@@ -677,8 +704,11 @@ export function setNormalizationTarget(target: NormalizationTarget) {
 export function setCrossfadeEnabled(enabled: boolean) {
   const on = Boolean(enabled);
   player.set({ crossfadeEnabled: on });
-  if (!on && crossfadeSession) {
-    cancelCrossfade(true);
+  if (!on) {
+    clearAutoCrossfadeTimer();
+    if (crossfadeSession) cancelCrossfade(true);
+  } else {
+    scheduleAutoCrossfadeCheck();
   }
 }
 
@@ -689,6 +719,7 @@ export function setCrossfadeDuration(seconds: number) {
   }
   const nextSec = Math.round(clamp(seconds, 1, 12) * 2) / 2;
   player.set({ crossfadeDuration: nextSec, crossfadeEnabled: true });
+  scheduleAutoCrossfadeCheck();
 }
 
 export function setCrossfadeCurve(curve: CrossfadeCurve) {
@@ -1156,8 +1187,14 @@ async function preloadNextTrackIntoInactiveDeck() {
 
   try {
     const stream = await resolvePlayableStream(nextTr, undefined, undefined, false);
-    if (triggerRequestId !== currentRequestId || crossfadeSession) return;
-    if (!stream.url || (nextTr.source === 'soundcloud' && stream.preview)) return;
+    if (triggerRequestId !== currentRequestId || crossfadeSession) {
+      if (preloadingNextForLoadId === triggerRequestId) preloadingNextForLoadId = -1;
+      return;
+    }
+    if (!stream.url || (nextTr.source === 'soundcloud' && stream.preview)) {
+      if (preloadingNextForLoadId === triggerRequestId) preloadingNextForLoadId = -1;
+      return;
+    }
 
     const toDeck = getInactiveDeck();
     if (toDeck.trackId === nextId && toDeck.queueIndex === nextIdx && toDeck.preloadedForLoadId === triggerRequestId && toDeck.el.src) {
@@ -1173,6 +1210,7 @@ async function preloadNextTrackIntoInactiveDeck() {
     await attachStreamToDeck(toDeck, stream);
     if (triggerRequestId !== currentRequestId || crossfadeSession) {
       stopAndResetDeck(toDeck);
+      if (preloadingNextForLoadId === triggerRequestId) preloadingNextForLoadId = -1;
       return;
     }
     try {
@@ -1181,7 +1219,7 @@ async function preloadNextTrackIntoInactiveDeck() {
       /* ignore */
     }
   } catch {
-    /* best-effort preload */
+    if (preloadingNextForLoadId === triggerRequestId) preloadingNextForLoadId = -1;
   }
 }
 
@@ -1593,9 +1631,12 @@ async function startAutoCrossfade() {
   if (!nextTr || usesProviderPlayback(nextTr)) return;
 
   autoCrossfadePreparingForLoadId = triggerRequestId;
+  clearAutoCrossfadeTimer();
+
+  const toDeck = getInactiveDeck();
+  let streamAssigned = false;
 
   try {
-    const toDeck = getInactiveDeck();
     const alreadyPreloaded =
       toDeck.trackId === nextId &&
       toDeck.queueIndex === nextIdx &&
@@ -1604,8 +1645,12 @@ async function startAutoCrossfade() {
 
     if (!alreadyPreloaded) {
       const stream = await resolvePlayableStream(nextTr);
-      if (triggerRequestId !== currentRequestId || crossfadeSession || fromDeck.el.paused) return;
+      if (triggerRequestId !== currentRequestId || crossfadeSession || fromDeck.el.paused || fromDeck.el.ended) {
+        if (autoCrossfadePreparingForLoadId === triggerRequestId) autoCrossfadePreparingForLoadId = -1;
+        return;
+      }
       if (!stream.url || (nextTr.source === 'soundcloud' && stream.preview)) {
+        // Leave `autoCrossfadePreparingForLoadId` set for this track so `ended` cleanly hands off to fallback
         return;
       }
       stopAndResetDeck(toDeck);
@@ -1614,11 +1659,14 @@ async function startAutoCrossfade() {
       toDeck.fadeMultiplier = 0;
       syncDeckVolumes();
       await attachStreamToDeck(toDeck, stream);
-      if (triggerRequestId !== currentRequestId || crossfadeSession || fromDeck.el.paused) {
+      streamAssigned = true;
+      if (triggerRequestId !== currentRequestId || crossfadeSession || fromDeck.el.paused || fromDeck.el.ended) {
         stopAndResetDeck(toDeck);
+        if (autoCrossfadePreparingForLoadId === triggerRequestId) autoCrossfadePreparingForLoadId = -1;
         return;
       }
     } else {
+      streamAssigned = true;
       toDeck.fadeMultiplier = 0;
       try {
         toDeck.el.currentTime = 0;
@@ -1628,10 +1676,39 @@ async function startAutoCrossfade() {
       syncDeckVolumes();
     }
 
-    const fromDuration = isFinite(fromDeck.el.duration) && fromDeck.el.duration > 0 ? fromDeck.el.duration : trackDur;
-    const startFraction = fromDuration > 0 ? clamp(fromDeck.el.currentTime / fromDuration, 0.05, 1) : 0.92;
-    const remaining = Math.max(0.2, fromDuration - fromDeck.el.currentTime);
-    const fadeSec = clamp(Math.min(baseFade, remaining), 0.2, baseFade);
+    // Wait for the incoming stream metadata/first frame BEFORE promoting toDeck as active.
+    // Assign a temporary matching requestId so waitForAudioStreamReady does not early-abort,
+    // while keeping activeDeckIdx on fromDeck until toDeck actually starts playing.
+    toDeck.requestId = triggerRequestId;
+    const streamReady = await waitForAudioStreamReady(toDeck, triggerRequestId, 12000);
+    if (triggerRequestId !== currentRequestId || crossfadeSession) {
+      if (streamAssigned && toDeck !== getActiveDeck()) stopAndResetDeck(toDeck);
+      return;
+    }
+    if (!streamReady) {
+      stopAndResetDeck(toDeck);
+      // If outgoing track already ended while we waited, advance immediately instead of stalling
+      if (fromDeck.el.ended) next(true);
+      return;
+    }
+
+    // If outgoing track finished while resolving/buffering, fall through to normal transition instead of deadlocking
+    if (fromDeck.el.ended || fromDeck.el.paused) {
+      stopAndResetDeck(toDeck);
+      if (fromDeck.el.ended && triggerRequestId === currentRequestId) {
+        next(true);
+      } else if (autoCrossfadePreparingForLoadId === triggerRequestId) {
+        autoCrossfadePreparingForLoadId = -1;
+      }
+      return;
+    }
+
+    const plan = planAutoCrossfade({
+      baseFadeSec: baseFade,
+      elDuration: fromDeck.el.duration,
+      metaDuration: curTr.duration || trackDur,
+      currentTime: fromDeck.el.currentTime,
+    });
 
     // Promote incoming deck to active and start playback + progress rollback simultaneously
     const reqId = ++currentRequestId;
@@ -1666,15 +1743,20 @@ async function startAutoCrossfade() {
     try {
       await toDeck.el.play();
     } catch {
-      // Roll back so fromDeck keeps playing and its ended/next flow can still advance.
       if (reqId === currentRequestId) {
-        currentRequestId = triggerRequestId;
-        activeDeckIdx = fromDeck.id;
-        audio = fromDeck.el;
-        stopAndResetDeck(toDeck);
-        fromDeck.fadeMultiplier = 1;
-        syncDeckVolumes();
-        setPlayerMachineState(prevState.state, { requestId: prevState.requestId, index: prevState.index, duration: prevState.duration, pos: prevState.pos });
+        if (canFallbackToOutgoingDeck(fromDeck.el.paused, fromDeck.el.ended, fromDeck.el.src)) {
+          currentRequestId = triggerRequestId;
+          activeDeckIdx = fromDeck.id;
+          audio = fromDeck.el;
+          stopAndResetDeck(toDeck);
+          fromDeck.fadeMultiplier = 1;
+          syncDeckVolumes();
+          setPlayerMachineState(prevState.state, { requestId: prevState.requestId, index: prevState.index, duration: prevState.duration, pos: prevState.pos });
+        } else {
+          // Outgoing deck already ended; fall back to standard load so playback never stalls on pause
+          stopAndResetDeck(fromDeck);
+          void load(nextIdx, true);
+        }
       }
       return;
     }
@@ -1683,7 +1765,7 @@ async function startAutoCrossfade() {
       return;
     }
 
-    startCrossfadeRamp(fromDeck, toDeck, fadeSec, 'auto', startFraction, nextDur || nextTr.duration);
+    startCrossfadeRamp(fromDeck, toDeck, plan.fadeSec, 'auto', plan.startFraction, nextDur || nextTr.duration);
     if (nextTr.source === 'soundcloud' || isYouTubeTrack(nextTr)) void prefetchRelated(nextTr);
     scheduleLowPriorityUpcomingPrefetch(reqId, nextIdx);
     pushRecent(nextId);
@@ -1691,7 +1773,10 @@ async function startAutoCrossfade() {
     emitFrame();
     emitTime();
   } catch {
-    // If preloading/play fails, normal `ended` event on `fromDeck` will advance the queue cleanly.
+    if (streamAssigned && toDeck !== getActiveDeck()) stopAndResetDeck(toDeck);
+    if (fromDeck.el.ended && triggerRequestId === currentRequestId) {
+      next(true);
+    }
   }
 }
 
@@ -2064,6 +2149,42 @@ function isCurrentDeckEvent(deck: Deck): boolean {
   return deck === getActiveDeck() && deck.requestId > 0 && deck.requestId === currentRequestId;
 }
 
+function scheduleAutoCrossfadeCheck() {
+  clearAutoCrossfadeTimer();
+  if (crossfadeSession) return;
+  const deck = getActiveDeck();
+  const el = deck.el;
+  if (!el.src || el.paused || el.ended) return;
+  if (deck.requestId <= 0 || deck.requestId !== currentRequestId) return;
+  const track = currentTrack();
+  if (!track || usesProviderPlayback(track)) return;
+  const duration = dur();
+  const fadeSec = effectiveAutoCrossfadeSeconds(duration);
+  if (fadeSec <= 0 || !isFinite(duration) || duration <= 0) return;
+  const remaining = duration - el.currentTime;
+  // Schedule a direct timer for the crossfade start (and webkit forced end) so background
+  // WebKit timeupdate throttling cannot skip the window or stall after end.
+  const delaySec = Math.max(0.15, remaining - fadeSec);
+  if (delaySec <= 45) {
+    const expectedReqId = deck.requestId;
+    autoCrossfadeTimer = window.setTimeout(() => {
+      autoCrossfadeTimer = null;
+      if (expectedReqId !== currentRequestId || crossfadeSession) return;
+      const curDeck = getActiveDeck();
+      if (curDeck !== deck || curDeck.el.paused || curDeck.el.ended) return;
+      const d = dur();
+      const f = effectiveAutoCrossfadeSeconds(d);
+      if (f <= 0) return;
+      const rem = d - curDeck.el.currentTime;
+      if (rem <= f + 0.35 && rem > 0.25 && autoCrossfadePreparingForLoadId !== currentRequestId) {
+        void startAutoCrossfade();
+      } else {
+        scheduleAutoCrossfadeCheck();
+      }
+    }, Math.round(delaySec * 1000));
+  }
+}
+
 function bindDeckEvents(deck: Deck) {
   const el = deck.el;
 
@@ -2073,6 +2194,7 @@ function bindDeckEvents(deck: Deck) {
     if (player.get().state !== 'loading') {
       setPlayerMachineState('playing');
     }
+    scheduleAutoCrossfadeCheck();
     kick();
   });
 
@@ -2090,13 +2212,30 @@ function bindDeckEvents(deck: Deck) {
     }
     setPlayerMachineState('playing');
     errors = 0;
+    scheduleAutoCrossfadeCheck();
     kick();
   });
 
   el.addEventListener('pause', () => {
+    // Only handle pause for the active deck and ignore spurious pause events triggered on the
+    // outgoing deck when crossfade ends or when it is stopped/reset.
     if (!isCurrentDeckEvent(deck)) return;
-    // Игнорируем паразитные события pause, пока идёт резолв/буферизация ('loading') или автопереход ('ended')
+    // Also ignore spurious pause during active crossfade transition if the active deck is still
+    // legitimately ending or buffering, or while loading/ending.
     if (player.get().state === 'loading' || player.get().loading || el.ended) return;
+    if (crossfadeSession && !crossfadeSession.paused && deck === crossfadeSession.toDeck) {
+      // On WKWebView, starting/stopping a second audio element can emit a spurious pause on
+      // toDeck even though the user never paused; keep it playing until crossfade completes.
+      resumeAudioContextIfNeeded();
+      void el.play().catch(() => {
+        if (isCurrentDeckEvent(deck) && el.paused && !el.ended) {
+          pauseCrossfadeIfActive();
+          setPlayerMachineState('paused', { pos: el.src ? el.currentTime : 0 });
+        }
+      });
+      return;
+    }
+    clearAutoCrossfadeTimer();
     setPlayerMachineState('paused', { pos: el.src ? el.currentTime : 0 });
   });
 
@@ -2140,7 +2279,14 @@ function bindDeckEvents(deck: Deck) {
 
   el.addEventListener('ended', () => {
     if (deck !== getActiveDeck()) {
+      // Outgoing deck finished during crossfade: stop & reset it cleanly, and ensure incoming
+      // active deck is still playing.
       stopAndResetDeck(deck);
+      const cur = getActiveDeck();
+      if (cur.el.paused && !cur.el.ended && cur.el.src && cur.requestId === currentRequestId && !crossfadeSession?.paused) {
+        resumeAudioContextIfNeeded();
+        void cur.el.play().catch(() => {});
+      }
       return;
     }
     if (deck.requestId !== currentRequestId) return;
@@ -2202,16 +2348,25 @@ function bindDeckEvents(deck: Deck) {
 
     const fadeSec = effectiveAutoCrossfadeSeconds(duration);
     if (fadeSec > 0 && duration > 0 && !el.paused && el.currentTime >= 1) {
-      if (
-        preloadingNextForLoadId !== currentRequestId &&
-        remaining > fadeSec + 0.5 &&
-        remaining <= Math.max(fadeSec + 8, PRELOAD_AHEAD_SECONDS)
-      ) {
+      const decision = evaluateAutoCrossfadeTrigger({
+        duration,
+        currentTime: el.currentTime,
+        fadeSec,
+        paused: el.paused,
+        ended: el.ended,
+        preloadedAlready: preloadingNextForLoadId === currentRequestId,
+        preparingAlready: autoCrossfadePreparingForLoadId === currentRequestId,
+        preloadAheadSec: PRELOAD_AHEAD_SECONDS,
+      });
+      if (decision.shouldPreload) {
         void preloadNextTrackIntoInactiveDeck();
       }
-      if (autoCrossfadePreparingForLoadId !== currentRequestId && remaining > 0.25 && remaining <= fadeSec + 0.25) {
+      if (decision.shouldStart) {
         void startAutoCrossfade();
         return;
+      }
+      if (autoCrossfadeTimer === null && duration - el.currentTime <= 45) {
+        scheduleAutoCrossfadeCheck();
       }
     }
 
@@ -2236,6 +2391,9 @@ function bindDeckEvents(deck: Deck) {
       return;
     }
     if (deck.requestId !== currentRequestId) return;
+    if (crossfadeSession && crossfadeSession.toDeck === deck) {
+      cancelCrossfade(true);
+    }
     const reqId = deck.requestId;
     logTrackTiming(reqId, 'audio_error', `code=${el.error?.code ?? 0} message="${el.error?.message ?? ''}"`);
     const track = currentTrack();

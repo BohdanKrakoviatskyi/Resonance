@@ -1,17 +1,17 @@
-import { Fragment, useState } from 'react';
-import { IconButton, Menu, Segmented, EmptyState, type Vars } from './ui';
+import { Fragment, memo, useCallback, useMemo, useState } from 'react';
+import { IconButton, Menu, Segmented, EmptyState, usePresence, type Vars } from './ui';
 import { ArtCover, Cover, Eq } from './Cover';
 import { Lyrics } from './Lyrics';
 import { ProviderEmbed } from './ProviderEmbed';
 import { DislikeButton, LikeButton, PlaylistPicker, SourcePill } from './TrackList';
 import { useVtSource } from './MiniPlayer';
 import { cx, useStore } from '../lib/util';
-import { t } from '../lib/i18n';
+import { t, useLang } from '../lib/i18n';
 import { getTrack, library } from '../state/library';
 import { jumpTo, player, useCurrentTrack } from '../state/player';
 import { openSearch, setImmersive, ui } from '../state/ui';
 
-function QueueList() {
+const QueueList = memo(function QueueList() {
   const queue = useStore(player, (s) => s.queue);
   const index = useStore(player, (s) => s.index);
   const playing = useStore(player, (s) => s.playing);
@@ -44,25 +44,39 @@ function QueueList() {
       })}
     </div>
   );
-}
+});
 
-export function NowPlaying({ mode }: { mode: 'inline' | 'drawer' }) {
+export const NowPlaying = memo(function NowPlaying({ mode }: { mode: 'inline' | 'drawer' }) {
+  const lang = useLang();
   const open = useStore(ui, (s) => mode === 'drawer' || s.panel);
+  const immersive = useStore(ui, (s) => s.immersive);
+  const { mounted: bodyMounted } = usePresence(open, 520);
   const tab = useStore(ui, (s) => s.tab);
   const track = useCurrentTrack();
   const vt = useVtSource();
   const inPlaylist = useStore(library, (s) => !!track && s.playlists.some((p) => p.ids.includes(track.id)));
   const [anchor, setAnchor] = useState<HTMLElement | null>(null);
+  const handleOpenImmersive = useCallback(() => setImmersive(true), []);
+  const handleTabChange = useCallback((v: 'lyrics' | 'queue') => ui.set({ tab: v }), []);
+  const tabOptions = useMemo(
+    () => [
+      { value: 'lyrics' as const, label: t('lyrics'), icon: 'lyrics' as const },
+      { value: 'queue' as const, label: t('upNext'), icon: 'queue_music' as const },
+    ],
+    [lang],
+  );
+  const contentActive = bodyMounted || open;
+  const lyricsLive = open && !immersive;
   return (
     <aside className="panel panel-side np" data-open={open} data-mode={mode} aria-label={t('nowPlaying')} aria-hidden={!open}>
       <div className="np-inner">
-        {track ? (
+        {!contentActive ? null : track ? (
           <Fragment key={track.id}>
             <ArtCover
               src={track.cover}
               vt={mode === 'inline' && vt === 'panel' ? 'np-cover' : undefined}
               className="np-cover"
-              onClick={() => setImmersive(true)}
+              onClick={handleOpenImmersive}
               label={t('fullscreenLyrics')}
             />
             <div className="meta-in">
@@ -90,13 +104,10 @@ export function NowPlaying({ mode }: { mode: 'inline' | 'drawer' }) {
               size="sm"
               className="mt-4"
               value={tab}
-              onChange={(v) => ui.set({ tab: v })}
-              options={[
-                { value: 'lyrics', label: t('lyrics'), icon: 'lyrics' },
-                { value: 'queue', label: t('upNext'), icon: 'queue_music' },
-              ]}
+              onChange={handleTabChange}
+              options={tabOptions}
             />
-            <div className="np-body">{tab === 'lyrics' ? <Lyrics track={track} variant="panel" /> : <QueueList />}</div>
+            <div className="np-body">{tab === 'lyrics' ? <Lyrics track={track} variant="panel" active={lyricsLive} /> : <QueueList />}</div>
             <Menu anchor={anchor} open={!!anchor} onClose={() => setAnchor(null)}>
               <PlaylistPicker id={track.id} onClose={() => setAnchor(null)} />
             </Menu>
@@ -109,4 +120,4 @@ export function NowPlaying({ mode }: { mode: 'inline' | 'drawer' }) {
       </div>
     </aside>
   );
-}
+});

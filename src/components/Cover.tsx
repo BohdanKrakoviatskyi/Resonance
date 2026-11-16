@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
+import { memo, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
 import { Icon, type IconName } from './Icon';
 import { Shape } from './ui';
 import { cx } from '../lib/util';
@@ -7,7 +7,7 @@ import type { Playlist } from '../types';
 
 const loadedCoverUrls = new Set<string>();
 
-export function Cover({ src, className, style, icon = 'music_note' }: { src?: string; className?: string; style?: CSSProperties; icon?: IconName }) {
+export const Cover = memo(function Cover({ src, className, style, icon = 'music_note' }: { src?: string; className?: string; style?: CSSProperties; icon?: IconName }) {
   const [okSrc, setOk] = useState<string | null>(() => (src && loadedCoverUrls.has(src) ? src : null));
   const [errSrc, setErr] = useState<string | null>(null);
   const alreadyLoaded = Boolean(src && (okSrc === src || loadedCoverUrls.has(src)));
@@ -39,21 +39,25 @@ export function Cover({ src, className, style, icon = 'music_note' }: { src?: st
       )}
     </div>
   );
-}
+});
 
 /** Artwork that cross-fades between tracks (used for now-playing surfaces + view-transition morphs). */
-export function ArtCover({ src, className, vt, onClick, label }: { src?: string; className?: string; vt?: string; onClick?: () => void; label?: string }) {
-  const [layers, setLayers] = useState<{ src: string; ok: boolean }[]>(() => (src ? [{ src, ok: false }] : []));
+export const ArtCover = memo(function ArtCover({ src, className, vt, onClick, label }: { src?: string; className?: string; vt?: string; onClick?: () => void; label?: string }) {
+  const [layers, setLayers] = useState<{ src: string; ok: boolean }[]>(() =>
+    src ? [{ src, ok: loadedCoverUrls.has(src) }] : [],
+  );
   const timer = useRef(0);
   useEffect(() => {
     if (!src) {
       setLayers([]);
       return;
     }
-    setLayers((ls) => (ls.some((l) => l.src === src) ? ls : [...ls.slice(-1), { src, ok: false }]));
+    const cached = loadedCoverUrls.has(src);
+    setLayers((ls) => (ls.some((l) => l.src === src) ? ls : [...ls.slice(-1), { src, ok: cached }]));
   }, [src]);
   useEffect(() => () => clearTimeout(timer.current), []);
   const loaded = (s: string) => {
+    loadedCoverUrls.add(s);
     setLayers((ls) => ls.map((x) => (x.src === s ? { ...x, ok: true } : x)));
     clearTimeout(timer.current);
     timer.current = window.setTimeout(() => {
@@ -79,7 +83,7 @@ export function ArtCover({ src, className, vt, onClick, label }: { src?: string;
           key={l.src}
           src={l.src}
           alt=""
-          decoding="async"
+          decoding={l.ok ? 'sync' : 'async'}
           referrerPolicy="no-referrer"
           draggable={false}
           className={l.ok ? 'ok' : ''}
@@ -91,9 +95,9 @@ export function ArtCover({ src, className, vt, onClick, label }: { src?: string;
       ))}
     </div>
   );
-}
+});
 
-export function PlaylistCover({ p, className, style }: { p: Playlist; className?: string; style?: CSSProperties }) {
+export const PlaylistCover = memo(function PlaylistCover({ p, className, style }: { p: Playlist; className?: string; style?: CSSProperties }) {
   const covers = useMemo(() => {
     const out: string[] = [];
     for (const id of p.ids) {
@@ -118,7 +122,7 @@ export function PlaylistCover({ p, className, style }: { p: Playlist; className?
       <Icon name="queue_music" />
     </div>
   );
-}
+});
 
 export function FavCover({ className, size }: { className?: string; size: number }) {
   return (

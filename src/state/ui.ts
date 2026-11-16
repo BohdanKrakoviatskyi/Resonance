@@ -12,9 +12,10 @@ export type Route =
   | { name: 'audio' };
 
 export type Dialog =
-  | { kind: 'create'; trackId?: string }
+  | { kind: 'create'; trackId?: string; initialTab?: 'scratch' | 'import' }
   | { kind: 'rename'; id: string }
   | { kind: 'delete'; id: string }
+  | { kind: 'import-review' }
   | { kind: 'update' }
   | { kind: 'update-uninstall' }
   | { kind: 'uninstall' }

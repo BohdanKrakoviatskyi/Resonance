@@ -110,26 +110,28 @@ export default function App() {
   }, [immersive]);
 
   return (
-    <Fragment key={lang}>
+    <>
       <Background />
       <SvgDefs />
-      <div className="shell" data-hidden={immersive} aria-hidden={immersive}>
-        {isMd && <Sidebar mode="inline" />}
-        <Center isMd={isMd} />
-        {isXl && <NowPlaying mode="inline" />}
-      </div>
-      {!isMd && (
-        <Drawer open={drawer} onClose={closeDrawer} side="left">
-          <Sidebar mode="drawer" />
-        </Drawer>
-      )}
-      {!isXl && (
-        <Drawer open={npDrawer} onClose={closeNp} side="right">
-          <NowPlaying mode="drawer" />
-        </Drawer>
-      )}
-      <Immersive />
-      <Overlays />
-    </Fragment>
+      <Fragment key={lang}>
+        <div className="shell" data-hidden={immersive} aria-hidden={immersive}>
+          {isMd && <Sidebar mode="inline" />}
+          <Center isMd={isMd} />
+          {isXl && <NowPlaying mode="inline" />}
+        </div>
+        {!isMd && (
+          <Drawer open={drawer} onClose={closeDrawer} side="left">
+            <Sidebar mode="drawer" />
+          </Drawer>
+        )}
+        {!isXl && (
+          <Drawer open={npDrawer} onClose={closeNp} side="right">
+            <NowPlaying mode="drawer" />
+          </Drawer>
+        )}
+        <Immersive />
+        <Overlays />
+      </Fragment>
+    </>
   );
 }

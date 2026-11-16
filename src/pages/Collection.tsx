@@ -49,11 +49,16 @@ export default function Collection({ kind, id }: { kind: 'favorites' | 'playlist
   const [ytLoading, setYtLoading] = useState(false);
   const [ytError, setYtError] = useState('');
   const [manualRefreshing, setManualRefreshing] = useState(false);
-  const [favSearchOpen, setFavSearchOpen] = useState(false);
-  const [favQuery, setFavQuery] = useState('');
-  const favSearchWrapRef = useRef<HTMLDivElement>(null);
-  const favSearchRef = useRef<HTMLInputElement>(null);
+  const [searchOpen, setSearchOpen] = useState(false);
+  const [query, setQuery] = useState('');
+  const searchWrapRef = useRef<HTMLDivElement>(null);
+  const searchInputRef = useRef<HTMLInputElement>(null);
   const cache = useStore(library, (s) => s.cache);
+
+  useEffect(() => {
+    setQuery('');
+    setSearchOpen(false);
+  }, [kind, id]);
 
   const ytCollectionTracks = ytCollection?.kind === 'liked' ? ytmusicLiked : cachedYtTracks ?? [];
   const ytCollectionName = ytCollection?.kind === 'liked' ? t('ytmusicLiked') : ytPlaylist?.title;
@@ -143,7 +148,7 @@ export default function Collection({ kind, id }: { kind: 'favorites' | 'playlist
     return sourceIds.filter((trackId) => !!getTrack(trackId));
   }, [kind, liked, soundcloudLiked, ytmusicLiked, disliked, cache, favProvider, pl]);
 
-  const normalizedQuery = kind === 'favorites' ? favQuery.trim().toLowerCase() : '';
+  const normalizedQuery = query.trim().toLowerCase();
   const visibleIds = useMemo(() => {
     if (!normalizedQuery) return ids;
     return ids.filter((trackId) => {
@@ -282,16 +287,26 @@ export default function Collection({ kind, id }: { kind: 'favorites' | 'playlist
   useEffect(() => {
     isFirstRenderRef.current = false;
   }, []);
-  const animateRows = kind !== 'favorites' || (isFirstRenderRef.current && !hasSwitchedFilterRef.current);
+  const animateRows =
+    !normalizedQuery && (kind !== 'favorites' || (isFirstRenderRef.current && !hasSwitchedFilterRef.current));
 
   const total = visibleIds.reduce((a, x) => a + (getTrack(x)?.duration ?? 0), 0);
   const name = kind === 'favorites' ? t('favorites') : pl!.name;
+  const searchPlaceholder = t(kind === 'favorites' ? 'favoritesSearchPlaceholder' : 'playlistSearchPlaceholder');
+  const knownRemoteCount =
+    kind === 'playlist' && !normalizedQuery
+      ? Math.max(
+          visibleIds.length,
+          Number(remotePlaylist?.trackCount) || 0,
+          Number(ytPlaylist?.trackCount) || 0,
+        )
+      : visibleIds.length;
 
   return (
     <div className="page">
       <header className="anim-in relative mb-8 mt-2 flex flex-col items-center gap-6 text-center @2xl:flex-row @2xl:items-end @2xl:text-left">
-        {kind === 'favorites' && (
-          <div className="flex flex-wrap items-center justify-end gap-1.5 self-end @2xl:absolute @2xl:right-0 @2xl:top-0">
+        <div className="flex flex-wrap items-center justify-end gap-1.5 self-end @2xl:absolute @2xl:right-0 @2xl:top-0">
+          {kind === 'favorites' && (
             <div className="seg seg-sm fav-seg" role="group" aria-label={t('providers')}>
               <button
                 type="button"
@@ -325,68 +340,70 @@ export default function Collection({ kind, id }: { kind: 'favorites' | 'playlist
                 <img src={youtubeMusicLogo} alt="" aria-hidden="true" className="provider-logo" />
               </button>
             </div>
-            <div
-              ref={favSearchWrapRef}
-              className="fav-search-pill"
-              data-open={favSearchOpen || Boolean(favQuery)}
-              onBlur={(e) => {
-                if (!favSearchWrapRef.current?.contains(e.relatedTarget as Node | null) && !favQuery.trim()) {
-                  setFavSearchOpen(false);
-                }
+          )}
+          <div
+            ref={searchWrapRef}
+            className="fav-search-pill"
+            data-open={searchOpen || Boolean(query)}
+            onBlur={(e) => {
+              if (!searchWrapRef.current?.contains(e.relatedTarget as Node | null) && !query.trim()) {
+                setSearchOpen(false);
+              }
+            }}
+          >
+            <button
+              type="button"
+              data-ripple
+              className="fav-search-trigger sl"
+              aria-label={searchPlaceholder}
+              data-tip={searchOpen ? undefined : searchPlaceholder}
+              tabIndex={searchOpen ? -1 : 0}
+              onClick={() => {
+                setSearchOpen(true);
+                requestAnimationFrame(() => searchInputRef.current?.focus());
               }}
             >
+              <Icon name="search" size={18} />
+            </button>
+            <input
+              ref={searchInputRef}
+              className="fav-search-input"
+              value={query}
+              tabIndex={searchOpen || Boolean(query) ? 0 : -1}
+              onChange={(e) => setQuery(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Escape') {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  setQuery('');
+                  setSearchOpen(false);
+                  searchInputRef.current?.blur();
+                }
+              }}
+              placeholder={searchPlaceholder}
+              aria-label={searchPlaceholder}
+              enterKeyHint="search"
+            />
+            {(searchOpen || query) && (
               <button
                 type="button"
                 data-ripple
-                className="fav-search-trigger sl"
-                aria-label={t('favoritesSearchPlaceholder')}
-                data-tip={favSearchOpen ? undefined : t('favoritesSearchPlaceholder')}
-                tabIndex={favSearchOpen ? -1 : 0}
+                className="fav-search-clear sl"
+                aria-label={t('cancel')}
                 onClick={() => {
-                  setFavSearchOpen(true);
-                  requestAnimationFrame(() => favSearchRef.current?.focus());
-                }}
-              >
-                <Icon name="search" size={18} />
-              </button>
-              <input
-                ref={favSearchRef}
-                className="fav-search-input"
-                value={favQuery}
-                tabIndex={favSearchOpen || Boolean(favQuery) ? 0 : -1}
-                onChange={(e) => setFavQuery(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === 'Escape') {
-                    e.preventDefault();
-                    e.stopPropagation();
-                    setFavQuery('');
-                    setFavSearchOpen(false);
-                    favSearchRef.current?.blur();
+                  if (query) {
+                    setQuery('');
+                    searchInputRef.current?.focus();
+                  } else {
+                    setSearchOpen(false);
                   }
                 }}
-                placeholder={t('favoritesSearchPlaceholder')}
-                aria-label={t('favoritesSearchPlaceholder')}
-                enterKeyHint="search"
-              />
-              {(favSearchOpen || favQuery) && (
-                <button
-                  type="button"
-                  data-ripple
-                  className="fav-search-clear sl"
-                  aria-label={t('cancel')}
-                  onClick={() => {
-                    if (favQuery) {
-                      setFavQuery('');
-                      favSearchRef.current?.focus();
-                    } else {
-                      setFavSearchOpen(false);
-                    }
-                  }}
-                >
-                  <Icon name="close" size={16} />
-                </button>
-              )}
-            </div>
+              >
+                <Icon name="close" size={16} />
+              </button>
+            )}
+          </div>
+          {kind === 'favorites' && (
             <button
               type="button"
               data-ripple
@@ -402,8 +419,8 @@ export default function Collection({ kind, id }: { kind: 'favorites' | 'playlist
                 className={isRefreshingFavorites ? 'animate-[spin_0.9s_linear_infinite]' : undefined}
               />
             </button>
-          </div>
-        )}
+          )}
+        </div>
         {kind === 'favorites' ? (
           <FavCover size={220} className="h-[220px] w-[220px] rounded-[36px] shadow-2xl" />
         ) : (
@@ -413,7 +430,7 @@ export default function Collection({ kind, id }: { kind: 'favorites' | 'playlist
           <div className="label-up">{t(kind === 'favorites' ? 'collection' : 'playlist')}</div>
           <h1 className="display my-2 break-words text-[clamp(34px,6.5cqw,72px)]">{name}</h1>
           <div className="font-medium tabular-nums text-on-surface-variant">
-            {tracksLabel(visibleIds.length)}
+            {tracksLabel(knownRemoteCount)}
             {total > 0 && ` · ${durLabel(total)}`}
           </div>
           <div className="mt-5 flex flex-wrap items-center justify-center gap-2 @2xl:justify-start">
@@ -457,6 +474,8 @@ export default function Collection({ kind, id }: { kind: 'favorites' | 'playlist
           ids={visibleIds}
           playlistId={kind === 'playlist' && !isProviderPlaylist ? pl!.id : undefined}
           animateRows={animateRows}
+          paginated
+          resetKey={`${kind}:${id ?? ''}:${favProvider}:${normalizedQuery}`}
         />
       ) : normalizedQuery && ids.length > 0 ? (
         <EmptyState
@@ -464,7 +483,7 @@ export default function Collection({ kind, id }: { kind: 'favorites' | 'playlist
           title={t('noResults')}
           text={t('noResultsText')}
           action={
-            <Button variant="tonal" icon="close" onClick={() => setFavQuery('')}>
+            <Button variant="tonal" icon="close" onClick={() => setQuery('')}>
               {t('cancel')}
             </Button>
           }

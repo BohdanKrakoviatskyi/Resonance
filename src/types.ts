@@ -23,12 +23,15 @@ export interface Track {
   lyrics?: LyricLine[];
 }
 
+export type PlaylistSection = 'local' | 'youtube' | 'soundcloud';
+
 export interface Playlist {
   id: string;
   name: string;
   ids: string[];
   created: number;
   artworkUrl?: string;
+  section?: PlaylistSection;
 }
 
 export interface SoundCloudPlaylist {

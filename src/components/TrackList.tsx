@@ -1,9 +1,15 @@
-import { memo, useEffect, useRef, useState } from 'react';
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { Icon } from './Icon';
 import { IconButton, Menu, MenuItem, type Vars } from './ui';
 import { Cover, Eq, PlaylistCover } from './Cover';
 import { cx, fmtTime, useStore } from '../lib/util';
 import { t } from '../lib/i18n';
+import {
+  computeTrackWindow,
+  nextLoadedCount,
+  TRACK_LIST_PAGE_SIZE,
+  TRACK_VIRTUALIZE_THRESHOLD,
+} from '../lib/track-window';
 import { getTrack, isDisliked, isLiked, library, toggleDislike, toggleLike, togglePlaylistTrack } from '../state/library';
 import { addToQueue, player, playNext, playQueue, prefetchTrackByIdLowPriority, toggle } from '../state/player';
 import { openDialog, openSearch } from '../state/ui';
@@ -207,48 +213,200 @@ export const TrackRow = memo(function TrackRow({ id, index, isCurrent, isPlaying
   );
 });
 
-const INITIAL_BATCH = 48;
-const BATCH_STEP = 80;
-
-export function TrackList({ ids, playlistId, animateRows = true }: { ids: string[]; playlistId?: string; animateRows?: boolean }) {
+export function TrackList({
+  ids,
+  playlistId,
+  animateRows = true,
+  paginated = false,
+  resetKey,
+}: {
+  ids: string[];
+  playlistId?: string;
+  animateRows?: boolean;
+  paginated?: boolean;
+  resetKey?: string;
+}) {
   const cur = useStore(player, (s) => s.queue[s.index] ?? null);
   const playing = useStore(player, (s) => s.playing);
-  const [visibleCount, setVisibleCount] = useState(() => Math.min(ids.length, INITIAL_BATCH));
+  const listRef = useRef<HTMLDivElement>(null);
+  const sentinelRef = useRef<HTMLDivElement>(null);
   const idsRef = useRef(ids);
   idsRef.current = ids;
-  const listIdentityRef = useRef('');
+
+  const [loadedCount, setLoadedCount] = useState(() =>
+    paginated ? Math.min(ids.length, TRACK_LIST_PAGE_SIZE) : ids.length,
+  );
+  const [viewportBounds, setViewportBounds] = useState<{ top: number; bottom: number }>({
+    top: 0,
+    bottom: 900,
+  });
+
+  const identityKey = resetKey ?? `${playlistId ?? 'list'}`;
+  const prevIdentityRef = useRef(identityKey);
 
   useEffect(() => {
-    // Only reset progressive batching when the actual list identity (provider / playlist / first items) changes,
-    // NEVER when a track starts playing or when minor metadata updates occur.
-    const nextIdentity = `${playlistId ?? 'fav'}:${ids[0] ?? ''}:${ids.length}`;
-    if (listIdentityRef.current !== nextIdentity) {
-      listIdentityRef.current = nextIdentity;
-      setVisibleCount(Math.min(ids.length, INITIAL_BATCH));
-    } else if (visibleCount < ids.length) {
-      setVisibleCount((c) => Math.max(c, Math.min(ids.length, INITIAL_BATCH)));
+    if (!paginated) {
+      setLoadedCount(ids.length);
+      return;
     }
-  }, [ids, playlistId, visibleCount]);
+    if (prevIdentityRef.current !== identityKey) {
+      prevIdentityRef.current = identityKey;
+      setLoadedCount(Math.min(ids.length, TRACK_LIST_PAGE_SIZE));
+      return;
+    }
+    setLoadedCount((prev) => nextLoadedCount(prev, ids.length, TRACK_LIST_PAGE_SIZE, false));
+  }, [identityKey, ids.length, paginated]);
 
+  const effectiveCount = paginated ? Math.min(loadedCount, ids.length) : ids.length;
+  const shouldVirtualize = effectiveCount > TRACK_VIRTUALIZE_THRESHOLD;
+
+  const loadNextBatch = useCallback(() => {
+    if (!paginated) return;
+    setLoadedCount((prev) => nextLoadedCount(prev, idsRef.current.length, TRACK_LIST_PAGE_SIZE, true));
+  }, [paginated]);
+
+  // Progressive 20-by-20 loading as the user scrolls near the bottom of the loaded slice
   useEffect(() => {
-    if (visibleCount >= ids.length) return;
-    const raf = requestAnimationFrame(() => {
-      setVisibleCount((c) => Math.min(ids.length, c + BATCH_STEP));
-    });
-    return () => cancelAnimationFrame(raf);
-  }, [visibleCount, ids.length]);
+    if (!paginated || effectiveCount >= ids.length) return;
+    const sentinel = sentinelRef.current;
+    if (!sentinel || typeof IntersectionObserver === 'undefined') return;
+    const scroller = sentinel.closest('.center-scroll') as HTMLElement | null;
+
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (entries.some((entry) => entry.isIntersecting)) {
+          loadNextBatch();
+        }
+      },
+      {
+        root: scroller,
+        rootMargin: '0px 0px 280px 0px',
+        threshold: 0.01,
+      },
+    );
+    observer.observe(sentinel);
+    return () => observer.disconnect();
+  }, [paginated, effectiveCount, ids.length, loadNextBatch]);
+
+  // Trigger another 20-track page when scrolling near the bottom (covers short viewports and rapid scrolls)
+  useEffect(() => {
+    if (!paginated || effectiveCount >= ids.length) return;
+    const listEl = listRef.current;
+    const scroller = listEl?.closest('.center-scroll') as HTMLElement | null;
+    if (!scroller || !listEl) return;
+
+    const checkNeedMore = () => {
+      const sRect = scroller.getBoundingClientRect();
+      const lRect = listEl.getBoundingClientRect();
+      if (lRect.bottom - sRect.bottom < 260) {
+        loadNextBatch();
+      }
+    };
+
+    const raf = requestAnimationFrame(checkNeedMore);
+    scroller.addEventListener('scroll', checkNeedMore, { passive: true });
+    return () => {
+      cancelAnimationFrame(raf);
+      scroller.removeEventListener('scroll', checkNeedMore);
+    };
+  }, [paginated, effectiveCount, ids.length, loadNextBatch]);
+
+  // Windowed rendering once >40 tracks are loaded so 500+ tracks keep ~30 DOM nodes and zero scroll jank
+  useLayoutEffect(() => {
+    if (!shouldVirtualize) return;
+
+    const listEl = listRef.current;
+    if (!listEl) return;
+    const scroller = (listEl.closest('.center-scroll') as HTMLElement | null) ?? null;
+    let rafId = 0;
+
+    const computeBounds = () => {
+      rafId = 0;
+      if (!listEl) return;
+      const sRect = scroller ? scroller.getBoundingClientRect() : { top: 0, bottom: window.innerHeight };
+      const lRect = listEl.getBoundingClientRect();
+      const nextTop = Math.max(0, sRect.top - lRect.top);
+      const nextBottom = Math.max(0, sRect.bottom - lRect.top);
+
+      setViewportBounds((prev) =>
+        Math.abs(prev.top - nextTop) < 32 && Math.abs(prev.bottom - nextBottom) < 32
+          ? prev
+          : { top: nextTop, bottom: nextBottom },
+      );
+    };
+
+    const schedule = () => {
+      if (!rafId) rafId = requestAnimationFrame(computeBounds);
+    };
+
+    computeBounds();
+    const target: EventTarget = scroller ?? window;
+    target.addEventListener('scroll', schedule, { passive: true });
+    window.addEventListener('resize', schedule, { passive: true });
+    let resizeObs: ResizeObserver | undefined;
+    if (typeof ResizeObserver !== 'undefined') {
+      resizeObs = new ResizeObserver(schedule);
+      if (scroller) resizeObs.observe(scroller);
+      resizeObs.observe(listEl);
+    }
+    return () => {
+      if (rafId) cancelAnimationFrame(rafId);
+      target.removeEventListener('scroll', schedule);
+      window.removeEventListener('resize', schedule);
+      resizeObs?.disconnect();
+    };
+  }, [shouldVirtualize, effectiveCount]);
 
   const onPlayIndex = useRef((idx: number) => {
     playQueue(idsRef.current, idx);
   }).current;
 
-  const slice = visibleCount < ids.length ? ids.slice(0, visibleCount) : ids;
+  const { start, end, topPad, bottomPad } = useMemo(
+    () =>
+      computeTrackWindow({
+        loadedCount: effectiveCount,
+        viewTop: viewportBounds.top,
+        viewBottom: viewportBounds.bottom,
+      }),
+    [effectiveCount, viewportBounds.top, viewportBounds.bottom],
+  );
+
+  const slice = ids.slice(start, end);
 
   return (
-    <div role="list" className={cx('flex flex-col gap-0.5', !animateRows && 'track-list-no-anim')}>
-      {slice.map((id, i) => (
-        <TrackRow key={id} id={id} index={i} isCurrent={id === cur} isPlaying={id === cur && playing} animateRow={animateRows} playlistId={playlistId} onPlayIndex={onPlayIndex} />
-      ))}
+    <div>
+      <div
+        ref={listRef}
+        role="list"
+        className={cx('flex flex-col gap-0.5', !animateRows && 'track-list-no-anim')}
+        style={
+          shouldVirtualize
+            ? {
+                paddingTop: topPad,
+                paddingBottom: bottomPad,
+              }
+            : undefined
+        }
+      >
+        {slice.map((id, offset) => {
+          const idx = start + offset;
+          return (
+            <TrackRow
+              key={id}
+              id={id}
+              index={idx}
+              isCurrent={id === cur}
+              isPlaying={id === cur && playing}
+              animateRow={animateRows && idx < TRACK_LIST_PAGE_SIZE}
+              playlistId={playlistId}
+              onPlayIndex={onPlayIndex}
+            />
+          );
+        })}
+      </div>
+      {paginated && effectiveCount < ids.length && (
+        <div ref={sentinelRef} className="h-4 w-full" aria-hidden="true" />
+      )}
     </div>
   );
 }
