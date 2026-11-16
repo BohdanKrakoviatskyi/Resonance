@@ -63,7 +63,7 @@ function findLine(lines: LyricLine[], time: number) {
   return ans;
 }
 
-function SyncedLyrics({ lines, variant }: { lines: LyricLine[]; variant: 'panel' | 'imm' }) {
+function SyncedLyrics({ lines, variant, activeSurface = true }: { lines: LyricLine[]; variant: 'panel' | 'imm'; activeSurface?: boolean }) {
   const box = useRef<HTMLDivElement>(null);
   const list = useRef<HTMLDivElement>(null);
   const refs = useRef<(HTMLParagraphElement | null)[]>([]);
@@ -80,41 +80,43 @@ function SyncedLyrics({ lines, variant }: { lines: LyricLine[]; variant: 'panel'
   const firstText = leadGap ? Math.max(1, lines.findIndex((l) => !l.gap)) : 0;
   const intro = leadGap && active < firstText;
 
-  useEffect(
-    () =>
-      onFrame((_visualTime, _dur, realTime) => {
-        const time = realTime;
-        const i = findLine(lines, time + 0.12);
-        if (i !== activeRef.current) {
-          activeRef.current = i;
-          setActive(i);
+  useEffect(() => {
+    if (!activeSurface) return;
+    return onFrame((_visualTime, _dur, realTime) => {
+      const time = realTime;
+      const i = findLine(lines, time + 0.12);
+      if (i !== activeRef.current) {
+        activeRef.current = i;
+        setActive(i);
+      }
+      if (i >= 0) {
+        const L = lines[i];
+        const end = Math.min(lines[i + 1]?.t ?? L.t + 6, L.t + (L.gap ? 60 : 7));
+        // Пишем каждый кадр rAF (на 120 Гц — 120 раз/с) для максимальной плавности заливки;
+        // порог 0.002 только отсеивает лишние записи, когда время не сдвинулось.
+        const p = clamp((time - L.t) / Math.max(0.4, end - L.t), 0, 1);
+        if (i !== lpRef.current.i || Math.abs(p - lpRef.current.p) >= 0.002) {
+          lpRef.current = { i, p };
+          refs.current[i]?.style.setProperty('--lp', p.toFixed(4));
         }
-        if (i >= 0) {
-          const L = lines[i];
-          const end = Math.min(lines[i + 1]?.t ?? L.t + 6, L.t + (L.gap ? 60 : 7));
-          // Пишем каждый кадр rAF (на 120 Гц — 120 раз/с) для максимальной плавности заливки;
-          // порог 0.002 только отсеивает лишние записи, когда время не сдвинулось.
-          const p = clamp((time - L.t) / Math.max(0.4, end - L.t), 0, 1);
-          if (i !== lpRef.current.i || Math.abs(p - lpRef.current.p) >= 0.002) {
-            lpRef.current = { i, p };
-            refs.current[i]?.style.setProperty('--lp', p.toFixed(4));
-          }
-        }
-      }),
-    [lines],
-  );
+      }
+    });
+  }, [lines, activeSurface]);
 
   useLayoutEffect(() => {
+    if (!activeSurface) return;
     const el = box.current!;
+    setH(el.clientHeight);
     const ro = new ResizeObserver(() => setH(el.clientHeight));
     ro.observe(el);
     return () => {
       ro.disconnect();
       clearTimeout(idle.current);
     };
-  }, []);
+  }, [activeSurface]);
 
   useLayoutEffect(() => {
+    if (!activeSurface) return;
     const el = refs.current[intro ? firstText : Math.max(active, 0)];
     if (!el || !box.current) return;
     if (intro) {
@@ -123,7 +125,7 @@ function SyncedLyrics({ lines, variant }: { lines: LyricLine[]; variant: 'panel'
     }
     const anchor = variant === 'imm' ? 0.4 : 0.3;
     setY(el.offsetTop + el.offsetHeight / 2 - box.current.clientHeight * anchor);
-  }, [active, h, variant, lines, intro, firstText]);
+  }, [active, h, variant, lines, intro, firstText, activeSurface]);
 
   const scrollBy = (dy: number) => {
     const H = box.current?.clientHeight ?? 0;
@@ -583,7 +585,7 @@ function ManualLyricsPicker({
   );
 }
 
-export function Lyrics({ track, variant }: { track: Track | null; variant: 'panel' | 'imm' }) {
+export function Lyrics({ track, variant, active = true }: { track: Track | null; variant: 'panel' | 'imm'; active?: boolean }) {
   const [rev, setRev] = useState(0);
   const st = useLyrics(track, rev);
   if (!track) return null;
@@ -612,7 +614,7 @@ export function Lyrics({ track, variant }: { track: Track | null; variant: 'pane
       ) : st.status === 'plain' ? (
         <PlainLyrics key={`${track.id}:${rev}`} lines={st.lines} preview={st.preview} variant={variant} />
       ) : (
-        <SyncedLyrics key={`${track.id}:${rev}`} lines={st.lines} variant={variant} />
+        <SyncedLyrics key={`${track.id}:${rev}`} lines={st.lines} variant={variant} activeSurface={active} />
       )}
     </div>
   );

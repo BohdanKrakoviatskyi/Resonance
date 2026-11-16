@@ -540,7 +540,7 @@ export function Immersive() {
           </div>
           <div className="imm-right">
             {rightMode === 'lyrics' ? (
-              <Lyrics track={track} variant="imm" />
+              <Lyrics track={track} variant="imm" active={open} />
             ) : (
               <ImmersiveEqualizer />
             )}

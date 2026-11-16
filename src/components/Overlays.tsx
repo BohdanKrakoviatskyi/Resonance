@@ -1,16 +1,27 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import { Icon } from './Icon';
-import { Button, IconButton, Loader, usePresence } from './ui';
+import { Button, IconButton, Loader, Segmented, usePresence } from './ui';
+import { ImportReviewDialog } from './ImportReviewDialog';
 import { cx, useStore } from '../lib/util';
 import { t } from '../lib/i18n';
+import { markResizing } from '../lib/motion';
 import { createPlaylist, deletePlaylist, library, renamePlaylist } from '../state/library';
+import { detectImportSource, importStore, startPlaylistImport } from '../state/import';
 import { checkForUpdates, runAppUninstall, startInstallNewVersion, updater } from '../state/updater';
 import { clearAppCache } from '../state/cache';
-import { go, openDialog, snack, ui, type Dialog, type Snack } from '../state/ui';
+import { go, snack, ui, type Dialog, type Snack } from '../state/ui';
 
 export function Drawer({ open, onClose, side, children }: { open: boolean; onClose: () => void; side: 'left' | 'right'; children: ReactNode }) {
   const { mounted, visible } = usePresence(open, 450);
+  const firstRunRef = useRef(true);
+  useEffect(() => {
+    if (firstRunRef.current) {
+      firstRunRef.current = false;
+      if (!open) return;
+    }
+    markResizing(520);
+  }, [open]);
   useEffect(() => {
     if (!open) return;
     const k = (e: KeyboardEvent) => e.key === 'Escape' && onClose();
@@ -31,13 +42,28 @@ const closeDialog = () => ui.set({ dialog: null });
 
 function NameDialog({ d }: { d: Extract<Dialog, { kind: 'create' | 'rename' }> }) {
   const existing = useStore(library, (s) => (d.kind === 'rename' ? s.playlists.find((p) => p.id === d.id)?.name ?? '' : ''));
+  const activeImport = useStore(importStore, (s) => s.active);
+  const [tab, setTab] = useState<'scratch' | 'import'>(d.kind === 'create' && d.initialTab === 'import' ? 'import' : 'scratch');
+  const [importMode, setImportMode] = useState<'playlist' | 'sc_likes'>('playlist');
   const [name, setName] = useState(existing);
+  const [importInput, setImportInput] = useState('');
+  const [customImportName, setCustomImportName] = useState('');
+  const [error, setError] = useState('');
+  const [busy, setBusy] = useState(false);
   const input = useRef<HTMLInputElement>(null);
+  const importRef = useRef<HTMLInputElement>(null);
+
   useEffect(() => {
-    const tm = setTimeout(() => input.current?.select(), 60);
+    const tm = setTimeout(() => {
+      if (tab === 'import' && d.kind === 'create') importRef.current?.focus();
+      else input.current?.select();
+    }, 60);
     return () => clearTimeout(tm);
-  }, []);
-  const submit = () => {
+  }, [tab, d.kind]);
+
+  const detected = d.kind === 'create' && tab === 'import' ? detectImportSource(importInput, importMode) : null;
+
+  const submitScratch = () => {
     if (d.kind === 'rename') renamePlaylist(d.id, name);
     else {
       const id = createPlaylist(name || t('newPlaylist'), d.trackId);
@@ -45,26 +71,158 @@ function NameDialog({ d }: { d: Extract<Dialog, { kind: 'create' | 'rename' }> }
     }
     closeDialog();
   };
+
+  const submitImport = () => {
+    if (busy || d.kind !== 'create') return;
+    if (activeImport) {
+      setError(t('importAlreadyRunning'));
+      return;
+    }
+    const trimmed = importInput.trim();
+    if (!trimmed) {
+      setError(importMode === 'sc_likes' ? t('importEnterUserFirst') : t('importPasteLinkFirst'));
+      return;
+    }
+    if (!detected) {
+      setError(importMode === 'sc_likes' ? t('importEnterUserFirst') : t('importUnsupportedLink'));
+      return;
+    }
+    setError('');
+    setBusy(true);
+    closeDialog();
+    void startPlaylistImport({
+      input: trimmed,
+      mode: importMode,
+      customName: customImportName.trim() || undefined,
+      pendingTrackId: d.trackId,
+    }).catch(() => {});
+  };
+
+  if (d.kind === 'rename') {
+    return (
+      <form
+        onSubmit={(e) => {
+          e.preventDefault();
+          submitScratch();
+        }}
+      >
+        <h2 className="headline mb-5 text-2xl">{t('rename')}</h2>
+        <label className="field">
+          <input ref={input} value={name} onChange={(e) => setName(e.target.value)} placeholder=" " maxLength={60} autoFocus />
+          <span>{t('playlistName')}</span>
+        </label>
+        <div className="mt-6 flex justify-end gap-2">
+          <Button variant="text" onClick={closeDialog}>
+            {t('cancel')}
+          </Button>
+          <Button type="submit" icon="check">
+            {t('save')}
+          </Button>
+        </div>
+      </form>
+    );
+  }
+
   return (
     <form
       onSubmit={(e) => {
         e.preventDefault();
-        submit();
+        if (tab === 'scratch') submitScratch();
+        else submitImport();
       }}
     >
-      <h2 className="headline mb-5 text-2xl">{d.kind === 'rename' ? t('rename') : t('newPlaylist')}</h2>
-      <label className="field">
-        <input ref={input} value={name} onChange={(e) => setName(e.target.value)} placeholder=" " maxLength={60} autoFocus />
-        <span>{t('playlistName')}</span>
-      </label>
-      <div className="mt-6 flex justify-end gap-2">
-        <Button variant="text" onClick={closeDialog}>
-          {t('cancel')}
-        </Button>
-        <Button type="submit" icon={d.kind === 'rename' ? 'check' : 'add'}>
-          {d.kind === 'rename' ? t('save') : t('create')}
-        </Button>
-      </div>
+      <h2 className="headline mb-4 text-2xl">{t('newPlaylist')}</h2>
+      <Segmented
+        size="sm"
+        className="mb-4"
+        value={tab}
+        onChange={(v) => {
+          setTab(v);
+          setError('');
+        }}
+        options={[
+          { value: 'scratch', label: t('importTabScratch'), icon: 'add' },
+          { value: 'import', label: t('importTabImport'), icon: 'download' },
+        ]}
+      />
+
+      {tab === 'scratch' ? (
+        <>
+          <label className="field">
+            <input ref={input} value={name} onChange={(e) => setName(e.target.value)} placeholder=" " maxLength={60} autoFocus />
+            <span>{t('playlistName')}</span>
+          </label>
+          <div className="mt-6 flex justify-end gap-2">
+            <Button variant="text" onClick={closeDialog}>
+              {t('cancel')}
+            </Button>
+            <Button type="submit" icon="add">
+              {t('create')}
+            </Button>
+          </div>
+        </>
+      ) : (
+        <>
+          <Segmented
+            size="sm"
+            className="mb-3"
+            value={importMode}
+            onChange={(v) => {
+              setImportMode(v);
+              setError('');
+            }}
+            options={[
+              { value: 'playlist', label: t('importModePlaylist') },
+              { value: 'sc_likes', label: t('importModeScLikes') },
+            ]}
+          />
+
+          <label className={cx('field', detected && 'field-with-badge')}>
+            <input
+              ref={importRef}
+              value={importInput}
+              onChange={(e) => {
+                setImportInput(e.target.value);
+                if (error) setError('');
+              }}
+              placeholder=" "
+              autoFocus
+            />
+            <span>{importMode === 'sc_likes' ? t('importScUserLabel') : t('importLinkLabel')}</span>
+            {detected && (
+              <em className="field-badge not-italic">
+                <Icon name="check" size={14} />
+                {detected.label}
+              </em>
+            )}
+          </label>
+
+          <label className="field mt-3">
+            <input
+              value={customImportName}
+              onChange={(e) => setCustomImportName(e.target.value)}
+              placeholder=" "
+              maxLength={80}
+            />
+            <span>{t('importCustomNameLabel')}</span>
+          </label>
+
+          <p className="mt-3 text-xs leading-relaxed text-on-surface-variant">
+            {importMode === 'sc_likes' ? t('importScLikesHint') : t('importSourcesHint')}
+          </p>
+          {error && <p className="mt-2 text-xs font-medium text-error">{error}</p>}
+          {activeImport && !error && <p className="mt-2 text-xs font-medium text-primary">{t('importAlreadyRunning')}</p>}
+
+          <div className="mt-5 flex justify-end gap-2">
+            <Button variant="text" onClick={closeDialog}>
+              {t('cancel')}
+            </Button>
+            <Button type="submit" icon="download" disabled={busy || activeImport}>
+              {t('importStartBtn')}
+            </Button>
+          </div>
+        </>
+      )}
     </form>
   );
 }
@@ -298,9 +456,11 @@ function DialogHost() {
   return createPortal(
     <div className="dialog-root" data-open={visible}>
       <div className="scrim" onClick={closeDialog} />
-      <div className="dialog" role="dialog" aria-modal="true">
+      <div className={cx('dialog', last.kind === 'import-review' && 'dialog-wide')} role="dialog" aria-modal="true">
         {last.kind === 'delete' ? (
           <DeleteDialog id={last.id} />
+        ) : last.kind === 'import-review' ? (
+          <ImportReviewDialog onClose={closeDialog} />
         ) : last.kind === 'update' ? (
           <UpdateDialog />
         ) : last.kind === 'update-uninstall' ? (

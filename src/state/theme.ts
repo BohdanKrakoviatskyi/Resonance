@@ -106,9 +106,11 @@ function applyLang() {
   const en = appearance.get().lang === 'en';
   const r = document.documentElement;
   r.lang = en ? 'en' : 'ru';
+  // Google Sans Flex covers Latin only, so on Russian UI keep Roboto Flex first for both Latin and Cyrillic
+  // without mixing two variable fonts per run; fall back cleanly to Apple/system sans when fonts are cold.
   r.style.setProperty('--font-ui', en
-    ? "'Google Sans Flex', 'Roboto Flex', system-ui, sans-serif"
-    : "'Roboto Flex', 'Google Sans Flex', system-ui, sans-serif");
+    ? "'Google Sans Flex', 'Roboto Flex', -apple-system, BlinkMacSystemFont, system-ui, sans-serif"
+    : "'Roboto Flex', -apple-system, BlinkMacSystemFont, system-ui, sans-serif");
 }
 
 function computeNeonHex(accentArgb: number, dark: boolean): string {

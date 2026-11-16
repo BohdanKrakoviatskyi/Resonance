@@ -1,9 +1,11 @@
 pub mod auth_windows;
+pub mod playlist_import;
 pub mod yt;
 
 use tauri::{AppHandle, Emitter, Manager};
 
 use auth_windows::{YtMusicLoginState, start_soundcloud_login, start_ytmusic_login};
+use playlist_import::fetch_external_playlist;
 use yt::music_api::{fetch_yt_playlist_tracks, search_yt_tracks, yt_radio_tracks, yt_search_suggestions};
 use yt::proxy::{YtStreamProxy, frontend_log, resolve_yt_stream_url};
 use yt::store::{
@@ -170,7 +172,8 @@ pub fn run() {
             yt_playlist_tracks_cached,
             yt_playlist_tracks_sync,
             yt_playlist_artwork,
-            yt_clear_cache
+            yt_clear_cache,
+            fetch_external_playlist
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

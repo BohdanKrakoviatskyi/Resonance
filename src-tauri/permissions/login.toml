@@ -36,6 +36,7 @@ commands.allow = [
   "yt_playlist_tracks_sync",
   "yt_playlist_artwork",
   "yt_clear_cache",
+  "fetch_external_playlist",
   "frontend_log"
 ]
 

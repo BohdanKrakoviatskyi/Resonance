@@ -86,6 +86,26 @@ export function ytResolveStream(videoId: string, options?: AbortSignal | YtStrea
   );
 }
 
+export type ExternalPlaylistTrack = {
+  title: string;
+  artist: string;
+  album?: string;
+  durationMs: number;
+  artworkUrl?: string;
+  nativeId?: string;
+};
+
+export type ExternalPlaylistResponse = {
+  source: 'youtube' | 'spotify' | 'deezer' | 'apple_music';
+  title: string;
+  artworkUrl?: string;
+  tracks: ExternalPlaylistTrack[];
+};
+
 export function ytClearNativeCache(signal?: AbortSignal): Promise<YtCacheClearResult> {
   return invokeAbortable('yt_clear_cache', {}, signal);
+}
+
+export function fetchExternalPlaylist(url: string, signal?: AbortSignal): Promise<ExternalPlaylistResponse> {
+  return invokeAbortable('fetch_external_playlist', { url }, signal);
 }

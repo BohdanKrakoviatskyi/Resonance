@@ -81,12 +81,18 @@ export function viewTransition(update: () => void) {
 }
 
 let rzTimer = 0;
-/** Temporarily disables expensive refraction filters while panels animate their size. */
-export function markResizing() {
+/** Temporarily pauses heavy ambient effects & simplifies glass compositing while panels animate. */
+export function markResizing(ms?: number) {
   const root = document.documentElement;
   root.dataset.resizing = '';
   clearTimeout(rzTimer);
-  rzTimer = window.setTimeout(() => delete root.dataset.resizing, 700);
+  let dur = ms;
+  if (!dur) {
+    const raw = getComputedStyle(root).getPropertyValue('--sp-def-d').trim();
+    const parsed = parseFloat(raw);
+    dur = Number.isFinite(parsed) && parsed > 0 ? Math.min(900, Math.round(parsed + 80)) : 560;
+  }
+  rzTimer = window.setTimeout(() => delete root.dataset.resizing, dur);
 }
 
 /** One delegated listener powers ripples for every [data-ripple] element + one shared tooltip. */

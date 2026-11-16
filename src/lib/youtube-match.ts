@@ -1,13 +1,13 @@
 type FallbackTrack = { title: string; artist: string; duration: number };
 type YouTubeCandidate = { title: string; artist: string; durationMs: number };
 
-const normalize = (value: string) => value.toLocaleLowerCase().replace(/[’']/g, '').replace(/[^\p{L}\p{N}]+/gu, ' ').trim();
+export const normalize = (value: string) => value.toLocaleLowerCase().replace(/[’']/g, '').replace(/[^\p{L}\p{N}]+/gu, ' ').trim();
 
 const NOISE_BRACKET = /\s*[\[(]\s*(?:official(?: music)? video|official(?: audio| lyric video)?|lyrics?|audio|music video|mv|m\/v|visuali[sz]er|4k|hd|hq|explicit(?: version)?|clean(?: version)?|remaster(?:ed)?(?: \d{4})?|clip|prod\.?[^\])]*)\s*[\])]/gi;
 const NOISE_DASH = /\s*[-–—|]\s*(?:official(?: music)? video|official(?: audio)?|lyrics?|audio|music video|mv|visuali[sz]er|explicit|clean|remaster(?:ed)?|hq|hd|4k|clip)\b.*$/i;
-const VARIANT = /\b(?:live|acoustic|sped up|speed up|nightcore|slowed|reverb|remix|cover|karaoke|instrumental|8d)\b/g;
+export const VARIANT = /\b(?:live|acoustic|sped up|speed up|nightcore|slowed|reverb|remix|cover|karaoke|instrumental|8d)\b/g;
 
-function titleTokens(value: string) {
+export function titleTokens(value: string) {
   const core = value
     .replace(/\s*[\[(]\s*(?:feat(?:uring)?|ft)\.?\s*[^)\]]*[)\]]/gi, ' ')
     .replace(/\s*\b(?:feat(?:uring)?|ft)\.?\s+.*$/i, ' ')
@@ -16,14 +16,14 @@ function titleTokens(value: string) {
   return new Set(normalize(core).split(' ').filter(Boolean));
 }
 
-function coverage(target: Set<string>, candidate: Set<string>) {
+export function coverage(target: Set<string>, candidate: Set<string>) {
   if (!target.size) return 0;
   let shared = 0;
   for (const token of target) if (candidate.has(token)) shared++;
   return shared / target.size;
 }
 
-function featuredArtist(value: string) {
+export function featuredArtist(value: string) {
   return value.replace(/\s*[\[(]\s*(?:feat(?:uring)?|ft)\.?\s*[^)\]]*[)\]]/gi, ' ')
     .replace(/\s*\b(?:feat(?:uring)?|ft)\.?\s+.*$/i, ' ').trim();
 }
