@@ -1,13 +1,17 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Mutex, RwLock, OnceLock};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use url::Url;
 
 const BUNDLED_CLIENTS_JSON: &str = include_str!("../../clients.json");
+const REMOTE_CLIENTS_URL: &str =
+    "https://raw.githubusercontent.com/BohdanKrakoviatskyi/Resonance/main/src-tauri/clients.json";
+const REMOTE_CLIENTS_MAX_AGE_SECS: u64 = 12 * 3600;
 const GATE_TTL: Duration = Duration::from_secs(30 * 60);
 const FRESH_LINK_WINDOW: Duration = Duration::from_secs(5 * 60);
 const STREAM_CACHE_TTL: Duration = Duration::from_secs(45 * 60);
@@ -54,6 +58,8 @@ fn default_gl() -> String {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ClientRegistry {
+    #[serde(default)]
+    pub schema_version: u32,
     pub stream_ladder: Vec<ClientProfile>,
     pub web_remix: ClientProfile,
     pub lyrics_timed: ClientProfile,
@@ -93,15 +99,22 @@ impl ClientProfile {
 
 impl ClientRegistry {
     pub fn load() -> Self {
+        let bundled: Self =
+            serde_json::from_str(BUNDLED_CLIENTS_JSON).expect("bundled clients.json must be valid");
         let override_path = app_data_root_dir().join("clients.json");
         if let Ok(raw) = std::fs::read_to_string(&override_path) {
-            if let Ok(parsed) = serde_json::from_str::<Self>(&raw) {
-                if !parsed.stream_ladder.is_empty() {
+            if let Some(parsed) = Self::parse_valid(&raw) {
+                if parsed.schema_version >= bundled.schema_version {
                     return parsed;
                 }
             }
         }
-        serde_json::from_str(BUNDLED_CLIENTS_JSON).expect("bundled clients.json must be valid")
+        bundled
+    }
+
+    pub fn parse_valid(raw: &str) -> Option<Self> {
+        let parsed = serde_json::from_str::<Self>(raw).ok()?;
+        (!parsed.stream_ladder.is_empty()).then_some(parsed)
     }
 
     pub fn by_client_name(&self, name: &str) -> Option<&ClientProfile> {
@@ -117,7 +130,7 @@ impl ClientRegistry {
                 return profile.user_agent.clone();
             }
             if c.eq_ignore_ascii_case("TVHTML5") {
-                return "Mozilla/5.0 (ChromiumStylePlatform) Cobalt/25.lts.30.1034943-gold (unlike Gecko), Unknown_TV_Unknown_0/Unknown (Unknown, Unknown)".to_string();
+                return "Mozilla/5.0 (SMART-TV; Linux; Tizen 2.4.0) AppleWebKit/538.1 (KHTML, like Gecko) Version/2.4.0 TV Safari/538.1".to_string();
             }
             if c.eq_ignore_ascii_case("WEB_EMBEDDED_PLAYER") || c.eq_ignore_ascii_case("WEB") {
                 return "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36".to_string();
@@ -127,9 +140,63 @@ impl ClientRegistry {
     }
 }
 
-pub fn registry() -> &'static ClientRegistry {
-    static REG: OnceLock<ClientRegistry> = OnceLock::new();
-    REG.get_or_init(ClientRegistry::load)
+fn registry_cell() -> &'static RwLock<ClientRegistry> {
+    static REG: OnceLock<RwLock<ClientRegistry>> = OnceLock::new();
+    REG.get_or_init(|| RwLock::new(ClientRegistry::load()))
+}
+
+pub fn registry_snapshot() -> ClientRegistry {
+    registry_cell()
+        .read()
+        .map(|g| g.clone())
+        .unwrap_or_else(|e| e.into_inner().clone())
+}
+
+pub async fn refresh_remote_clients_if_stale(http: &Client) -> bool {
+    let base = app_data_root_dir();
+    let clients_path = base.join("clients.json");
+    let stamp_path = base.join("clients_last_sync.txt");
+    let now = now_unix_secs();
+
+    if clients_path.is_file() {
+        if let Ok(raw) = std::fs::read_to_string(&stamp_path) {
+            if raw
+                .trim()
+                .parse::<u64>()
+                .is_ok_and(|last| now.saturating_sub(last) < REMOTE_CLIENTS_MAX_AGE_SECS)
+            {
+                return false;
+            }
+        }
+    }
+
+    let _ = std::fs::write(&stamp_path, now.to_string());
+    let Ok(resp) = tokio::time::timeout(Duration::from_secs(5), http.get(REMOTE_CLIENTS_URL).send()).await else {
+        return false;
+    };
+    let Ok(resp) = resp.and_then(|r| r.error_for_status()) else {
+        return false;
+    };
+    let Ok(body) = resp.text().await else {
+        return false;
+    };
+    let Some(parsed) = ClientRegistry::parse_valid(&body) else {
+        return false;
+    };
+    let bundled: ClientRegistry =
+        serde_json::from_str(BUNDLED_CLIENTS_JSON).expect("bundled clients.json must be valid");
+    if parsed.schema_version < bundled.schema_version {
+        return false;
+    }
+
+    let tmp = clients_path.with_extension("json.tmp");
+    if std::fs::write(&tmp, &body).is_ok() {
+        let _ = std::fs::rename(tmp, &clients_path);
+    }
+    if let Ok(mut guard) = registry_cell().write() {
+        *guard = parsed;
+    }
+    true
 }
 
 #[derive(Debug, Clone)]

@@ -390,14 +390,6 @@ type service struct {
 	// lookup would queue unrelated work behind the network.
 	lyricsMu    sync.RWMutex
 	lyricsCache map[int64]cachedLyrics
-	// Resolved yt-dlp audio URLs are cached to avoid spawning yt-dlp on every play.
-	// Signed googlevideo URLs expire; entries are short-lived and failures bypass cache.
-	ytStreamMu    sync.Mutex
-	ytStreamCache map[string]ytStreamCacheEntry
-	ytStreamCalls map[string]*ytStreamCall
-	ytStreamGen   uint64
-	// Local HTTP audio proxy/cache for YouTube playback (download+stream+disk cache).
-	ytAudio *ytAudioManager
 }
 
 func main() {
@@ -429,12 +421,6 @@ func run(input io.Reader, output io.Writer) error {
 		apiBase:            apiBase(),
 		httpClient:         &http.Client{Timeout: 15 * time.Second},
 		lyricsCache:        make(map[int64]cachedLyrics),
-	}
-	audioMgr := newYTAudioManager(filepath.Join(dataDir, "yt-audio-cache"), svc.httpClient)
-	if err := audioMgr.start(); err != nil {
-		log.Printf("yt audio cache disabled: %v", err)
-	} else {
-		svc.ytAudio = audioMgr
 	}
 	if err := svc.loadSettings(); err != nil {
 		return err

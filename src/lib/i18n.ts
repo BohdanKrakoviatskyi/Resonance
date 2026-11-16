@@ -28,7 +28,7 @@ const S = {
   scConnectedMsg: ['SoundCloud подключён.', 'SoundCloud connected.'],
   scRefreshedMsg: ['Подключение обновлено.', 'Connection refreshed.'],
   ytDescription: ['Войдите в YouTube Music в отдельном окне браузера.', 'Sign in to YouTube Music in a dedicated browser window.'],
-  ytNote: ['Resonance откроет YouTube Music и сохранит сессию после входа в аккаунт. Ваша библиотека доступна в режиме чтения, а треки воспроизводятся через yt-dlp.', 'Resonance opens YouTube Music, waits for the signed-in account request, and reads the session cookie from the embedded window. Your library is read-only, and every track plays through the existing yt-dlp stream path.'],
+  ytNote: ['Resonance откроет YouTube Music и сохранит сессию после входа в аккаунт. Ваша библиотека доступна в режиме чтения, а треки воспроизводятся напрямую через встроенный YouTube-движок.', 'Resonance opens YouTube Music, waits for the signed-in account request, and reads the session cookie from the embedded window. Your library is read-only, and tracks stream directly through the built-in YouTube engine.'],
   ytLoginBtn: ['Войти через YouTube Music', 'Login with YouTube Music'],
   ytWaitingBtn: ['Ожидание YouTube Music…', 'Waiting for YouTube Music…'],
   ytSignInWindowMsg: ['Завершите вход в YouTube Music в открывшемся окне…', 'Finish signing in to YouTube Music in the opened window…'],

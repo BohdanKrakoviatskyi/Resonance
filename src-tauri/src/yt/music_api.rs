@@ -4,7 +4,7 @@ use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
-use super::clients::{is_valid_video_id, registry};
+use super::clients::{is_valid_video_id, registry_snapshot};
 use super::identity::{
     YtMusicProfile, compute_sapisidhash, extract_cookie_value, read_ytmusic_credentials,
 };
@@ -38,7 +38,8 @@ pub async fn post_music(
     mut body: Value,
     authenticated: bool,
 ) -> Result<Value, String> {
-    let remix = &registry().web_remix;
+    let reg = registry_snapshot();
+    let remix = &reg.web_remix;
     if body.get("context").is_none() {
         body["context"] = remix.context_value(None);
     }
@@ -88,7 +89,8 @@ pub async fn fetch_account_profile(
 ) -> Result<YtMusicProfile, String> {
     let sapisid = extract_cookie_value(cookie, "__Secure-3PAPISID")
         .ok_or_else(|| "YouTube Music session cookie missing.".to_string())?;
-    let remix = &registry().web_remix;
+    let reg = registry_snapshot();
+    let remix = &reg.web_remix;
     let body = json!({
         "context": remix.context_value(None),
         "deviceOutputType": "BROWSER_UNKNOWN"

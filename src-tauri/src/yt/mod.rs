@@ -9,4 +9,3 @@ pub mod proxy;
 pub mod resolver;
 pub mod store;
 pub mod stream_cache;
-pub mod ytdlp_fallback;
