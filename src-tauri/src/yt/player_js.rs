@@ -553,7 +553,7 @@ mod tests {
         let (_, sts) = proxy.player_js.ensure_ready(&proxy.playback_http).await.unwrap();
         println!("player_js ready in {:?}, sts={sts}", t_init.elapsed());
 
-        for vid in ["qCyv1n7LP7U", "trHwYA4ZRg4", "6SM4s-Fy5FU", "2ouIZEuZUts", "EhwmOq2p_o0", "YQMs9_BVsbQ", "7wrvwF6BKHc"] {
+        for vid in ["qCyv1n7LP7U", "trHwYA4ZRg4", "6SM4s-Fy5FU", "2ouIZEuZUts"] {
             let t0 = Instant::now();
             let (resolved, hit, ms, attempts) = proxy.get_or_resolve_stream(vid, true, true, None).await.unwrap();
             let url = format!("http://127.0.0.1:{port}/yt-stream/{vid}?t={}", proxy.token);

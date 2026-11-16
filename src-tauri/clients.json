@@ -1,4 +1,5 @@
 {
+  "schemaVersion": 2,
   "streamLadder": [
     {
       "key": "VISIONOS",
@@ -51,12 +52,12 @@
       "gl": "US"
     },
     {
-      "key": "TVHTML5_SIMPLY_EMBEDDED",
-      "clientName": "TVHTML5_SIMPLY_EMBEDDED_PLAYER",
-      "clientVersion": "2.0",
-      "clientId": "85",
-      "userAgent": "Mozilla/5.0 (PlayStation; PlayStation 4/12.02) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/15.4 Safari/605.1.15",
-      "sendVisitorData": false,
+      "key": "WEB_EMBEDDED_PLAYER",
+      "clientName": "WEB_EMBEDDED_PLAYER",
+      "clientVersion": "1.20260213.01.00",
+      "clientId": "56",
+      "userAgent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+      "sendVisitorData": true,
       "sendCookie": false,
       "isEmbedded": true,
       "hl": "en",

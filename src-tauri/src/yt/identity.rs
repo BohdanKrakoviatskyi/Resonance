@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sha1::{Digest, Sha1};
 
-use super::clients::{app_data_root_dir, registry, user_app_support_dir};
+use super::clients::{app_data_root_dir, registry_snapshot, user_app_support_dir};
 
 const VISITOR_ENDPOINT: &str = "https://www.youtube.com/youtubei/v1/visitor_id?prettyPrint=false";
 const VISITOR_MAX_AGE_MS: u64 = 7 * 24 * 3_600_000;
@@ -110,10 +110,14 @@ impl VisitorIdentity {
 }
 
 async fn mint_visitor_data(http: &Client) -> Option<String> {
-    let profile = registry()
+    if let Some(vd) = mint_visitor_from_sw_js_data(http).await {
+        return Some(vd);
+    }
+    let reg = registry_snapshot();
+    let profile = reg
         .stream_ladder
         .first()
-        .unwrap_or(&registry().web_remix);
+        .unwrap_or(&reg.web_remix);
     let body = json!({
         "context": {
             "client": {
@@ -124,20 +128,59 @@ async fn mint_visitor_data(http: &Client) -> Option<String> {
             }
         }
     });
-    let resp = http
-        .post(VISITOR_ENDPOINT)
-        .header("Content-Type", "application/json")
-        .header("User-Agent", &profile.user_agent)
-        .json(&body)
-        .send()
-        .await
-        .ok()?;
+    let resp = tokio::time::timeout(
+        std::time::Duration::from_secs(2),
+        http.post(VISITOR_ENDPOINT)
+            .header("Content-Type", "application/json")
+            .header("User-Agent", &profile.user_agent)
+            .json(&body)
+            .send(),
+    )
+    .await
+    .ok()?
+    .ok()?;
     let data: Value = resp.json().await.ok()?;
     data.pointer("/responseContext/visitorData")
         .and_then(|v| v.as_str())
         .map(str::trim)
         .filter(|s| !s.is_empty())
         .map(ToOwned::to_owned)
+}
+
+async fn mint_visitor_from_sw_js_data(http: &Client) -> Option<String> {
+    let resp = tokio::time::timeout(
+        std::time::Duration::from_millis(1200),
+        http.get("https://www.youtube.com/sw.js_data")
+            .header(
+                "User-Agent",
+                "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Safari/605.1.15",
+            )
+            .send(),
+    )
+    .await
+    .ok()?
+    .ok()?;
+    if !resp.status().is_success() {
+        return None;
+    }
+    let body = resp.text().await.ok()?;
+    extract_visitor_token(&body)
+}
+
+fn extract_visitor_token(raw: &str) -> Option<String> {
+    let mut rest = raw;
+    while let Some(idx) = rest.find("Cgt") {
+        let candidate_slice = &rest[idx..];
+        let token: String = candidate_slice
+            .chars()
+            .take_while(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_' || *c == '=')
+            .collect();
+        if token.len() >= 23 && token.len() <= 128 {
+            return Some(token);
+        }
+        rest = &candidate_slice[3..];
+    }
+    None
 }
 
 #[derive(Debug, Clone)]

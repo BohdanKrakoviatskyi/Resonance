@@ -10,7 +10,7 @@ use super::stream_cache::parse_byte_range;
 
 const PROXY_CHUNK_BYTES: u64 = 2 * 1024 * 1024;
 const PREFETCH_HEAD_BYTES: u64 = 262_144;
-const STALL_TIMEOUT: Duration = Duration::from_secs(15);
+const STALL_TIMEOUT: Duration = Duration::from_secs(4);
 
 pub async fn handle_proxy_connection(
     mut socket: TcpStream,
@@ -257,26 +257,22 @@ async fn fetch_with_swap(
     end: u64,
 ) -> Result<reqwest::Response, String> {
     let range = format!("bytes={start}-{end}");
-    const ACTIVATION_DELAYS_MS: &[u64] = &[600, 800, 1000, 1000, 1000];
+    const ACTIVATION_DELAYS_MS: &[u64] = &[200, 300, 400];
 
-    for _attempt in 0..3 {
+    for _attempt in 0..2 {
         let mut res = send_upstream(proxy, resolved, Some(&range)).await;
         let mut status = res.as_ref().ok().map(|r| r.status().as_u16());
 
-        // Fresh googlevideo URLs (especially TVHTML5) often return 403 for 1.5-4.0s
-        // while CDN propagation settles. Poll the same URL before burning and re-resolving it.
+        // Fresh TVHTML5 googlevideo URLs can return 403 briefly while CDN propagation settles.
         if matches!(status, Some(401 | 403))
             && resolved.client_key.eq_ignore_ascii_case("TVHTML5")
-            && resolved.link_age() < Duration::from_secs(7)
+            && resolved.link_age() < Duration::from_secs(2)
         {
             for &delay_ms in ACTIVATION_DELAYS_MS {
                 tokio::time::sleep(Duration::from_millis(delay_ms)).await;
                 res = send_upstream(proxy, resolved, Some(&range)).await;
                 status = res.as_ref().ok().map(|r| r.status().as_u16());
                 if !matches!(status, Some(401 | 403)) {
-                    break;
-                }
-                if resolved.link_age() >= Duration::from_secs(8) {
                     break;
                 }
             }
@@ -290,7 +286,11 @@ async fn fetch_with_swap(
             return res.map_err(|e| e.to_string());
         }
         proxy.gates.record_refusal(&resolved.client_key, &resolved.direct_url, resolved.link_age());
+        let failed_key = resolved.client_key.clone();
         if let Ok(swapped) = proxy.swap_refused_stream(video_id, resolved).await {
+            if swapped.direct_url == resolved.direct_url && swapped.client_key == failed_key {
+                break;
+            }
             *resolved = swapped;
         } else {
             break;

@@ -231,7 +231,7 @@ const isYouTubeTrack = (track: Track | null | undefined): boolean =>
 const usesProviderPlayback = (track: Track | null | undefined) =>
   !!track && isYouTubeTrack(track) && track.playback !== 'direct' && !extractYtVideoId(track);
 
-// Предзагружаем следующие N+1..N+4 трека вперёд и N-1 назад, а также топ-8 треков плейлиста (через быстрый WEB_REMIX без yt-dlp)
+// Предзагружаем следующие N+1..N+4 трека вперёд и топ-8 треков плейлиста через нативный InnerTube-прокси
 const YT_STREAM_PREFETCH_AHEAD = 4;
 const YT_Playlist_TOP_PREFETCH = 8;
 
@@ -1078,7 +1078,7 @@ async function resolvePlayableStream(
  * Ждёт готовности потока на `<audio>` (`canplay` / `loadeddata` или `readyState >= 2`) с проверкой `requestId`
  * перед вызовом `el.play()`, чтобы исключить ложные `pause`/`error` во время резолва.
  */
-async function waitForAudioStreamReady(deck: Deck, expectedRequestId: number, timeoutMs = 18000): Promise<boolean> {
+async function waitForAudioStreamReady(deck: Deck, expectedRequestId: number, timeoutMs = 4500): Promise<boolean> {
   const el = deck.el;
   if (expectedRequestId !== currentRequestId || deck.requestId !== expectedRequestId) return false;
   if (el.readyState >= 2) return true;
@@ -1680,7 +1680,7 @@ async function startAutoCrossfade() {
     // Assign a temporary matching requestId so waitForAudioStreamReady does not early-abort,
     // while keeping activeDeckIdx on fromDeck until toDeck actually starts playing.
     toDeck.requestId = triggerRequestId;
-    const streamReady = await waitForAudioStreamReady(toDeck, triggerRequestId, 12000);
+    const streamReady = await waitForAudioStreamReady(toDeck, triggerRequestId, 4000);
     if (triggerRequestId !== currentRequestId || crossfadeSession) {
       if (streamAssigned && toDeck !== getActiveDeck()) stopAndResetDeck(toDeck);
       return;
