@@ -16,4 +16,9 @@ export default defineConfig({
       "@": path.resolve(__dirname, "src"),
     },
   },
+  server: {
+    // The Rust build output (src-tauri/target) holds locked .exe files while the app runs; watching
+    // them crashes the dev server with EBUSY ("beforeDevCommand terminated").
+    watch: { ignored: ["**/src-tauri/**"] },
+  },
 });
