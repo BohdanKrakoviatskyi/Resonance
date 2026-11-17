@@ -10,7 +10,7 @@ use super::identity::{
     YtMusicProfile, delete_ytmusic_credentials, read_ytmusic_credentials, save_ytmusic_credentials,
 };
 use super::music_api::{YtMusicLibraryDto, fetch_account_profile, fetch_playlist_tracks_native, sync_library};
-use super::music_parse::{YtMusicPlaylistDto, YtMusicTrackDto};
+use super::music_parse::YtMusicPlaylistDto;
 use super::proxy::YtStreamProxy;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -281,6 +281,3 @@ pub async fn yt_clear_cache(
         stream_entries_cleared,
     })
 }
-
-#[allow(dead_code)]
-fn _keep_track_dto(_: YtMusicTrackDto) {}
