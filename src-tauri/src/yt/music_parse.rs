@@ -65,16 +65,119 @@ pub fn collect_by_key<'a>(node: &'a Value, key: &str, out: &mut Vec<&'a Value>) 
     }
 }
 
+/// Contents of the playlist's own `musicPlaylistShelfRenderer` shelf.
+///
+/// A browse response for a playlist also contains other shelves (e.g. the
+/// section-list continuations used for suggestions/related). Those have their
+/// own `nextContinuationData` tokens and must never be used to page through
+/// the playlist's tracks — ytmusicapi pages playlists exclusively through
+/// the last item of this shelf (`get_continuations_2025`).
+pub fn playlist_shelf_contents<'a>(data: &'a Value) -> Option<&'a Vec<Value>> {
+    if let Some(contents) = data
+        .pointer("/contents/twoColumnBrowseResultsRenderer/secondaryContents/sectionListRenderer/contents/0/musicPlaylistShelfRenderer/contents")
+        .and_then(|v| v.as_array())
+    {
+        return Some(contents);
+    }
+    let mut shelves = Vec::new();
+    collect_by_key(data, "musicPlaylistShelfRenderer", &mut shelves);
+    shelves
+        .first()
+        .and_then(|shelf| shelf.get("contents"))
+        .and_then(|v| v.as_array())
+}
+
+/// Items appended by a continuation request:
+/// `onResponseReceivedActions[0].appendContinuationItemsAction.continuationItems`
+pub fn continuation_items<'a>(data: &'a Value) -> Option<&'a Vec<Value>> {
+    data.pointer("/onResponseReceivedActions/0/appendContinuationItemsAction/continuationItems")
+        .and_then(|v| v.as_array())
+}
+
+/// Continuation token for a shelf/item list. Only the LAST element can carry
+/// it (`continuationItemRenderer`), exactly like ytmusicapi's
+/// `get_continuation_token`: a direct `continuationCommand.token`, or a
+/// `commandExecutorCommand` entry whose request is BROWSE (other commands,
+/// e.g. playlist voting refresh, share the same list and must be skipped).
+pub fn continuation_token_from_items(items: &[Value]) -> Option<String> {
+    let last = items.last()?;
+    let endpoint = last.pointer("/continuationItemRenderer/continuationEndpoint")?;
+    if let Some(token) = endpoint
+        .pointer("/continuationCommand/token")
+        .and_then(|v| v.as_str())
+        .filter(|token| !token.is_empty())
+    {
+        return Some(token.to_string());
+    }
+    let commands = endpoint
+        .pointer("/commandExecutorCommand/commands")
+        .and_then(|v| v.as_array())?;
+    for command in commands {
+        let Some(cmd) = command.get("continuationCommand") else {
+            continue;
+        };
+        if cmd.get("request").and_then(|v| v.as_str()) != Some("CONTINUATION_REQUEST_TYPE_BROWSE") {
+            continue;
+        }
+        if let Some(token) = cmd.get("token").and_then(|v| v.as_str()).filter(|t| !t.is_empty()) {
+            return Some(token.to_string());
+        }
+    }
+    None
+}
+
+/// Track renderers belonging to the playlist shelf (or to a continuation
+/// page). Falls back to a whole-document search for non-playlist browse
+/// responses (search, library grids) that have no playlist shelf.
+pub fn track_renderers<'a>(data: &'a Value) -> Vec<&'a Value> {
+    let scoped = playlist_shelf_contents(data)
+        .or_else(|| continuation_items(data))
+        .map(|items| track_renderers_from_items(items));
+    if let Some(renderers) = scoped {
+        return renderers;
+    }
+    let mut items = Vec::new();
+    collect_by_key(data, "musicResponsiveListItemRenderer", &mut items);
+    items
+}
+
+pub fn track_renderers_from_items<'a>(items: &'a [Value]) -> Vec<&'a Value> {
+    items
+        .iter()
+        .filter_map(|item| item.get("musicResponsiveListItemRenderer"))
+        .collect()
+}
+
 pub fn find_continuation_token(data: &Value) -> Option<String> {
+    // Playlist tracks page exclusively through the playlist shelf /
+    // continuation items. A `nextContinuationData` found elsewhere in the
+    // document belongs to a different shelf (suggestions/related) and
+    // paging with it returns non-track items, truncating the playlist at
+    // the first page.
+    let shelf_contents = playlist_shelf_contents(data);
+    if let Some(contents) = shelf_contents {
+        return continuation_token_from_items(contents);
+    }
+    if let Some(items) = continuation_items(data) {
+        return continuation_token_from_items(items);
+    }
+    let mut renderers = Vec::new();
+    collect_by_key(data, "continuationItemRenderer", &mut renderers);
+    for renderer in renderers.iter().rev() {
+        let endpoint = renderer.get("continuationEndpoint");
+        if let Some(token) = endpoint
+            .and_then(|e| e.pointer("/continuationCommand/token"))
+            .and_then(|v| v.as_str())
+            .filter(|token| !token.is_empty())
+        {
+            return Some(token.to_string());
+        }
+    }
     let mut conts = Vec::new();
     collect_by_key(data, "nextContinuationData", &mut conts);
-    if let Some(tok) = conts.first().and_then(|c| c.get("continuation")).and_then(|v| v.as_str()) {
-        return Some(tok.to_string());
-    }
-    let mut cmds = Vec::new();
-    collect_by_key(data, "continuationCommand", &mut cmds);
-    cmds.first()
-        .and_then(|c| c.get("token"))
+    conts
+        .first()
+        .and_then(|c| c.get("continuation"))
         .and_then(|v| v.as_str())
         .map(ToOwned::to_owned)
 }
@@ -246,4 +349,94 @@ pub fn parse_duration_secs(text: &str) -> Option<f64> {
 pub fn parse_count_from_text(text: &str) -> usize {
     let digits: String = text.chars().filter(|c| c.is_ascii_digit()).collect();
     digits.parse().unwrap_or(0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    fn track(video_id: &str) -> Value {
+        json!({
+            "musicResponsiveListItemRenderer": {
+                "playlistItemData": { "videoId": video_id },
+                "flexColumns": [
+                    { "musicResponsiveListItemFlexColumnRenderer": { "text": { "runs": [{ "text": "Song" }] } } }
+                ]
+            }
+        })
+    }
+
+    fn continuation(token: &str) -> Value {
+        json!({
+            "continuationItemRenderer": {
+                "continuationEndpoint": { "continuationCommand": { "token": token } }
+            }
+        })
+    }
+
+    fn browse_response(shelf_contents: Vec<Value>) -> Value {
+        json!({
+            "contents": {
+                "twoColumnBrowseResultsRenderer": {
+                    "secondaryContents": {
+                        "sectionListRenderer": {
+                            "contents": [{ "musicPlaylistShelfRenderer": { "contents": shelf_contents } }],
+                            // Suggestions/related shelf continuation. Paging a
+                            // playlist with this token returns non-track items
+                            // and truncates the playlist at the first page.
+                            "continuations": [{ "nextContinuationData": { "continuation": "SECTION_TOKEN" } }]
+                        }
+                    }
+                }
+            }
+        })
+    }
+
+    #[test]
+    fn playlist_pages_through_shelf_token_not_section_token() {
+        let data = browse_response(vec![track("AAAAAAAAAAA"), continuation("PLAYLIST_TOKEN")]);
+        assert_eq!(find_continuation_token(&data).as_deref(), Some("PLAYLIST_TOKEN"));
+        assert_eq!(track_renderers(&data).len(), 1);
+    }
+
+    #[test]
+    fn continuation_page_uses_appended_items_token() {
+        let data = json!({
+            "onResponseReceivedActions": [{
+                "appendContinuationItemsAction": {
+                    "continuationItems": [track("BBBBBBBBBBB"), continuation("NEXT_TOKEN")]
+                }
+            }]
+        });
+        assert_eq!(find_continuation_token(&data).as_deref(), Some("NEXT_TOKEN"));
+        assert_eq!(track_renderers(&data).len(), 1);
+    }
+
+    #[test]
+    fn executor_token_requires_browse_request() {
+        let data = browse_response(vec![
+            track("AAAAAAAAAAA"),
+            json!({
+                "continuationItemRenderer": {
+                    "continuationEndpoint": {
+                        "commandExecutorCommand": {
+                            "commands": [
+                                { "playlistVotingRefreshPopupCommand": {} },
+                                { "continuationCommand": { "request": "CONTINUATION_REQUEST_TYPE_BROWSE", "token": "EXEC_TOKEN" } }
+                            ]
+                        }
+                    }
+                }
+            })
+        ]);
+        assert_eq!(find_continuation_token(&data).as_deref(), Some("EXEC_TOKEN"));
+    }
+
+    #[test]
+    fn no_token_when_shelf_has_no_continuation_item() {
+        let data = browse_response(vec![track("AAAAAAAAAAA"), track("CCCCCCCCCCC")]);
+        assert_eq!(find_continuation_token(&data), None);
+        assert_eq!(track_renderers(&data).len(), 2);
+    }
 }
