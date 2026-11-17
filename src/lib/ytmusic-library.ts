@@ -19,6 +19,23 @@ export type YtMusicPlaylist = {
 };
 
 export type YtMusicProfile = { name?: string; handle?: string; picture?: string };
+
+/**
+ * Music artwork URLs (googleusercontent) carry the requested crop size in the
+ * URL ("...=w120-h120-l90-rj"), which is whatever the API page offered — often
+ * 120–226 px, far below the size covers are shown at. The stored image is much
+ * larger, so rewriting the size segment to the 544×544 crop YouTube Music
+ * itself uses for large art gets real detail instead of a blurry upscale.
+ */
+export const YTM_ARTWORK_PX = 544;
+
+export function upscaleYtmArtwork(url?: string | null): string | undefined {
+  if (!url) return undefined;
+  if (!url.includes('googleusercontent.com')) return url;
+  return url.replace(/=w(\d+)-h(\d+)/, (match, w, h) =>
+    Math.max(Number(w), Number(h)) >= YTM_ARTWORK_PX ? match : `=w${YTM_ARTWORK_PX}-h${YTM_ARTWORK_PX}`,
+  );
+}
 export type YtMusicLibrary = {
   profile: YtMusicProfile;
   playlists: YtMusicPlaylist[];
@@ -30,7 +47,7 @@ export function mapYtMusicTrack(track: YtMusicTrack): Track {
   const artist = track.artist || track.artists?.filter(Boolean).join(', ') || 'YouTube Music';
   const duration = Number(track.durationSeconds) || 0;
   const fallbackCover = videoId ? `https://i.ytimg.com/vi/${encodeURIComponent(videoId)}/hqdefault.jpg` : undefined;
-  const artwork = track.artworkUrl || fallbackCover;
+  const artwork = upscaleYtmArtwork(track.artworkUrl) || fallbackCover;
   return {
     id: `yt:${videoId}`,
     title: track.title || 'Unknown title',
@@ -58,12 +75,12 @@ export function normalizeYtMusicPlaylist(playlist: YtMusicPlaylist): YtMusicPlay
       : 0;
   const firstTrackArt = playlist.tracks?.find((t) => Boolean(t?.artworkUrl || t?.videoId));
   const fallbackArt = firstTrackArt
-    ? firstTrackArt.artworkUrl ||
+    ? upscaleYtmArtwork(firstTrackArt.artworkUrl) ||
       (firstTrackArt.videoId ? `https://i.ytimg.com/vi/${encodeURIComponent(firstTrackArt.videoId)}/hqdefault.jpg` : null)
     : null;
   return {
     ...playlist,
-    artworkUrl: playlist.artworkUrl || fallbackArt || null,
+    artworkUrl: upscaleYtmArtwork(playlist.artworkUrl) || fallbackArt || null,
     trackCount,
   };
 }
