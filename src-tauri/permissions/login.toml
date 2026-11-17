@@ -9,6 +9,11 @@ description = "Open the embedded SoundCloud sign-in window."
 commands.allow = ["start_soundcloud_login"]
 
 [[permission]]
+identifier = "allow-soundcloud-auth-capture"
+description = "Deliver a captured SoundCloud session from the sign-in window to the main window."
+commands.allow = ["soundcloud_auth_capture"]
+
+[[permission]]
 identifier = "allow-start-ytmusic-login"
 description = "Open the embedded YouTube Music sign-in window."
 commands.allow = ["start_ytmusic_login"]
