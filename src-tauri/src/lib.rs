@@ -4,7 +4,7 @@ pub mod yt;
 
 use tauri::{AppHandle, Emitter, Manager};
 
-use auth_windows::{YtMusicLoginState, start_soundcloud_login, start_ytmusic_login};
+use auth_windows::{SoundCloudLoginState, YtMusicLoginState, soundcloud_auth_capture, start_soundcloud_login, start_ytmusic_login};
 use playlist_import::fetch_external_playlist;
 use yt::music_api::{fetch_yt_playlist_tracks, search_yt_tracks, yt_radio_tracks, yt_search_suggestions};
 use yt::proxy::{YtStreamProxy, frontend_log, resolve_yt_stream_url};
@@ -123,6 +123,7 @@ pub fn run() {
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
         .manage(YtMusicLoginState::default())
+        .manage(SoundCloudLoginState::default())
         .manage(YtStreamProxy::default())
         .manage(YtStore::default())
         .setup(|app| {
@@ -142,6 +143,12 @@ pub fn run() {
                 }
             }
             if window.label() == "soundcloud-login" && matches!(event, tauri::WindowEvent::CloseRequested { .. }) {
+                // Whether the user cancelled or capture succeeded, no capture
+                // can be pending for a closed window.
+                let login_state = window.app_handle().state::<SoundCloudLoginState>();
+                if let Ok(mut pending) = login_state.pending.lock() {
+                    *pending = false;
+                }
                 let _ = window.emit("soundcloud-login-cancelled", ());
             }
             if window.label() == "ytmusic-login" && matches!(event, tauri::WindowEvent::CloseRequested { .. }) {
@@ -154,6 +161,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             start_soundcloud_login,
+            soundcloud_auth_capture,
             start_ytmusic_login,
             uninstall_app,
             finish_splash,

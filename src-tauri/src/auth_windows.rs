@@ -1,28 +1,38 @@
 use tauri::webview::Cookie;
-use tauri::{AppHandle, Emitter, Manager, State, Url, WebviewUrl, WebviewWindow, WebviewWindowBuilder};
+use tauri::{AppHandle, Emitter, Manager, State, Url, WebviewUrl, WebviewWindow, WebviewWindowBuilder, Window};
 use std::sync::Mutex;
 use std::time::Duration;
 
 const SOUNDCLOUD_LOGIN_SCRIPT: &str = r#"(() => {
+  if (window !== window.top) return; // api-v2 calls are captured in the top frame only
   let captured = false;
-  let capturedClientId = '';
-  let capturedToken = '';
+  const state = '__LOGIN_STATE__';
+  const deliver = (clientId, token) => {
+    const invoke = window.__TAURI_INTERNALS__ && window.__TAURI_INTERNALS__.invoke;
+    // Close-signal navigation; must happen only AFTER the IPC call finished,
+    // otherwise navigating away can destroy the webview mid-call and the
+    // token is lost (the window then closes as 'cancelled').
+    const navigate = () => { location.href = 'resonance://soundcloud-login?state=' + state; };
+    if (typeof invoke === 'function') {
+      Promise.resolve()
+        .then(() => invoke('soundcloud_auth_capture', { clientId, token }))
+        .then(navigate, navigate);
+    } else {
+      navigate();
+    }
+  };
   const inspect = (rawUrl, headers) => {
     if (captured) return;
     try {
       const url = new URL(rawUrl, location.href);
       if (url.hostname !== 'api-v2.soundcloud.com') return;
-      capturedClientId ||= url.searchParams.get('client_id') || '';
+      const clientId = url.searchParams.get('client_id') || '';
       const auth = new Headers(headers).get('Authorization') || '';
       const match = auth.match(/^(?:OAuth|Bearer)\s+(.+)$/i);
-      if (match) capturedToken ||= match[1];
-      if (!capturedClientId || !capturedToken) return;
+      const token = match ? match[1] : '';
+      if (!clientId || !token) return;
       captured = true;
-      const callback = new URL('resonance://soundcloud-login');
-      callback.searchParams.set('state', '__LOGIN_STATE__');
-      callback.searchParams.set('client_id', capturedClientId);
-      callback.searchParams.set('token', capturedToken);
-      location.href = callback.toString();
+      deliver(clientId, token);
     } catch (_) {}
   };
   const originalFetch = window.fetch;
@@ -52,6 +62,48 @@ pub struct YtMusicLoginState {
     pub nonce: Mutex<Option<String>>,
 }
 
+#[derive(Default)]
+pub struct SoundCloudLoginState {
+    pub pending: Mutex<bool>,
+}
+
+/// Receives the SoundCloud token captured by the login window's init script
+/// over the IPC bridge. Only the `soundcloud-login` window may call this,
+/// and only while a login is pending; the token never travels in a URL.
+#[tauri::command]
+pub async fn soundcloud_auth_capture(
+    app: AppHandle,
+    window: Window,
+    state: State<'_, SoundCloudLoginState>,
+    client_id: String,
+    token: String,
+) -> Result<(), String> {
+    if window.label() != "soundcloud-login" {
+        return Err("SoundCloud auth capture is only available from the sign-in window".to_string());
+    }
+    {
+        let pending = state.pending.lock().map_err(|_| "SoundCloud login state unavailable".to_string())?;
+        if !*pending {
+            return Err("No SoundCloud sign-in is in progress".to_string());
+        }
+    }
+    if client_id.trim().is_empty() || token.trim().is_empty() {
+        return Err("SoundCloud sign-in did not return a complete session".to_string());
+    }
+    if let Ok(mut pending) = state.pending.lock() {
+        *pending = false;
+    }
+    app.emit(
+        "soundcloud-auth-captured",
+        serde_json::json!({ "clientId": client_id, "token": token }),
+    )
+    .map_err(|e| format!("Could not deliver SoundCloud session: {e}"))?;
+    if let Some(login_window) = app.get_webview_window("soundcloud-login") {
+        let _ = login_window.close();
+    }
+    Ok(())
+}
+
 pub fn is_music_youtube_url(url: &tauri::Url) -> bool {
     url.scheme() == "https" && url.host_str() == Some("music.youtube.com")
 }
@@ -79,10 +131,15 @@ fn has_secure_papisid(cookie_header: &str) -> bool {
 }
 
 #[tauri::command]
-pub async fn start_soundcloud_login(app: AppHandle) -> Result<(), String> {
+pub async fn start_soundcloud_login(app: AppHandle, login_state: State<'_, SoundCloudLoginState>) -> Result<(), String> {
     if let Some(existing) = app.get_webview_window("soundcloud-login") {
         let _ = existing.close();
     }
+    let mut pending = login_state
+        .pending
+        .lock()
+        .map_err(|_| "SoundCloud login state unavailable".to_string())?;
+    *pending = true;
     let state = uuid::Uuid::new_v4().to_string();
     let login_script = SOUNDCLOUD_LOGIN_SCRIPT.replace("__LOGIN_STATE__", &state);
     let callback_app = app.clone();
@@ -104,11 +161,8 @@ pub async fn start_soundcloud_login(app: AppHandle) -> Result<(), String> {
         if query.get("state") != Some(&callback_state) {
             return false;
         }
-        let client_id = query.get("client_id").cloned().unwrap_or_default();
-        let token = query.get("token").cloned().unwrap_or_default();
-        if !client_id.is_empty() && !token.is_empty() {
-            let _ = callback_app.emit("soundcloud-auth-captured", serde_json::json!({ "clientId": client_id, "token": token }));
-        }
+        // The token arrives via the soundcloud_auth_capture command, not
+        // the URL. This navigation is only a close signal.
         if let Some(window) = callback_app.get_webview_window("soundcloud-login") {
             let _ = window.close();
         }
