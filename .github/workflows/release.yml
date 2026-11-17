@@ -19,15 +19,6 @@ jobs:
           node-version: 22
           cache: npm
 
-      - uses: actions/setup-go@v5
-        with:
-          go-version-file: api/go.mod
-          cache-dependency-path: api/go.sum
-
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-
       - uses: dtolnay/rust-toolchain@stable
 
       - uses: swatinem/rust-cache@v2
@@ -42,13 +33,6 @@ jobs:
       - run: npm ci
       - run: npx tsc --noEmit
       - run: npm test
-      - run: go test ./...
-        working-directory: api
-      - name: Create stub sidecar for cargo test
-        run: |
-          mkdir -p src-tauri/binaries
-          touch src-tauri/binaries/local-api-x86_64-unknown-linux-gnu
-          chmod +x src-tauri/binaries/*
       - run: cargo test --manifest-path src-tauri/Cargo.toml
 
   release:
@@ -74,15 +58,6 @@ jobs:
           node-version: 22
           cache: npm
 
-      - uses: actions/setup-go@v5
-        with:
-          go-version-file: api/go.mod
-          cache-dependency-path: api/go.sum
-
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
@@ -98,9 +73,6 @@ jobs:
           sudo apt-get install -y build-essential curl wget file libxdo-dev libssl-dev libasound2-dev libayatana-appindicator3-dev librsvg2-dev libwebkit2gtk-4.1-dev
 
       - run: npm ci
-
-      - name: Build sidecar (local-api)
-        run: python api/build_sidecars.py ${{ matrix.target }}
 
       - uses: tauri-apps/tauri-action@v0
         env:

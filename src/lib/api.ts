@@ -1,7 +1,7 @@
 import type { LyricLine, Track } from '../types';
 import { findYouTubeFallbackCandidate, youtubeFallbackQueries } from './youtube-match';
 import { findLyricsCandidate, lyricsSearchQueries, toSeconds, type LyricsCandidate } from './lyrics-match';
-import { rpc } from './sidecar';
+import { rpc } from './backend';
 import { upscaleYtmArtwork } from './ytmusic-library';
 
 import {

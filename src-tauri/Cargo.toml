@@ -38,3 +38,6 @@ rusqlite = { version = "0.32", features = ["bundled"] }
 keyring = { version = "3.6", features = ["windows-native", "apple-native", "sync-secret-service"] }
 url = "2.5"
 rquickjs = "0.14.0"
+regex = "1"
+base64 = "0.22"
+percent-encoding = "2"

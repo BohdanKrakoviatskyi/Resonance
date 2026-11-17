@@ -19,13 +19,7 @@
     "allow-yt-proxy-commands",
     "allow-finish-splash",
     "allow-restart-app",
-    {
-      "identifier": "shell:allow-spawn",
-      "allow": [
-        { "name": "binaries/local-api", "sidecar": true, "args": false }
-      ]
-    },
-    "shell:allow-open",
-    "shell:allow-stdin-write"
+    "allow-backend-rpc",
+    "shell:allow-open"
   ]
 }

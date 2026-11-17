@@ -23,7 +23,7 @@ export async function clearWebCache(): Promise<number> {
  *  browser cache holding covers, and in-memory playlist artwork. User data —
  *  accounts, playlists, library, settings — is never touched. */
 export async function clearAppCache(signal?: AbortSignal): Promise<AppCacheClearResult> {
-  // Backend first: if the sidecar is unreachable the dialog stays open and the
+  // Backend first: if the backend is unreachable the dialog stays open and the
   // user can retry instead of half-clearing only the web side.
   const backend = await clearCache(signal);
   // In-memory artwork is dropped so covers are re-fetched on demand.
