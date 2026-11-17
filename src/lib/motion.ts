@@ -1,5 +1,6 @@
 import { flushSync } from 'react-dom';
 import { clamp } from './util';
+import { isViewTransitionBlurSafe } from './view-transition';
 
 export type MotionMode = 'expressive' | 'standard' | 'reduced';
 type Spring = [stiffness: number, damping: number];
@@ -55,10 +56,7 @@ export const supportsVT = () =>
  *  view transitions (https://bugs.webkit.org/show_bug.cgi?id=302256): стеклянные панели на
  *  время всего кроссфейда становятся прозрачными, блюр «сбрасывается» и возвращается после.
  *  Такие переходы должны идти через live-fallback (presence-фейд) вместо VT. */
-export const vtBlurSafe = !(() => {
-  const ua = navigator.userAgent;
-  return ua.includes('Safari') && !ua.includes('Chrome') && !ua.includes('Chromium') && !ua.includes('Edg/');
-})();
+export const vtBlurSafe = isViewTransitionBlurSafe(navigator.userAgent);
 
 /** Runs a state update inside a View Transition (shared-element morphs), with graceful fallback. */
 export function viewTransition(update: () => void) {
