@@ -122,20 +122,6 @@ html[data-theme=light] { color-scheme: light; }
   /* ---------- shell + glass panels ---------- */
   .shell { position: fixed; inset: 0; display: flex; gap: var(--gap); padding: var(--gap); }
   .shell[data-hidden=true] { visibility: hidden; opacity: 0; pointer-events: none; }
-  .shell[data-hidden=true] .panel::before,
-  html[data-immersive] .panel::before {
-    /* Нулевые состояния с ТОЙ ЖЕ структурой функций, что и у стеклянных вариантов ниже,
-       чтобы backdrop-filter интерполировался плавно, а не дискретно (none <-> blur список).
-       Важно: во время view transition живой DOM заморожен в снапшот, поэтому сам переход
-       здесь не нужен — кроссфейд снапшотов смешивает состояния сам (см. html:not([data-vt])). */
-    -webkit-backdrop-filter: blur(0px) saturate(1) brightness(1) !important;
-    backdrop-filter: blur(0px) saturate(1) brightness(1) !important;
-    filter: none !important;
-  }
-  html[data-immersive][data-glass=frosted] .panel::before {
-    -webkit-backdrop-filter: blur(0px) saturate(1) !important;
-    backdrop-filter: blur(0px) saturate(1) !important;
-  }
   html[data-immersive] .drawer-root { display: none !important; }
 
   .panel { position: relative; isolation: isolate; overflow: hidden; border-radius: 28px; --tint: var(--md-surface-container-low); color: var(--md-on-surface); }
