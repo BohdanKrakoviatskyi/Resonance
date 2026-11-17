@@ -19,7 +19,6 @@
     "allow-yt-proxy-commands",
     "allow-finish-splash",
     "allow-restart-app",
-    "allow-backend-rpc",
-    "shell:allow-open"
+    "allow-backend-rpc"
   ]
 }
