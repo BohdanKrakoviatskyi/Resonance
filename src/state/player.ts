@@ -969,20 +969,58 @@ const curTime = () => {
 
 const frameSubs = new Set<(t: number, d: number, realT: number) => void>();
 let raf = 0;
+let rafAt = 0;
 function emitFrame() {
   const d = dur();
   const ct = curTime();
   const rt = realCurTime();
-  frameSubs.forEach((f) => f(ct, d, rt));
+  frameSubs.forEach((f) => {
+    // Один упавший подписчик не должен убивать цикл кадров для всех остальных.
+    try {
+      f(ct, d, rt);
+    } catch (e) {
+      console.error('[frame] subscriber failed', e);
+    }
+  });
+}
+function scheduleTick() {
+  rafAt = performance.now();
+  raf = requestAnimationFrame(tick);
 }
 function tick() {
   raf = 0;
   emitFrame();
-  if (!getActiveDeck().el.paused && !crossfadeSession && frameSubs.size) raf = requestAnimationFrame(tick);
+  if (!getActiveDeck().el.paused && !crossfadeSession && frameSubs.size) scheduleTick();
 }
+/** WKWebView на macOS может заморозить/выбросить rAF при переходе окна в fullscreen: handle
+ *  остаётся «живым», kick() видел `raf !== 0` и цикл больше не перезапускался — вся анимация,
+ *  завязанная на onFrame (заливка строк лирики, seek, обложка), пропадала. Если коллбэк не
+ *  приходил дольше STALL_MS, считаем rAF потерянным и ставим его заново. */
+const RAF_STALL_MS = 500;
 const kick = () => {
-  if (!raf && !crossfadeSession) raf = requestAnimationFrame(tick);
+  if (crossfadeSession) return;
+  if (raf && performance.now() - rafAt > RAF_STALL_MS) {
+    cancelAnimationFrame(raf);
+    raf = 0;
+  }
+  if (!raf) scheduleTick();
 };
+if (typeof document !== 'undefined') {
+  const revive = () => {
+    try {
+      if (frameSubs.size && !getActiveDeck().el.paused) kick();
+    } catch {
+      /* decks ещё не инициализированы */
+    }
+  };
+  document.addEventListener('fullscreenchange', revive);
+  document.addEventListener('webkitfullscreenchange', revive);
+  document.addEventListener('visibilitychange', revive);
+  window.addEventListener('resize', revive);
+  window.addEventListener('focus', revive);
+  // Страховочный сторож на случай, когда ни одно из событий выше не пришло.
+  window.setInterval(revive, 400);
+}
 /** Per-frame callback while playing (DOM writes only — avoids React re-renders). */
 export function onFrame(f: (t: number, d: number, realT: number) => void) {
   frameSubs.add(f);
