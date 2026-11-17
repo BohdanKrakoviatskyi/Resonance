@@ -1,9 +1,8 @@
-node_modules
-dist
-build
-src-tauri/target
-src-tauri/binaries/
-.vite
+/target
+src-tauri/macos-widget-build/
+macos-widget/build/
+macos-widget/reload-bridge/.build/
+.claude/
 .DS_Store
 *.log
 Thumbs.db

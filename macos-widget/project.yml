@@ -1,0 +1,40 @@
+name: ResonanceWidget
+options:
+  bundleIdPrefix: com.resonance
+  deploymentTarget:
+    macOS: "14.0"
+  createIntermediateGroups: true
+settings:
+  base:
+    SWIFT_VERSION: "5.9"
+    MACOSX_DEPLOYMENT_TARGET: "14.0"
+    CODE_SIGN_STYLE: Manual
+    CODE_SIGN_IDENTITY: "-"
+    DEVELOPMENT_TEAM: ""
+targets:
+  ResonanceWidget:
+    type: app-extension
+    platform: macOS
+    sources:
+      - Sources
+    info:
+      path: Info.plist
+      properties:
+        CFBundleDisplayName: Resonance
+        CFBundlePackageType: XPC!
+        CFBundleShortVersionString: "0.14.26"
+        CFBundleVersion: "2026.11.16"
+        NSExtension:
+          NSExtensionPointIdentifier: com.apple.widgetkit-extension
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.resonance.app.widget
+        PRODUCT_NAME: ResonanceWidget
+        GENERATE_INFOPLIST_FILE: NO
+        SKIP_INSTALL: YES
+        CODE_SIGN_ENTITLEMENTS: ResonanceWidget.entitlements
+schemes:
+  ResonanceWidget:
+    build:
+      targets:
+        ResonanceWidget: all

@@ -1,0 +1,17 @@
+[package]
+name = "resonance-auth"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "resonance-auth"
+path = "src/main.rs"
+
+[dependencies]
+wry.workspace = true
+tao.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+uuid.workspace = true
+url.workspace = true
