@@ -46,7 +46,7 @@ const persistedStores = new Map<string, () => void>();
 let backupTimer = 0;
 const isSplashContext = () => typeof document !== 'undefined' && document.documentElement.dataset.splash === 'true';
 
-const syncBackupToSidecar = () => {
+const syncBackupToBackend = () => {
   if (isSplashContext()) return;
   void import('./providers-api')
     .then(({ backupFrontendState }) => {
@@ -153,7 +153,7 @@ export function persist<T extends object>(key: string, store: Store<T>, pick: (s
     try {
       localStorage.setItem(key, JSON.stringify(pick(store.get())));
       clearTimeout(backupTimer);
-      backupTimer = window.setTimeout(syncBackupToSidecar, 1000);
+      backupTimer = window.setTimeout(syncBackupToBackend, 1000);
     } catch {
       onError?.();
     }

@@ -10,8 +10,6 @@ Thumbs.db
 __pycache__/
 *.pyc
 .venv/
-api/local-api
-api/local-api.exe
 *.key
 *.key.pub
 github-secrets.txt

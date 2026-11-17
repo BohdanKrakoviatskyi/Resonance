@@ -1,4 +1,4 @@
-import { rpc } from './sidecar';
+import { rpc } from './backend';
 import type { YtMusicLibrary, YtMusicPlaylist } from './ytmusic-library';
 import {
   ytAuthLogout,

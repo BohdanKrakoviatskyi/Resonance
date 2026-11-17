@@ -1,9 +1,11 @@
 pub mod auth_windows;
+pub mod backend;
 pub mod playlist_import;
 pub mod yt;
 
 use tauri::{AppHandle, Emitter, Manager};
 
+use backend::{Backend, backend_rpc};
 use auth_windows::{SoundCloudLoginState, YtMusicLoginState, soundcloud_auth_capture, start_soundcloud_login, start_ytmusic_login};
 use playlist_import::fetch_external_playlist;
 use yt::music_api::{fetch_yt_playlist_tracks, search_yt_tracks, yt_radio_tracks, yt_search_suggestions};
@@ -126,6 +128,7 @@ pub fn run() {
         .manage(SoundCloudLoginState::default())
         .manage(YtStreamProxy::default())
         .manage(YtStore::default())
+        .manage(Backend::new())
         .setup(|app| {
             purge_retired_spotify_storage(app.handle());
             let app_handle = app.handle().clone();
@@ -181,7 +184,8 @@ pub fn run() {
             yt_playlist_tracks_sync,
             yt_playlist_artwork,
             yt_clear_cache,
-            fetch_external_playlist
+            fetch_external_playlist,
+            backend_rpc
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
