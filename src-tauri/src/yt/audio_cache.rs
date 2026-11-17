@@ -164,6 +164,7 @@ impl AudioCache {
         }
         if let Ok(mut file) = OpenOptions::new()
             .create(true)
+            .truncate(false)
             .write(true)
             .open(&entry.temp_path)
             .await
