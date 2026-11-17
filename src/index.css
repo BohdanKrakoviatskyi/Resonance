@@ -616,15 +616,17 @@ html[data-theme=light] { color-scheme: light; }
   @container main (max-width: 420px) { .mini .hide-xs { display: none !important; } }
 
   /* ---------- immersive lyrics ---------- */
-  /* Анимация открытия/закрытия. В Chromium immersive идёт через View Transition (data-visible всегда
-     true), а в WebKit/WKWebView (macOS) VT не используется (баг с backdrop-filter, см. vtBlurSafe) —
-     там весь эффект держится на этом presence-фейде. Без opacity/transform здесь на Mac fullscreen-лирика
-     по клавише F просто появлялась мгновенно, без анимации. */
-  .immersive { position: fixed; inset: 0; z-index: 40; display: grid; grid-template-rows: auto minmax(0, 1fr); overflow: auto; color: var(--md-on-surface); opacity: 0; transform: scale(1.03); transition: opacity .45s var(--ease-emph), transform var(--sp-slow-d) var(--sp-slow); }
-  .immersive[data-visible=true] { opacity: 1; transform: none; }
-  /* Пока закрывается, контролы не кликабельны и сразу скрыты, а сама сцена доплавливается. */
-  .immersive[data-visible=false] { pointer-events: none; }
-  .immersive[data-visible=false] .imm-top { visibility: hidden; }
+  .immersive { position: fixed; inset: 0; z-index: 40; display: grid; grid-template-rows: auto minmax(0, 1fr); overflow: auto; color: var(--md-on-surface); }
+  .immersive[data-visible=false] { visibility: hidden; pointer-events: none; }
+  /* Вход для WebKit/WKWebView (macOS). Там View Transition не используется (баг с backdrop-filter,
+     см. vtBlurSafe), и без этого fullscreen-лирика по F появлялась мгновенно. opacity/transform
+     нельзя вешать на сам .immersive или .imm-scrim: предок с opacity становится «backdrop root», и
+     стеклянные контролы внутри теряют блюр на время перехода (это закреплено тестом). Поэтому
+     анимируются только блоки без стекла: обложка и лирика. На Chromium (data-live нет) работает VT. */
+  .immersive[data-live=true][data-visible=true] .imm-carousel,
+  .immersive[data-live=true][data-visible=true] .imm-right { animation: imm-enter var(--sp-slow-d) var(--sp-slow) both; }
+  .immersive[data-live=true][data-visible=true] .imm-right { animation-delay: 60ms; }
+  @keyframes imm-enter { from { opacity: 0; transform: translateY(18px) scale(1.03); } to { opacity: 1; transform: none; } }
   .imm-scrim { position: absolute; inset: 0; z-index: -1; background: color-mix(in oklab, var(--md-surface) 22%, transparent); }
   .imm-top { display: flex; align-items: center; justify-content: flex-end; padding: 18px 22px; }
   .imm-grid {

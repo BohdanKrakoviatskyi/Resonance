@@ -458,7 +458,7 @@ export function Immersive() {
   const toggleFs = () => (document.fullscreenElement ? document.exitFullscreen() : document.documentElement.requestFullscreen()).catch(() => {});
 
   return (
-    <div className="immersive" data-visible={vt ? true : visible} role="dialog" aria-modal="true" aria-label={t('fullscreenLyrics')}>
+    <div className="immersive" data-live={vt ? undefined : true} data-visible={vt ? true : visible} role="dialog" aria-modal="true" aria-label={t('fullscreenLyrics')}>
       <div className="imm-scrim" />
       <div className="imm-top">
         <div className="flex flex-wrap items-center justify-end gap-2">
