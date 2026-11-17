@@ -27,6 +27,7 @@ use super::resolver::{
 use super::stream_cache::{load_persisted_stream_cache, save_persisted_stream_cache};
 
 const MAX_CACHED_STREAMS: usize = 256;
+const FRONTEND_LOG_MAX_BYTES: u64 = 1 << 20; // 1 MiB
 const CLIENT_TIMEOUT: Duration = Duration::from_millis(850);
 const TV_SAMSUNG_TIMEOUT: Duration = Duration::from_millis(1200);
 const TV_SAMSUNG_COLD_TIMEOUT: Duration = Duration::from_millis(5000);
@@ -635,6 +636,13 @@ pub async fn resolve_yt_stream_url(
 #[tauri::command]
 pub async fn frontend_log(message: String) {
     let path = app_data_root_dir().join("player-timing.log");
+    // Cap the log so a long session cannot grow it without limit: past 1 MB
+    // new lines are dropped (the file is a diagnostic aid, not history).
+    if let Ok(meta) = tokio::fs::metadata(&path).await {
+        if meta.len() >= FRONTEND_LOG_MAX_BYTES {
+            return;
+        }
+    }
     let line = format!("[ts={}] {message}\n", now_unix_secs());
     if let Ok(mut f) = tokio::fs::OpenOptions::new()
         .create(true)

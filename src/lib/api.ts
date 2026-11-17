@@ -262,6 +262,7 @@ export interface ManualLyricsChoice {
 }
 
 const MANUAL_LYRICS_STORAGE_KEY = 'resonance.manual_lyrics.v1';
+const MAX_LYRICS_CACHE = 200;
 const lyricsCache = new Map<string, Promise<LyricsData | null>>();
 let lyricsOverrides: Record<string, ManualLyricsChoice> | null = null;
 let lyricsOverridesRestored: Promise<void> | null = null;
@@ -333,6 +334,7 @@ export function setManualLyricsChoice(trackId: string, choice: ManualLyricsChoic
     saveLyricsOverrides(overrides);
     const data = lyricsDataFromRecord(choice);
     lyricsCache.set(trackId, Promise.resolve(data));
+    evictLyricsCache();
     return data;
   }
   delete overrides[trackId];
@@ -368,6 +370,15 @@ export async function searchLyricsManual(query: string, signal?: AbortSignal): P
     }));
 }
 
+function evictLyricsCache() {
+  // Maps iterate in insertion order: drop the oldest entries past the cap.
+  while (lyricsCache.size > MAX_LYRICS_CACHE) {
+    const oldest = lyricsCache.keys().next().value;
+    if (oldest === undefined) break;
+    lyricsCache.delete(oldest);
+  }
+}
+
 export async function getLyrics(t: Track, forceRefresh = false): Promise<LyricsData | null> {
   if (t.lyrics) return { synced: t.lyrics };
   if (!loadLyricsOverrides()[t.id]) {
@@ -388,6 +399,7 @@ export async function getLyrics(t: Track, forceRefresh = false): Promise<LyricsD
         return value;
       });
     lyricsCache.set(t.id, p);
+    evictLyricsCache();
   }
   return p;
 }

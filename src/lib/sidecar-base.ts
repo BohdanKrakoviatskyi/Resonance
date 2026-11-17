@@ -48,9 +48,14 @@ export function createSidecarClient(opts: {
         newline = buffer.indexOf('\n');
       }
       // Prevent unbounded growth if the sidecar stops sending newlines.
+      // Kill the child so the next call respawns a clean process instead of
+      // reusing a broken one (or growing the buffer again).
       if (buffer.length > 50_000_000) {
         failPending('Local API output too large');
         buffer = '';
+        const current = child;
+        child = undefined;
+        void current?.then((c) => c.kill()).catch(() => {});
       }
     });
     if (opts.suppressStderr) command.stderr.on('data', () => {});

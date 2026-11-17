@@ -10,6 +10,7 @@ import type { YtResolveAttemptTiming, YtStreamResolveResult } from '../lib/provi
 import { rankRecommendations } from '../lib/recommendations';
 import { createPendingAudioSeek, pendingAudioSeekFor, type PendingAudioSeek } from '../lib/pending-audio-seek';
 import { canFallbackToOutgoingDeck, evaluateAutoCrossfadeTrigger, planAutoCrossfade } from '../lib/crossfade-plan';
+import { stepQueueIndex, shouldAdvanceAfterError } from '../lib/player-queue';
 import { onProviderState, providerCommand } from '../lib/provider-player';
 import type { Track } from '../types';
 
@@ -766,28 +767,20 @@ function effectiveAutoCrossfadeSeconds(trackDuration: number): number {
 
 function resolveNextQueueIndex(dir: 1 | -1, auto: boolean): number | 'repeat-one' | 'end-shuffle' | null {
   const s = player.get();
-  const n = s.queue.length;
-  if (!n) return null;
-  if (auto && s.repeat === 'one') return 'repeat-one';
-  let i = s.index;
-  for (let k = 0; k < n; k++) {
-    i += dir;
-    if (i >= n) {
-      // Shuffle is an infinite radio: at the end of the queue we extend it with recommendations
-      // instead of wrapping around (which would replay the same finite list) or stopping.
-      const track = currentTrack();
-      if (s.shuffle && track && (track.source === 'soundcloud' || isYouTubeTrack(track) || recommendationSource.has(track.id))) {
-        return 'end-shuffle';
-      }
-      if (auto && s.repeat === 'off') {
-        return null;
-      }
-      i = 0;
-    }
-    if (i < 0) i = n - 1;
-    if (!isDisliked(s.queue[i])) return i;
-  }
-  return null;
+  const track = currentTrack();
+  const canExtendShuffle = Boolean(
+    s.shuffle && track && (track.source === 'soundcloud' || isYouTubeTrack(track) || recommendationSource.has(track.id)),
+  );
+  return stepQueueIndex({
+    queue: s.queue,
+    index: s.index,
+    dir,
+    auto,
+    repeat: s.repeat,
+    shuffle: s.shuffle,
+    isDisliked,
+    canExtendShuffle,
+  });
 }
 
 function prefetchYtStream(id?: string | null) {
@@ -2136,7 +2129,7 @@ let lastSaved = 0;
 let errorAdvanceTimer: ReturnType<typeof setTimeout> | null = null;
 
 function scheduleErrorAdvance(reqId: number) {
-  if (errors >= 3) return;
+  if (!shouldAdvanceAfterError(errors)) return;
   errors += 1;
   if (errorAdvanceTimer !== null) clearTimeout(errorAdvanceTimer);
   errorAdvanceTimer = setTimeout(() => {

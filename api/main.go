@@ -373,7 +373,11 @@ type cachedLyrics struct {
 }
 
 type service struct {
-	mu                 sync.RWMutex
+	// mu is a pointer so a per-call snapshot (clone) shares the same lock as
+	// the real service. Read (default) RPC handlers run on a snapshot taken
+	// under a short RLock, so a slow network call never holds the lock while
+	// writers (settings/auth/history) wait behind it.
+	mu                 *sync.RWMutex
 	settingsPath       string
 	settings           settings
 	authPath           string
@@ -387,8 +391,9 @@ type service struct {
 	httpClient         *http.Client
 	// Lyrics are cached separately from everything else and behind their own lock: mu is held
 	// across disk writes and settings updates, so borrowing it for a cache that outlives an HTTP
-	// lookup would queue unrelated work behind the network.
-	lyricsMu    sync.RWMutex
+	// lookup would queue unrelated work behind the network. Also a pointer for the same
+	// snapshot-sharing reason as mu.
+	lyricsMu    *sync.RWMutex
 	lyricsCache map[int64]cachedLyrics
 }
 
@@ -412,6 +417,8 @@ func run(input io.Reader, output io.Writer) error {
 	}
 
 	svc := &service{
+		mu:                 &sync.RWMutex{},
+		lyricsMu:           &sync.RWMutex{},
 		settingsPath:       filepath.Join(dataDir, "settings.json"),
 		settings:           defaultSettings(),
 		authPath:           filepath.Join(dataDir, "auth.json"),
@@ -422,8 +429,10 @@ func run(input io.Reader, output io.Writer) error {
 		httpClient:         &http.Client{Timeout: 15 * time.Second},
 		lyricsCache:        make(map[int64]cachedLyrics),
 	}
+	// A settings problem must not stop the backend: fall back to defaults
+	// (the struct literal already holds them) exactly like auth/history do.
 	if err := svc.loadSettings(); err != nil {
-		return err
+		fmt.Fprintln(os.Stderr, "local backend: settings state ignored:", err)
 	}
 	if err := svc.loadAuth(); err != nil {
 		fmt.Fprintln(os.Stderr, "local backend: auth state ignored:", err)
@@ -474,31 +483,32 @@ func run(input io.Reader, output io.Writer) error {
 	return scanner.Err()
 }
 
-// rpcWriteLocked names the methods that mutate in-memory state (settings,
-// auth, history) and so need an exclusive lock. Everything else takes a read
-// lock and can run concurrently: a slow SoundCloud fetch no longer freezes
-// playback or lyrics.
-var rpcWriteLocked = map[string]bool{
-	"settings.update": saveTrue,
-	"settings.clear":  saveTrue,
-	"history.record":  saveTrue,
-	"history.clear":   saveTrue,
-	"auth.login":      saveTrue,
-	"auth.refresh":    saveTrue,
-	"auth.logout":     saveTrue,
-	"frontend.backup": saveTrue,
-	"cache.clear":     saveTrue,
-}
-
-const saveTrue = true
-
-// rpcSelfLocked methods manage their own locking. tracks.mine reads auth under
-// a short read lock, does its paging without a lock, and takes a write lock
-// only when it has to refresh a rejected token.
+// Locking discipline (no handler holds mu across a network call):
+//   - "self" methods (tracks.mine, resolve.playlist, user.likes.by.input)
+//     manage their own locking internally and are called on the real service.
+//   - "write" methods mutate state; each takes s.mu itself, only around the
+//     mutation (disk writes included, network excluded).
+//   - everything else is a read method: call() snapshots the service under a
+//     short RLock and runs the handler on the snapshot, so a slow fetch never
+//     blocks writers.
 var rpcSelfLocked = map[string]bool{
 	"tracks.mine":         true,
 	"resolve.playlist":    true,
 	"user.likes.by.input": true,
+}
+
+// rpcWriteLocked names the methods that mutate in-memory state. They run on
+// the real service and take s.mu themselves (only around the mutation).
+var rpcWriteLocked = map[string]bool{
+	"settings.update": true,
+	"settings.clear":  true,
+	"history.record":  true,
+	"history.clear":   true,
+	"auth.login":      true,
+	"auth.refresh":    true,
+	"auth.logout":     true,
+	"frontend.backup": true,
+	"cache.clear":     true,
 }
 
 func (s *service) call(method string, params json.RawMessage) (any, error) {
@@ -518,20 +528,19 @@ func (s *service) call(method string, params json.RawMessage) (any, error) {
 		log.Printf("rpc stage=decode_error method=%q params_type=%s error=%q", method, spec.params, wrapped.Error())
 		return nil, wrapped
 	}
-	methodValue := reflect.ValueOf(s).MethodByName(spec.goName)
+	// Read methods run on a snapshot; self-locked and write methods run on
+	// the real service (their handlers lock internally).
+	target := s
+	if !rpcSelfLocked[method] && !rpcWriteLocked[method] {
+		s.mu.RLock()
+		clone := *s
+		s.mu.RUnlock()
+		target = &clone
+	}
+	methodValue := reflect.ValueOf(target).MethodByName(spec.goName)
 	if !methodValue.IsValid() {
 		log.Printf("rpc stage=dispatch_error method=%q go_method=%q error=%q", method, spec.goName, "method disappeared after discovery")
 		return nil, errors.New("unknown method")
-	}
-
-	switch {
-	case rpcSelfLocked[method]:
-	case rpcWriteLocked[method]:
-		s.mu.Lock()
-		defer s.mu.Unlock()
-	default:
-		s.mu.RLock()
-		defer s.mu.RUnlock()
 	}
 
 	outputs := methodValue.Call([]reflect.Value{paramsValue.Elem()})
@@ -550,19 +559,27 @@ type rpcMethodSpec struct {
 	result reflect.Type
 }
 
+var (
+	rpcMethodsOnce sync.Once
+	rpcMethodsCache map[string]rpcMethodSpec
+)
+
 func rpcMethods() map[string]rpcMethodSpec {
-	methods := map[string]rpcMethodSpec{}
-	errorType := reflect.TypeOf((*error)(nil)).Elem()
-	serviceType := reflect.TypeOf((*service)(nil))
-	for i := 0; i < serviceType.NumMethod(); i++ {
-		method := serviceType.Method(i)
-		if !strings.HasPrefix(method.Name, "RPC") || method.Type.NumIn() != 2 || method.Type.NumOut() != 2 || method.Type.Out(1) != errorType {
-			continue
+	rpcMethodsOnce.Do(func() {
+		methods := map[string]rpcMethodSpec{}
+		errorType := reflect.TypeOf((*error)(nil)).Elem()
+		serviceType := reflect.TypeOf((*service)(nil))
+		for i := 0; i < serviceType.NumMethod(); i++ {
+			method := serviceType.Method(i)
+			if !strings.HasPrefix(method.Name, "RPC") || method.Type.NumIn() != 2 || method.Type.NumOut() != 2 || method.Type.Out(1) != errorType {
+				continue
+			}
+			apiName := rpcNameFromGo(method.Name)
+			methods[apiName] = rpcMethodSpec{goName: method.Name, params: method.Type.In(1), result: method.Type.Out(0)}
 		}
-		apiName := rpcNameFromGo(method.Name)
-		methods[apiName] = rpcMethodSpec{goName: method.Name, params: method.Type.In(1), result: method.Type.Out(0)}
-	}
-	return methods
+		rpcMethodsCache = methods
+	})
+	return rpcMethodsCache
 }
 
 func rpcNameFromGo(goName string) string {
@@ -592,6 +609,8 @@ func (s *service) RPCSettingsGet(_ emptyParams) (settings, error) {
 }
 
 func (s *service) RPCSettingsUpdate(patch settingsPatch) (settings, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	updated := s.settings
 	if patch.Accent != nil {
 		if !validAccent(*patch.Accent) {
@@ -633,6 +652,8 @@ func (s *service) RPCSettingsUpdate(patch settingsPatch) (settings, error) {
 
 // RPCSettingsClear clears locally persisted account credentials and preferences.
 func (s *service) RPCSettingsClear(_ emptyParams) (settings, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	if err := s.clearAuth(); err != nil {
 		return settings{}, fmt.Errorf("clear auth: %w", err)
 	}
@@ -657,6 +678,8 @@ func (s *service) RPCHistoryList(_ emptyParams) ([]soundcloudTrackCard, error) {
 }
 
 func (s *service) RPCHistoryRecord(params historyTrackParams) ([]soundcloudTrackCard, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	track := params.Track
 	if track.ID <= 0 || strings.TrimSpace(track.Title) == "" {
 		return nil, errors.New("для записи истории нужны корректные ID и название трека")
@@ -687,6 +710,8 @@ type frontendBackupParams struct {
 }
 
 func (s *service) RPCFrontendBackup(params frontendBackupParams) (map[string]string, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	if s.frontendBackup == nil {
 		s.frontendBackup = make(map[string]string)
 	}
@@ -702,6 +727,10 @@ func (s *service) RPCFrontendBackup(params frontendBackupParams) (map[string]str
 }
 
 func (s *service) RPCFrontendRestore(_ emptyParams) (map[string]string, error) {
+	// Runs on a snapshot whose map is shared with the real service, so the
+	// read must synchronize with RPCFrontendBackup's write lock.
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 	out := make(map[string]string, len(s.frontendBackup))
 	for k, v := range s.frontendBackup {
 		out[k] = v
@@ -721,6 +750,8 @@ func (s *service) loadFrontendBackup() {
 }
 
 func (s *service) RPCHistoryClear(_ emptyParams) ([]soundcloudTrackCard, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	if err := removeFileIfExists(s.historyPath); err != nil {
 		return nil, fmt.Errorf("clear playback history: %w", err)
 	}
@@ -737,11 +768,15 @@ func (s *service) RPCAuthLogin(login loginParams) (authStatus, error) {
 	if token == "" {
 		return authStatus{}, errors.New("вставьте access token SoundCloud")
 	}
+	// Network first, lock only for the save: a slow SoundCloud response must
+	// not block other writes.
 	user, err := s.fetchProfile(token)
 	if err != nil {
 		return authStatus{}, err
 	}
 	state := authState{Token: token, Profile: user, SavedAt: time.Now().UTC().Format(time.RFC3339)}
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	if err := s.saveAuth(state); err != nil {
 		return authStatus{}, fmt.Errorf("save auth: %w", err)
 	}
@@ -750,10 +785,27 @@ func (s *service) RPCAuthLogin(login loginParams) (authStatus, error) {
 }
 
 func (s *service) RPCAuthRefresh(_ emptyParams) (authStatus, error) {
-	if s.auth.Token == "" {
+	s.mu.RLock()
+	token := s.auth.Token
+	s.mu.RUnlock()
+	if token == "" {
 		return authStatus{Authorized: false}, nil
 	}
-	user, err := s.fetchProfile(s.auth.Token)
+	user, err := s.fetchProfile(token)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.auth.Token != token {
+		// The session changed while we were fetching (e.g. a fresh login);
+		// report the current state instead of overwriting it with stale data.
+		return s.authStatus(), nil
+	}
+	return s.refreshAuthLocked(user, err)
+}
+
+// refreshAuthLocked applies a fetchProfile result. The caller must hold
+// s.mu (write lock) and must have already confirmed s.auth.Token is the
+// token that was fetched.
+func (s *service) refreshAuthLocked(user profile, err error) (authStatus, error) {
 	if err != nil {
 		if errors.Is(err, errTokenRejected) {
 			if clearErr := s.clearAuth(); clearErr != nil {
@@ -773,6 +825,8 @@ func (s *service) RPCAuthRefresh(_ emptyParams) (authStatus, error) {
 }
 
 func (s *service) RPCAuthLogout(_ emptyParams) (authStatus, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	if err := s.clearAuth(); err != nil {
 		return authStatus{}, fmt.Errorf("clear auth: %w", err)
 	}
@@ -794,18 +848,23 @@ func (s *service) RPCTracksMine(_ emptyParams) ([]soundcloudTrackCard, error) {
 		// сообщаем о необходимости повторного логина. The write lock is held
 		// only for the refresh, not for the paging above.
 		s.mu.Lock()
-		revalidated, refreshErr := s.RPCAuthRefresh(emptyParams{})
-		if refreshErr == nil && revalidated.Authorized {
-			token, userID = s.auth.Token, s.auth.Profile.ID
-			s.mu.Unlock()
-			retried, retryErr := s.fetchMyTracks(token, userID)
-			if retryErr == nil {
-				return retried, nil
+		// Re-validate under the lock (a concurrent login may have replaced
+		// the token meanwhile; only refresh if it is still the rejected one).
+		if s.auth.Token == token {
+			user, refreshErr := s.fetchProfile(token)
+			revalidated, refreshErr := s.refreshAuthLocked(user, refreshErr)
+			if refreshErr == nil && revalidated.Authorized {
+				token, userID = s.auth.Token, s.auth.Profile.ID
+				s.mu.Unlock()
+				retried, retryErr := s.fetchMyTracks(token, userID)
+				if retryErr == nil {
+					return retried, nil
+				}
+				return nil, retryErr
 			}
-			return nil, retryErr
+			s.auth = authState{}
+			_ = s.clearAuth()
 		}
-		s.auth = authState{}
-		_ = s.clearAuth()
 		s.mu.Unlock()
 		return nil, errors.New("сессия SoundCloud устарела — войдите снова")
 	}

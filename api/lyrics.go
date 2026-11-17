@@ -63,6 +63,9 @@ type lyricsQuery struct {
 
 const lyricsUserAgent = "Resonance/0.1.0 (lyrics sidebar)"
 
+// maxLyricsCacheEntries caps the in-memory lyrics cache.
+const maxLyricsCacheEntries = 200
+
 var (
 	lyricsNoisePatterns = []*regexp.Regexp{
 		regexp.MustCompile(`\[[^\]]*\]`),
@@ -107,6 +110,20 @@ func (s *service) RPCTrackLyrics(params trackLyricsParams) (trackLyrics, error) 
 		s.lyricsMu.Lock()
 		if s.lyricsCache == nil {
 			s.lyricsCache = make(map[int64]cachedLyrics)
+		}
+		// Cap the cache so a long session cannot grow it without limit:
+		// evict the oldest entries (found lyrics never expire, so any entry
+		// can be dropped and re-fetched on demand).
+		for len(s.lyricsCache) >= maxLyricsCacheEntries {
+			var oldestID int64
+			var oldestTime time.Time
+			first := true
+			for id, entry := range s.lyricsCache {
+				if first || entry.cachedAt.Before(oldestTime) {
+					oldestID, oldestTime, first = id, entry.cachedAt, false
+				}
+			}
+			delete(s.lyricsCache, oldestID)
 		}
 		s.lyricsCache[lyrics.TrackID] = cachedLyrics{
 			lyrics:   lyrics,
