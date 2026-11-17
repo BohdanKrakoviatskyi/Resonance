@@ -1,10 +1,98 @@
-import { useEffect, useState, type CSSProperties } from 'react';
+import { useEffect, useRef, useState, type CSSProperties } from 'react';
 import { useStore } from '../lib/util';
 import { theme, type BgSpec } from '../state/theme';
 import { appearance } from '../state/appearance';
 
-function Layer({ spec, metallic, isTop, onDone }: { spec: BgSpec; metallic: boolean; isTop: boolean; onDone: () => void }) {
+/** After this long without input, an animated background is frozen to a still frame. */
+const BG_IDLE_MS = 5 * 60_000;
+const isAnimatedImage = (src: string) => src.startsWith('data:image/gif');
+
+/**
+ * Tracks whether the window is "live" (visible and used recently) and bumps `epoch` every time it
+ * becomes live again.
+ *
+ * Why: an animated GIF background (it can be 10+ MB) re-rasterises a scaled, blurred, GPU-promoted
+ * layer on every frame. Left running for hours with nobody at the keyboard, WebView2 can drop that
+ * layer and the window ends up with a blank white rectangle. Idle/hidden windows therefore show a
+ * still frame, and the image element is recreated on return, which also heals a layer that was lost.
+ */
+function useBackgroundActivity() {
+  const [active, setActive] = useState(true);
+  const [epoch, setEpoch] = useState(0);
+  const lastInput = useRef(Date.now());
+  const wasActive = useRef(true);
+
+  useEffect(() => {
+    const evaluate = () => {
+      const live = !document.hidden && Date.now() - lastInput.current < BG_IDLE_MS;
+      if (live === wasActive.current) return;
+      wasActive.current = live;
+      setActive(live);
+      if (live) setEpoch((e) => e + 1);
+    };
+    const touch = () => {
+      lastInput.current = Date.now();
+      if (!wasActive.current) evaluate();
+    };
+    const opts = { passive: true } as const;
+    const events = ['pointerdown', 'pointermove', 'keydown', 'wheel', 'touchstart'] as const;
+    events.forEach((name) => window.addEventListener(name, touch, opts));
+    window.addEventListener('focus', touch);
+    const onVisibility = () => (document.hidden ? evaluate() : touch());
+    document.addEventListener('visibilitychange', onVisibility);
+    const timer = window.setInterval(evaluate, 15_000);
+    return () => {
+      events.forEach((name) => window.removeEventListener(name, touch));
+      window.removeEventListener('focus', touch);
+      document.removeEventListener('visibilitychange', onVisibility);
+      window.clearInterval(timer);
+    };
+  }, []);
+
+  return { active, epoch };
+}
+
+/** One still frame of an (animated) image as an object URL; built only while `enabled`. */
+function useStillFrame(src: string, enabled: boolean): string | null {
+  const [frame, setFrame] = useState<string | null>(null);
+  useEffect(() => {
+    if (!enabled) return;
+    let cancelled = false;
+    let url: string | null = null;
+    const img = new Image();
+    img.decoding = 'async';
+    img.onload = () => {
+      const scale = Math.min(1, 1920 / Math.max(img.naturalWidth, img.naturalHeight, 1));
+      const canvas = document.createElement('canvas');
+      canvas.width = Math.max(1, Math.round(img.naturalWidth * scale));
+      canvas.height = Math.max(1, Math.round(img.naturalHeight * scale));
+      canvas.getContext('2d')?.drawImage(img, 0, 0, canvas.width, canvas.height);
+      canvas.toBlob(
+        (blob) => {
+          if (!blob || cancelled) return;
+          url = URL.createObjectURL(blob);
+          setFrame(url);
+        },
+        'image/jpeg',
+        0.92,
+      );
+    };
+    img.src = src;
+    return () => {
+      cancelled = true;
+      if (url) URL.revokeObjectURL(url);
+      setFrame(null);
+    };
+  }, [src, enabled]);
+  return frame;
+}
+
+function Layer({ spec, metallic, isTop, onDone, live, epoch }: { spec: BgSpec; metallic: boolean; isTop: boolean; onDone: () => void; live: boolean; epoch: number }) {
   const [a, b, c, d] = spec.colors;
+  const animated = spec.kind === 'image' && !!spec.image && isAnimatedImage(spec.image);
+  const still = useStillFrame(spec.image ?? '', animated && !live);
+  // Keep playing until the still frame is ready, so the switch never shows an empty background.
+  const imageSrc = animated && !live && still ? still : spec.image;
   const useLiveVars = isTop && spec.key === 'mesh:color';
   const style: CSSProperties = { background: useLiveVars ? `var(--bg-base, ${spec.base})` : spec.base };
   return (
@@ -19,7 +107,8 @@ function Layer({ spec, metallic, isTop, onDone }: { spec: BgSpec; metallic: bool
       )}
       {spec.kind === 'image' && spec.image && (
         <img
-          src={spec.image}
+          key={epoch}
+          src={imageSrc}
           alt=""
           decoding="async"
           className="bg-image-drift"
@@ -51,6 +140,7 @@ export function Background() {
   const bg = useStore(theme, (s) => s.bg);
   const metallic = useStore(appearance, (s) => s.metallic);
   const [layers, setLayers] = useState<BgSpec[]>(() => (bg ? [bg] : []));
+  const { active, epoch } = useBackgroundActivity();
   useEffect(() => {
     if (!bg) return;
     setLayers((ls) => {
@@ -62,7 +152,7 @@ export function Background() {
   return (
     <div className="bg-root" aria-hidden="true">
       {layers.map((l, i) => (
-        <Layer key={l.key} spec={l} metallic={metallic} isTop={i === layers.length - 1} onDone={() => i === layers.length - 1 && setLayers((ls) => ls.slice(ls.indexOf(l)))} />
+        <Layer key={l.key} spec={l} metallic={metallic} isTop={i === layers.length - 1} onDone={() => i === layers.length - 1 && setLayers((ls) => ls.slice(ls.indexOf(l)))} live={active} epoch={epoch} />
       ))}
     </div>
   );
