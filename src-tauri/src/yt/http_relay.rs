@@ -303,7 +303,7 @@ async fn send_upstream(
     proxy: &YtStreamProxy,
     resolved: &ResolvedYtStream,
     range: Option<&str>,
-) -> Result<reqwest::Response, reqwest::Error> {
+) -> Result<reqwest::Response, String> {
     let client = match resolved.ip_param.as_deref() {
         Some(ip) if ip.parse::<IpAddr>().is_ok_and(|a| a.is_ipv6()) || ip.contains(':') => &proxy.stream_http_v6,
         Some(ip) if ip.parse::<IpAddr>().is_ok_and(|a| a.is_ipv4()) || ip.contains('.') => &proxy.stream_http_v4,
@@ -319,10 +319,8 @@ async fn send_upstream(
     }
     tokio::time::timeout(STALL_TIMEOUT, req.send())
         .await
-        .map_err(|_| {
-            // Re-run a 1ms timeout or return via inner send error pattern:
-            client.get("http://127.0.0.1:0").build().unwrap_err()
-        })?
+        .map_err(|_| "Upstream request timed out".to_string())?
+        .map_err(|e| e.to_string())
 }
 
 fn parse_total_from_headers(headers: &reqwest::header::HeaderMap, fallback: Option<u64>) -> Option<u64> {

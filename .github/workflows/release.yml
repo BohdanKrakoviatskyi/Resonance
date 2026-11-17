@@ -40,6 +40,7 @@ jobs:
           sudo apt-get install -y build-essential curl wget file libxdo-dev libssl-dev libasound2-dev libayatana-appindicator3-dev librsvg2-dev libwebkit2gtk-4.1-dev
 
       - run: npm ci
+      - run: npx tsc --noEmit
       - run: npm test
       - run: go test ./...
         working-directory: api

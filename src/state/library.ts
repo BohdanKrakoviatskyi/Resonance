@@ -572,7 +572,7 @@ function ensureLibraryIndexes(s = library.get()) {
 
   const inferProvider = (id: string, tr?: Track): 'soundcloud' | 'youtube' | null => {
     if (tr?.source === 'soundcloud' || id.startsWith('sc:')) return 'soundcloud';
-    if (tr?.source === 'youtube' || (tr?.source as string) === 'ytmusic' || id.startsWith('yt:')) return 'youtube';
+    if (tr?.source === 'youtube' || (tr?.source as unknown as string) === 'ytmusic' || id.startsWith('yt:')) return 'youtube';
     return null;
   };
 

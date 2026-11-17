@@ -31,7 +31,11 @@ pub struct YtCacheClearDto {
 
 #[derive(Clone)]
 pub struct YtStore {
-    conn: Arc<Mutex<Connection>>,
+    // None when the database could not be opened or initialized; init_error
+    // carries the reason so commands can report it instead of silently
+    // losing every write.
+    conn: Option<Arc<Mutex<Connection>>>,
+    init_error: Option<String>,
 }
 
 impl Default for YtStore {
@@ -45,8 +49,16 @@ impl YtStore {
         let dir = app_data_root_dir();
         let _ = std::fs::create_dir_all(&dir);
         let db_path: PathBuf = dir.join("yt_music.db");
-        let conn = Connection::open(&db_path).unwrap_or_else(|_| Connection::open_in_memory().expect("in-memory sqlite"));
-        let _ = conn.execute_batch(
+        let conn = match Connection::open(&db_path) {
+            Ok(c) => c,
+            Err(e) => {
+                return Self {
+                    conn: None,
+                    init_error: Some(format!("Could not open YouTube Music database: {e}")),
+                };
+            }
+        };
+        if let Err(e) = conn.execute_batch(
             "PRAGMA journal_mode = WAL;
              PRAGMA synchronous = NORMAL;
              CREATE TABLE IF NOT EXISTS kv_cache (
@@ -54,43 +66,67 @@ impl YtStore {
                json TEXT NOT NULL,
                updated_at INTEGER NOT NULL
              );",
-        );
+        ) {
+            return Self {
+                conn: None,
+                init_error: Some(format!("Could not initialize YouTube Music database: {e}")),
+            };
+        }
         Self {
-            conn: Arc::new(Mutex::new(conn)),
+            conn: Some(Arc::new(Mutex::new(conn))),
+            init_error: None,
         }
     }
 
-    pub fn get_json<T: for<'de> Deserialize<'de>>(&self, key: &str) -> Option<T> {
-        let guard = self.conn.lock().ok()?;
-        let raw: String = guard
-            .query_row("SELECT json FROM kv_cache WHERE key = ?1", params![key], |row| row.get(0))
-            .ok()?;
-        serde_json::from_str(&raw).ok()
+    fn lock(&self) -> Result<std::sync::MutexGuard<'_, Connection>, String> {
+        let conn = self
+            .conn
+            .as_ref()
+            .ok_or_else(|| self.init_error.clone().unwrap_or_else(|| "YouTube Music database unavailable".to_string()))?;
+        conn.lock().map_err(|e| format!("YouTube Music database lock failed: {e}"))
     }
 
-    pub fn put_json<T: Serialize>(&self, key: &str, value: &T) {
-        let Ok(raw) = serde_json::to_string(value) else {
-            return;
-        };
-        if let Ok(guard) = self.conn.lock() {
-            let _ = guard.execute(
+    pub fn get_json<T: for<'de> Deserialize<'de>>(&self, key: &str) -> Result<Option<T>, String> {
+        let guard = self.lock()?;
+        let raw: Option<String> = guard
+            .query_row("SELECT json FROM kv_cache WHERE key = ?1", params![key], |row| row.get(0))
+            .ok();
+        match raw {
+            None => Ok(None),
+            Some(raw) => serde_json::from_str(&raw)
+                .map(Some)
+                .map_err(|e| format!("Could not parse cached YouTube Music data: {e}")),
+        }
+    }
+
+    pub fn put_json<T: Serialize>(&self, key: &str, value: &T) -> Result<(), String> {
+        let raw = serde_json::to_string(value)
+            .map_err(|e| format!("Could not encode YouTube Music data: {e}"))?;
+        let guard = self.lock()?;
+        guard
+            .execute(
                 "INSERT INTO kv_cache (key, json, updated_at) VALUES (?1, ?2, ?3)
                  ON CONFLICT(key) DO UPDATE SET json = excluded.json, updated_at = excluded.updated_at",
                 params![key, raw, now_unix_secs() as i64],
-            );
-        }
+            )
+            .map_err(|e| format!("Could not save YouTube Music data: {e}"))?;
+        Ok(())
     }
 
-    pub fn clear_prefix(&self, prefix: &str) {
-        if let Ok(guard) = self.conn.lock() {
-            let _ = guard.execute("DELETE FROM kv_cache WHERE key LIKE ?1", params![format!("{prefix}%")]);
-        }
+    pub fn clear_prefix(&self, prefix: &str) -> Result<(), String> {
+        let guard = self.lock()?;
+        guard
+            .execute("DELETE FROM kv_cache WHERE key LIKE ?1", params![format!("{prefix}%")])
+            .map_err(|e| format!("Could not clear YouTube Music cache: {e}"))?;
+        Ok(())
     }
 
-    pub fn clear_all(&self) {
-        if let Ok(guard) = self.conn.lock() {
-            let _ = guard.execute("DELETE FROM kv_cache", []);
-        }
+    pub fn clear_all(&self) -> Result<(), String> {
+        let guard = self.lock()?;
+        guard
+            .execute("DELETE FROM kv_cache", [])
+            .map_err(|e| format!("Could not clear YouTube Music cache: {e}"))?;
+        Ok(())
     }
 }
 
@@ -142,10 +178,10 @@ pub async fn yt_auth_logout(store: tauri::State<'_, YtStore>) -> Result<YtAuthSt
     let s = store.inner().clone();
     tokio::task::spawn_blocking(move || {
         delete_ytmusic_credentials();
-        s.clear_all();
+        s.clear_all()
     })
     .await
-    .map_err(|e| e.to_string())?;
+    .map_err(|e| e.to_string())??;
     Ok(YtAuthStatusDto {
         authorized: false,
         profile: None,
@@ -157,7 +193,7 @@ pub async fn yt_library_cached(store: tauri::State<'_, YtStore>) -> Result<Optio
     let s = store.inner().clone();
     tokio::task::spawn_blocking(move || s.get_json::<YtMusicLibraryDto>("library"))
         .await
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
@@ -168,7 +204,9 @@ pub async fn yt_library_sync(
     let lib = sync_library(&proxy.browse_http).await?;
     let s = store.inner().clone();
     let lib_clone = lib.clone();
-    tokio::task::spawn_blocking(move || s.put_json("library", &lib_clone));
+    tokio::task::spawn_blocking(move || s.put_json("library", &lib_clone))
+        .await
+        .map_err(|e| e.to_string())??;
     Ok(lib)
 }
 
@@ -181,7 +219,7 @@ pub async fn yt_playlist_tracks_cached(
     let s = store.inner().clone();
     tokio::task::spawn_blocking(move || s.get_json::<YtMusicPlaylistDto>(&format!("pl:{clean_id}")))
         .await
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
@@ -194,7 +232,9 @@ pub async fn yt_playlist_tracks_sync(
     let key = format!("pl:{}", pl.playlist_id);
     let s = store.inner().clone();
     let pl_clone = pl.clone();
-    tokio::task::spawn_blocking(move || s.put_json(&key, &pl_clone));
+    tokio::task::spawn_blocking(move || s.put_json(&key, &pl_clone))
+        .await
+        .map_err(|e| e.to_string())??;
     Ok(pl)
 }
 
@@ -209,17 +249,18 @@ pub async fn yt_playlist_artwork(
     let cached_art = tokio::task::spawn_blocking({
         let s = s.clone();
         let key = format!("pl:{clean_id}");
-        move || s.get_json::<YtMusicPlaylistDto>(&key).and_then(|p| p.artwork_url)
+        move || s.get_json::<YtMusicPlaylistDto>(&key).map(|p| p.and_then(|pl| pl.artwork_url))
     })
     .await
-    .ok()
-    .flatten();
+    .map_err(|e| e.to_string())??;
     if cached_art.is_some() {
         return Ok(cached_art);
     }
     let pl = fetch_playlist_tracks_native(&proxy.browse_http, &clean_id).await?;
     let art = pl.artwork_url.clone();
-    tokio::task::spawn_blocking(move || s.put_json(&format!("pl:{clean_id}"), &pl));
+    tokio::task::spawn_blocking(move || s.put_json(&format!("pl:{clean_id}"), &pl))
+        .await
+        .map_err(|e| e.to_string())??;
     Ok(art)
 }
 
@@ -231,7 +272,9 @@ pub async fn yt_clear_cache(
     let (audio_files_deleted, audio_bytes_freed, stream_entries_cleared) =
         proxy.clear_all_caches().await;
     let s = store.inner().clone();
-    tokio::task::spawn_blocking(move || s.clear_prefix("pl:"));
+    tokio::task::spawn_blocking(move || s.clear_prefix("pl:"))
+        .await
+        .map_err(|e| e.to_string())??;
     Ok(YtCacheClearDto {
         audio_files_deleted,
         audio_bytes_freed,
