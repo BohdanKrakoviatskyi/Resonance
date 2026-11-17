@@ -64,6 +64,8 @@ interface DeckDsp {
   compressor: DynamicsCompressorNode;
   limiter: DynamicsCompressorNode;
   channelGain: GainNode;
+  /** Post-EQ tap for the fullscreen equalizer's live spectrum (never connected to the output). */
+  analyser: AnalyserNode;
 }
 
 interface Deck {
@@ -283,8 +285,11 @@ function isEqActive(): boolean {
   return eqGains.some((g) => Math.abs(g) > 0.05);
 }
 
+/** How many views currently want the live spectrum (it needs the Web Audio graph to exist). */
+let spectrumConsumers = 0;
+
 function isDspNeeded(): boolean {
-  return player.get().normalizationEnabled || isEqActive();
+  return player.get().normalizationEnabled || isEqActive() || spectrumConsumers > 0;
 }
 
 function ensureDeckDsp(deck: Deck): DeckDsp | undefined {
@@ -308,6 +313,11 @@ function ensureDeckDsp(deck: Deck): DeckDsp | undefined {
     const compressor = ctx.createDynamicsCompressor();
     const limiter = ctx.createDynamicsCompressor();
     const channelGain = ctx.createGain();
+    const analyser = ctx.createAnalyser();
+    analyser.fftSize = 4096;
+    analyser.smoothingTimeConstant = 0.78;
+    analyser.minDecibels = -92;
+    analyser.maxDecibels = -18;
 
     // Brickwall safety limiter at -1.0 dBFS to guarantee zero clipping even when preGain or EQ boost > 1.0
     limiter.threshold.value = -1.0;
@@ -316,7 +326,7 @@ function ensureDeckDsp(deck: Deck): DeckDsp | undefined {
     limiter.attack.value = 0.001;
     limiter.release.value = 0.08;
 
-    deck.dsp = { ctx, source, preGain, eqFilters, compressor, limiter, channelGain };
+    deck.dsp = { ctx, source, preGain, eqFilters, compressor, limiter, channelGain, analyser };
     configureDeckDspChain(deck);
     return deck.dsp;
   } catch {
@@ -387,6 +397,8 @@ function configureDeckDspChain(deck: Deck) {
     dsp.source.connect(dsp.channelGain);
     dsp.channelGain.connect(dsp.ctx.destination);
   }
+  // Side tap only: an analyser that feeds nothing, so the audible signal is untouched.
+  dsp.channelGain.connect(dsp.analyser);
 }
 
 function resumeAudioContextIfNeeded() {
@@ -733,6 +745,33 @@ export function setCrossfadeCurve(curve: CrossfadeCurve) {
     applyCrossfadeGains(crossfadeSession.fromDeck, crossfadeSession.toDeck, progress);
   }
 }
+
+/**
+ * Asks for the live spectrum. Builds the Web Audio graph if it does not exist yet (the same graph
+ * the equalizer and normalisation use) and returns a release function. The graph is not torn down on
+ * release: a media element can only be wrapped once.
+ */
+export function acquireSpectrum(): () => void {
+  spectrumConsumers++;
+  refreshAllDspChains();
+  let released = false;
+  return () => {
+    if (released) return;
+    released = true;
+    spectrumConsumers = Math.max(0, spectrumConsumers - 1);
+  };
+}
+
+/** Fills `out` with the current magnitude spectrum (0..255 per bin); returns the sample rate, or 0 if unavailable. */
+export function readSpectrum(out: Uint8Array<ArrayBuffer>): number {
+  const dsp = getActiveDeck().dsp;
+  if (!dsp || dsp.ctx.state !== 'running') return 0;
+  dsp.analyser.getByteFrequencyData(out);
+  return dsp.ctx.sampleRate;
+}
+
+/** Number of bins `readSpectrum` expects. */
+export const SPECTRUM_BINS = 2048;
 
 export function setEqPreset(preset: EqPreset) {
   if (preset === 'custom') {

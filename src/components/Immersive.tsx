@@ -1,39 +1,27 @@
 import { useEffect, useRef, useState } from 'react';
 import { Icon } from './Icon';
-import { IconButton, Menu, MenuItem, Slider, usePresence } from './ui';
+import { IconButton, Menu, Slider, usePresence } from './ui';
 import { ArtCover, Cover } from './Cover';
+import { EqPanel } from './EqPanel';
 import { Lyrics } from './Lyrics';
 import { Controls, Seek, TimeNow, TimeTotal } from './Seek';
 import { DislikeButton, LikeButton, PlaylistPicker, SourcePill } from './TrackList';
 import { clamp, cx, useStore } from '../lib/util';
-import { t, type Key } from '../lib/i18n';
+import { t } from '../lib/i18n';
 import { supportsVT, vtBlurSafe } from '../lib/motion';
 import { getTrack, library } from '../state/library';
 import {
-  EQ_BANDS,
   adjustVolumePos,
   jumpTo,
   player,
   setCrossfadeDuration,
-  setEqBandGain,
-  setEqPreset,
   setVolumePos,
   toggle,
   toggleMute,
   useCurrentTrack,
   volumeToPos,
-  type EqPreset,
 } from '../state/player';
 import { openSearch, setImmersive, ui } from '../state/ui';
-
-const PRESET_OPTIONS: { value: EqPreset; labelKey: Key }[] = [
-  { value: 'flat', labelKey: 'eqFlat' },
-  { value: 'bassBoost', labelKey: 'eqBassBoost' },
-  { value: 'vocal', labelKey: 'eqVocal' },
-  { value: 'rock', labelKey: 'eqRock' },
-  { value: 'electronic', labelKey: 'eqElectronic' },
-  { value: 'custom', labelKey: 'eqCustom' },
-];
 
 /** Interactive 3D Coverflow carousel with Play badge on previewed tracks and a "Back to playing" pill. */
 function CoverCarousel({ activeIndex, queue, vt }: { activeIndex: number; queue: string[]; vt: boolean }) {
@@ -171,148 +159,6 @@ function CoverCarousel({ activeIndex, queue, vt }: { activeIndex: number; queue:
             }}
           />
         )}
-      </div>
-    </div>
-  );
-}
-
-/** Vertical single-band slider for the 5-band Equalizer. */
-function EqBandSlider({ index, freqLabel, gainDb }: { index: number; freqLabel: string; gainDb: number }) {
-  const trackRef = useRef<HTMLDivElement>(null);
-  const [dragging, setDragging] = useState(false);
-
-  const updateFromClientY = (clientY: number) => {
-    const el = trackRef.current;
-    if (!el) return;
-    const rect = el.getBoundingClientRect();
-    const norm = 1 - clamp((clientY - rect.top) / (rect.height || 1), 0, 1); // 1 at top (+12dB), 0 at bottom (-12dB)
-    const db = norm * 24 - 12;
-    setEqBandGain(index, db);
-  };
-
-  const pctFromTop = clamp(((12 - gainDb) / 24) * 100, 0, 100);
-  const fillTop = Math.min(50, pctFromTop);
-  const fillHeight = Math.max(2, Math.abs(50 - pctFromTop));
-  const formattedDb = `${gainDb > 0 ? '+' : ''}${gainDb.toFixed(1)} dB`;
-
-  return (
-    <div className="imm-eq-band">
-      <span className="text-xs font-bold tabular-nums text-primary">{formattedDb}</span>
-      <div
-        ref={trackRef}
-        role="slider"
-        tabIndex={0}
-        aria-label={`${freqLabel} (${formattedDb})`}
-        aria-valuemin={-12}
-        aria-valuemax={12}
-        aria-valuenow={gainDb}
-        className={cx('imm-eq-track', dragging && 'dragging')}
-        onPointerDown={(e) => {
-          e.currentTarget.setPointerCapture(e.pointerId);
-          setDragging(true);
-          updateFromClientY(e.clientY);
-        }}
-        onPointerMove={(e) => {
-          if (!dragging) return;
-          updateFromClientY(e.clientY);
-        }}
-        onPointerUp={() => setDragging(false)}
-        onPointerCancel={() => setDragging(false)}
-        onDoubleClick={() => setEqBandGain(index, 0)}
-        onWheel={(e) => {
-          e.preventDefault();
-          const delta = e.deltaY < 0 ? 0.5 : -0.5;
-          setEqBandGain(index, gainDb + delta);
-        }}
-        onKeyDown={(e) => {
-          if (e.key === 'ArrowUp' || e.key === 'ArrowRight') setEqBandGain(index, gainDb + 0.5);
-          else if (e.key === 'ArrowDown' || e.key === 'ArrowLeft') setEqBandGain(index, gainDb - 0.5);
-          else if (e.key === 'Home') setEqBandGain(index, 0);
-          else return;
-          e.preventDefault();
-        }}
-      >
-        <div className="imm-eq-rail">
-          <div className="absolute inset-x-0 top-1/2 h-[1px] bg-on-surface/25" aria-hidden="true" />
-          <div className="imm-eq-fill" style={{ top: `${fillTop}%`, height: `${fillHeight}%` }} />
-        </div>
-        <div className="imm-eq-thumb" style={{ top: `${pctFromTop}%` }} />
-      </div>
-      <span className="text-xs font-semibold text-on-surface-variant">{freqLabel}</span>
-    </div>
-  );
-}
-
-/** 5-Band Web Audio API Equalizer panel for the right column of Immersive mode. */
-function ImmersiveEqualizer() {
-  const eqPreset = useStore(player, (s) => s.eqPreset);
-  const eqGains = useStore(player, (s) => s.eqGains);
-  const [presetAnchor, setPresetAnchor] = useState<HTMLElement | null>(null);
-
-  const activePresetLabel = t(PRESET_OPTIONS.find((p) => p.value === eqPreset)?.labelKey ?? 'eqFlat');
-
-  return (
-    <div className="imm-eq-card">
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <div className="flex items-center gap-2.5">
-          <span className="grid h-10 w-10 place-items-center rounded-2xl bg-primary/20 text-primary">
-            <Icon name="graphic_eq" fill size={22} />
-          </span>
-          <div>
-            <h2 className="headline text-xl leading-tight">{t('equalizer')}</h2>
-            <p className="text-xs text-on-surface-variant">60Hz – 14kHz · Web Audio DSP</p>
-          </div>
-        </div>
-
-        <div className="flex items-center gap-2">
-          {eqPreset !== 'flat' && (
-            <button
-              type="button"
-              data-ripple
-              className="sl rounded-full bg-on-surface/10 px-3.5 py-2 text-xs font-semibold text-on-surface-variant hover:text-on-surface"
-              onClick={() => setEqPreset('flat')}
-            >
-              {t('eqReset')}
-            </button>
-          )}
-          <button
-            type="button"
-            data-ripple
-            className="sl inline-flex items-center gap-2 rounded-full bg-on-surface/12 px-4 py-2 text-sm font-semibold text-on-surface ring-1 ring-white/10"
-            onClick={(e) => setPresetAnchor(presetAnchor ? null : e.currentTarget)}
-          >
-            <Icon name="tune" size={18} className="text-primary" />
-            <span>{activePresetLabel}</span>
-            <Icon name="chevron_right" size={18} className="rotate-90 text-on-surface-variant" />
-          </button>
-          <Menu anchor={presetAnchor} open={!!presetAnchor} onClose={() => setPresetAnchor(null)}>
-            <div className="menu-head">{t('eqPresetLabel')}</div>
-            {PRESET_OPTIONS.map((opt, idx) => (
-              <MenuItem
-                key={opt.value}
-                i={idx}
-                label={t(opt.labelKey)}
-                checked={eqPreset === opt.value}
-                onClick={() => {
-                  setEqPreset(opt.value);
-                  setPresetAnchor(null);
-                }}
-              />
-            ))}
-          </Menu>
-        </div>
-      </div>
-
-      <div className="my-6 flex flex-1 items-stretch justify-between gap-2 sm:gap-4">
-        {EQ_BANDS.map((band, idx) => (
-          <EqBandSlider key={band.freq} index={idx} freqLabel={band.label} gainDb={eqGains[idx] ?? 0} />
-        ))}
-      </div>
-
-      <div className="flex justify-between text-[11px] font-medium text-on-surface-variant/75">
-        <span>−12 dB</span>
-        <span>0 dB</span>
-        <span>+12 dB</span>
       </div>
     </div>
   );
@@ -542,7 +388,7 @@ export function Immersive() {
             {rightMode === 'lyrics' ? (
               <Lyrics track={track} variant="imm" active={open} />
             ) : (
-              <ImmersiveEqualizer />
+              <EqPanel />
             )}
           </div>
           <Menu anchor={anchor} open={!!anchor} onClose={() => setAnchor(null)}>
