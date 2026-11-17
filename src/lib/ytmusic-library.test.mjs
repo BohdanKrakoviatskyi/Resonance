@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mapYtMusicTrack, mapYtMusicTracks, parseYtMusicCollectionId, ytmusicPlaylistId } from './ytmusic-library.ts';
+import { mapYtMusicTrack, mapYtMusicTracks, parseYtMusicCollectionId, upscaleYtmArtwork, ytmusicPlaylistId } from './ytmusic-library.ts';
 
 test('maps YouTube Music metadata to the existing direct-playback track model', () => {
   assert.deepEqual(mapYtMusicTrack({
@@ -31,4 +31,21 @@ test('parses provider collection IDs without accepting local or SoundCloud IDs',
   assert.equal(parseYtMusicCollectionId('scpl:1'), null);
   assert.equal(parseYtMusicCollectionId('local-id'), null);
   assert.equal(parseYtMusicCollectionId('ytpl:'), null);
+});
+
+test('upscales small YouTube Music artwork to the 544px crop', () => {
+  assert.equal(
+    upscaleYtmArtwork('https://lh3.googleusercontent.com/x=w120-h120-l90-rj'),
+    'https://lh3.googleusercontent.com/x=w544-h544-l90-rj',
+  );
+  assert.equal(
+    upscaleYtmArtwork('https://lh3.googleusercontent.com/x=w544-h544-l90-rj'),
+    'https://lh3.googleusercontent.com/x=w544-h544-l90-rj',
+  );
+  assert.equal(
+    upscaleYtmArtwork('https://i.ytimg.com/vi/x/hqdefault.jpg'),
+    'https://i.ytimg.com/vi/x/hqdefault.jpg',
+  );
+  assert.equal(upscaleYtmArtwork(undefined), undefined);
+  assert.equal(upscaleYtmArtwork(null), undefined);
 });

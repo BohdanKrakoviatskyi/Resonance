@@ -2,6 +2,7 @@ import type { LyricLine, Track } from '../types';
 import { findYouTubeFallbackCandidate, youtubeFallbackQueries } from './youtube-match';
 import { findLyricsCandidate, lyricsSearchQueries, toSeconds, type LyricsCandidate } from './lyrics-match';
 import { rpc } from './sidecar';
+import { upscaleYtmArtwork } from './ytmusic-library';
 
 import {
   searchSoundCloudTracks,
@@ -39,7 +40,7 @@ export function mapSoundCloudTrack(track: SoundCloudTrackLike): Track {
 
 export function mapYouTubeTrack(item: YouTubeTrack): Track {
   const duration = item.durationMs / 1000;
-  const artwork = item.artworkUrl || `https://i.ytimg.com/vi/${encodeURIComponent(item.nativeId)}/hqdefault.jpg`;
+  const artwork = upscaleYtmArtwork(item.artworkUrl) || `https://i.ytimg.com/vi/${encodeURIComponent(item.nativeId)}/hqdefault.jpg`;
   return {
     id: `yt:${item.nativeId}`, title: item.title, artist: item.artist,
     cover: artwork, thumb: artwork,

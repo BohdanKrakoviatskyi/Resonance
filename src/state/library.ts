@@ -6,7 +6,7 @@ import {
   ytMusicPlaylistCached, ytMusicPlaylistTracks,
 } from '../lib/providers-api';
 import { mapSoundCloudTrack } from '../lib/api';
-import { mapYtMusicTracks, normalizeYtMusicPlaylist, type YtMusicPlaylist, type YtMusicProfile } from '../lib/ytmusic-library';
+import { mapYtMusicTracks, normalizeYtMusicPlaylist, upscaleYtmArtwork, type YtMusicPlaylist, type YtMusicProfile } from '../lib/ytmusic-library';
 import { snack, ui, go } from './ui';
 import { t } from '../lib/i18n';
 import { player, next } from './player';
@@ -112,12 +112,12 @@ function sanitizeStoredTrack(tr: Track): Track {
   if (id.startsWith('yt:') || (tr.source as string) === 'ytmusic' || tr.source === 'youtube') {
     const videoId = String(tr.nativeId || (id.startsWith('yt:') ? id.slice(3) : '')).trim();
     const fallbackCover = videoId ? `https://i.ytimg.com/vi/${encodeURIComponent(videoId)}/hqdefault.jpg` : undefined;
-    const cover = tr.cover || tr.thumb || fallbackCover;
+    const cover = upscaleYtmArtwork(tr.cover || tr.thumb || fallbackCover);
     return {
       ...tr,
       id: videoId ? `yt:${videoId}` : id,
       cover,
-      thumb: tr.thumb || cover,
+      thumb: upscaleYtmArtwork(tr.thumb) || cover,
       src: videoId ? `https://music.youtube.com/watch?v=${encodeURIComponent(videoId)}` : tr.src || '',
       nativeId: videoId || tr.nativeId,
       playback: 'direct',
@@ -422,16 +422,18 @@ export function clearYtMusicLibrary() {
 
 export function loadYtMusicPlaylistArtwork(playlistId: string): Promise<string | null> {
   const cached = library.get().ytmusicPlaylistArt;
-  if (playlistId in cached) return Promise.resolve(cached[playlistId]);
+  // Cached entries predate the 544px artwork upgrade; upscale on the way out.
+  if (playlistId in cached) return Promise.resolve(upscaleYtmArtwork(cached[playlistId]) ?? null);
   const pending = ytmusicArtworkLoads.get(playlistId);
   if (pending) return pending;
   const epoch = ytmusicEpoch;
   const request = ytMusicPlaylistArtwork(playlistId)
     .then((art) => {
+      const upgraded = upscaleYtmArtwork(art) ?? null;
       if (epoch === ytmusicEpoch) {
-        library.set((state) => ({ ytmusicPlaylistArt: { ...state.ytmusicPlaylistArt, [playlistId]: art ?? null } }));
+        library.set((state) => ({ ytmusicPlaylistArt: { ...state.ytmusicPlaylistArt, [playlistId]: upgraded } }));
       }
-      return art ?? null;
+      return upgraded;
     })
     .catch(() => null)
     .finally(() => ytmusicArtworkLoads.delete(playlistId));

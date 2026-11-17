@@ -318,6 +318,60 @@ pub fn runs_text(val: Option<&Value>) -> String {
         .to_string()
 }
 
+/// Parses the crop size embedded in a googleusercontent thumbnail URL
+/// ("...=w544-h544-l90-rj"). Returns (0, 0) when the URL has no size segment.
+fn url_thumb_dims(url: &str) -> (i64, i64) {
+    let Some(idx) = url.find("=w") else {
+        return (0, 0);
+    };
+    let rest = &url[idx + 2..];
+    let w: String = rest.chars().take_while(|c| c.is_ascii_digit()).collect();
+    let rest = &rest[w.len()..];
+    let Some(hpart) = rest.strip_prefix("-h") else {
+        return (0, 0);
+    };
+    let h: String = hpart.chars().take_while(|c| c.is_ascii_digit()).collect();
+    match (w.parse::<i64>(), h.parse::<i64>()) {
+        (Ok(w), Ok(h)) => (w, h),
+        _ => (0, 0),
+    }
+}
+
+/// Target size for music artwork. The API offers thumbnails at whatever size
+/// the page requested (often 120–226 px), but the stored image is much larger
+/// and googleusercontent serves any requested crop, so rewriting the size
+/// segment fetches real detail instead of a blurry upscale. 544×544 is the
+/// crop YouTube Music itself uses for large art.
+const YTM_ARTWORK_PX: i64 = 544;
+
+pub fn upscale_ytm_thumbnail(url: &str) -> String {
+    if !url.contains("googleusercontent.com") {
+        return url.to_string();
+    }
+    let (w, h) = url_thumb_dims(url);
+    if w == 0 || h == 0 || (w >= YTM_ARTWORK_PX && h >= YTM_ARTWORK_PX) {
+        return url.to_string();
+    }
+    // Rebuild the "=wNNN-hNNN" segment, keeping the rest of the crop suffix.
+    let Some(idx) = url.find("=w") else {
+        return url.to_string();
+    };
+    let rest = &url[idx + 2..];
+    let wlen = rest.chars().take_while(|c| c.is_ascii_digit()).count();
+    let Some(hpart) = rest[wlen..].strip_prefix("-h") else {
+        return url.to_string();
+    };
+    let hlen = hpart.chars().take_while(|c| c.is_ascii_digit()).count();
+    if wlen == 0 || hlen == 0 {
+        return url.to_string();
+    }
+    let mut out = String::with_capacity(url.len() + 8);
+    out.push_str(&url[..idx]);
+    out.push_str("=w544-h544");
+    out.push_str(&hpart[hlen..]);
+    out
+}
+
 pub fn best_thumbnail(val: Option<&Value>) -> Option<String> {
     let arr = val.and_then(|v| v.as_array())?;
     arr.iter()
@@ -326,12 +380,22 @@ pub fn best_thumbnail(val: Option<&Value>) -> Option<String> {
             if !url.starts_with("http") {
                 return None;
             }
-            let w = item.get("width").and_then(|v| v.as_i64()).unwrap_or(0);
-            let h = item.get("height").and_then(|v| v.as_i64()).unwrap_or(0);
+            // Size from the JSON fields when present; otherwise from the URL.
+            // Parsing the URL keeps the choice independent of the order the
+            // thumbnails happen to be listed in.
+            let (w, h) = {
+                let jw = item.get("width").and_then(|v| v.as_i64()).unwrap_or(0);
+                let jh = item.get("height").and_then(|v| v.as_i64()).unwrap_or(0);
+                if jw > 0 && jh > 0 {
+                    (jw, jh)
+                } else {
+                    url_thumb_dims(url)
+                }
+            };
             Some((w * h, url.to_string()))
         })
         .max_by_key(|(area, _)| *area)
-        .map(|(_, url)| url)
+        .map(|(_, url)| upscale_ytm_thumbnail(&url))
 }
 
 pub fn parse_duration_secs(text: &str) -> Option<f64> {
@@ -355,6 +419,47 @@ pub fn parse_count_from_text(text: &str) -> usize {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn upscales_small_music_thumbnails_to_the_544px_crop() {
+        assert_eq!(
+            upscale_ytm_thumbnail("https://lh3.googleusercontent.com/abc=w120-h120-l90-rj"),
+            "https://lh3.googleusercontent.com/abc=w544-h544-l90-rj"
+        );
+        assert_eq!(
+            upscale_ytm_thumbnail("https://lh3.googleusercontent.com/abc=w544-h544-l90-rj"),
+            "https://lh3.googleusercontent.com/abc=w544-h544-l90-rj"
+        );
+        assert_eq!(
+            upscale_ytm_thumbnail("https://lh3.googleusercontent.com/abc=w1200-h1200"),
+            "https://lh3.googleusercontent.com/abc=w1200-h1200"
+        );
+        assert_eq!(
+            upscale_ytm_thumbnail("https://i.ytimg.com/vi/abc/hqdefault.jpg"),
+            "https://i.ytimg.com/vi/abc/hqdefault.jpg"
+        );
+    }
+
+    #[test]
+    fn best_thumbnail_reads_size_from_url_when_json_has_no_dimensions() {
+        let small_first = json!([
+            {"url": "https://lh3.googleusercontent.com/a=w60-h60"},
+            {"url": "https://lh3.googleusercontent.com/b=w544-h544"},
+        ]);
+        assert_eq!(
+            best_thumbnail(Some(&small_first)).as_deref(),
+            Some("https://lh3.googleusercontent.com/b=w544-h544")
+        );
+        // Order must not matter: largest wins even when listed last-first.
+        let large_first = json!([
+            {"url": "https://lh3.googleusercontent.com/b=w544-h544"},
+            {"url": "https://lh3.googleusercontent.com/a=w60-h60"},
+        ]);
+        assert_eq!(
+            best_thumbnail(Some(&large_first)).as_deref(),
+            Some("https://lh3.googleusercontent.com/b=w544-h544")
+        );
+    }
 
     fn track(video_id: &str) -> Value {
         json!({
