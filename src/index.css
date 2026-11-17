@@ -608,8 +608,8 @@ html[data-theme=light] { color-scheme: light; }
   @container main (max-width: 420px) { .mini .hide-xs { display: none !important; } }
 
   /* ---------- immersive lyrics ---------- */
-  .immersive { position: fixed; inset: 0; z-index: 40; display: grid; grid-template-rows: auto minmax(0, 1fr); overflow: auto; color: var(--md-on-surface); opacity: 0; transform: scale(1.03); transition: opacity .45s var(--ease-emph), transform var(--sp-slow-d) var(--sp-slow); }
-  .immersive[data-visible=true] { opacity: 1; transform: none; }
+  .immersive { position: fixed; inset: 0; z-index: 40; display: grid; grid-template-rows: auto minmax(0, 1fr); overflow: auto; color: var(--md-on-surface); }
+  .immersive[data-visible=false] { visibility: hidden; pointer-events: none; }
   .imm-scrim { position: absolute; inset: 0; z-index: -1; background: color-mix(in oklab, var(--md-surface) 22%, transparent); }
   .imm-top { display: flex; align-items: center; justify-content: flex-end; padding: 18px 22px; }
   .imm-grid {
