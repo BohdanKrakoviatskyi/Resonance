@@ -12,6 +12,7 @@ use super::music_parse::{
     YtMusicPlaylistDto, YtMusicTrackDto, YtSearchSuggestionsDto, YtSearchTrackDto, best_thumbnail,
     collect_by_key, extract_header_artwork, extract_playlist_title, find_continuation_token,
     parse_count_from_text, parse_duration_secs, parse_responsive_track, runs_text, to_search_dto,
+    track_renderers,
 };
 use super::proxy::YtStreamProxy;
 
@@ -204,14 +205,20 @@ async fn fetch_browse_tracks(http: &Client, browse_id: &str, max_pages: usize) -
     let mut data = post_music(http, MUSIC_BROWSE_URL, json!({ "browseId": browse_id }), true).await?;
 
     for page_idx in 0..max_pages {
-        let mut items = Vec::new();
-        collect_by_key(&data, "musicResponsiveListItemRenderer", &mut items);
-        for r in items {
+        let mut parsed = 0;
+        for r in track_renderers(&data) {
             if let Some(t) = parse_responsive_track(r) {
+                parsed += 1;
                 if seen.insert(t.video_id.clone()) {
                     tracks.push(t);
                 }
             }
+        }
+        // A page with no parseable tracks means the continuation pointed at a
+        // non-track shelf (or repeated itself): following it further can only
+        // loop, so stop like ytmusicapi does on empty contents.
+        if parsed == 0 {
+            break;
         }
         if page_idx + 1 >= max_pages {
             break;
@@ -243,14 +250,17 @@ pub async fn fetch_playlist_tracks_native(http: &Client, playlist_id: &str) -> R
     let mut tracks = Vec::new();
     let mut seen = HashSet::new();
     for page_idx in 0..20 {
-        let mut items = Vec::new();
-        collect_by_key(&data, "musicResponsiveListItemRenderer", &mut items);
-        for r in items {
+        let mut parsed = 0;
+        for r in track_renderers(&data) {
             if let Some(t) = parse_responsive_track(r) {
+                parsed += 1;
                 if seen.insert(t.video_id.clone()) {
                     tracks.push(t);
                 }
             }
+        }
+        if parsed == 0 {
+            break;
         }
         if page_idx >= 19 {
             break;
