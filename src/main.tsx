@@ -9,6 +9,7 @@ import { initPlayer } from './state/player';
 import { initIntegrations } from './state/integrations';
 import { initLocalLibrary } from './state/local-library';
 import { initOffline } from './state/offline';
+import { initCustomCss } from './state/custom-css';
 import { initializeShortcutRuntime } from './state/shortcut-runtime';
 import { initTheme } from './state/theme';
 
@@ -39,6 +40,7 @@ if (!isSplash) {
   initIntegrations();
   initLocalLibrary();
   initOffline();
+  initCustomCss();
 }
 initTheme();
 initFx();
