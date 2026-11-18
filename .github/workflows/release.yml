@@ -109,6 +109,8 @@ jobs:
 
       - uses: tauri-apps/tauri-action@v0
         env:
+          # whisper.cpp uses std::filesystem, which Apple's libc++ only offers from macOS 10.15.
+          MACOSX_DEPLOYMENT_TARGET: "11.0"
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
