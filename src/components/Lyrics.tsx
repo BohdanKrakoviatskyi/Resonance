@@ -13,6 +13,8 @@ import {
   type ManualLyricsChoice,
 } from '../lib/api';
 import { stripTrackNoise } from '../lib/lyrics-match';
+import { parseLrcFile } from '../lib/lrc-file';
+import { LYRICS_OFFSET_STEP, nudgeLyricsOffset, setLyricsOffset, useLyricsOffset } from '../state/lyrics-offset';
 import { onFrame, player, seek, toggle } from '../state/player';
 import type { LyricLine, Track } from '../types';
 
@@ -63,7 +65,18 @@ function findLine(lines: LyricLine[], time: number) {
   return ans;
 }
 
-function SyncedLyrics({ lines, variant, activeSurface = true }: { lines: LyricLine[]; variant: 'panel' | 'imm'; activeSurface?: boolean }) {
+function SyncedLyrics({
+  lines,
+  variant,
+  activeSurface = true,
+  offset = 0,
+}: {
+  lines: LyricLine[];
+  variant: 'panel' | 'imm';
+  activeSurface?: boolean;
+  /** Seconds; positive = lines appear later. */
+  offset?: number;
+}) {
   const box = useRef<HTMLDivElement>(null);
   const list = useRef<HTMLDivElement>(null);
   const refs = useRef<(HTMLParagraphElement | null)[]>([]);
@@ -83,7 +96,7 @@ function SyncedLyrics({ lines, variant, activeSurface = true }: { lines: LyricLi
   useEffect(() => {
     if (!activeSurface) return;
     return onFrame((_visualTime, _dur, realTime) => {
-      const time = realTime;
+      const time = realTime - offset;
       const i = findLine(lines, time + 0.12);
       if (i !== activeRef.current) {
         activeRef.current = i;
@@ -101,7 +114,7 @@ function SyncedLyrics({ lines, variant, activeSurface = true }: { lines: LyricLi
         }
       }
     });
-  }, [lines, activeSurface]);
+  }, [lines, activeSurface, offset]);
 
   useLayoutEffect(() => {
     if (!activeSurface) return;
@@ -169,7 +182,7 @@ function SyncedLyrics({ lines, variant, activeSurface = true }: { lines: LyricLi
               data-state={i === active ? 'active' : d < 0 ? 'past' : 'future'}
               style={{ '--d': clamp(d, 0, 10), '--dist': Math.min(Math.abs(d), 5) } as Vars}
               onClick={() => {
-                seek(l.t);
+                seek(Math.max(0, l.t + offset));
                 if (!player.get().playing) toggle();
               }}
             >
@@ -204,6 +217,72 @@ function PlainLyrics({ lines, preview, variant }: { lines: string[]; preview?: b
         )}
         {lines.map((l, i) => (l ? <p key={i} className="plain-line" style={{ '--i': i } as Vars}>{l}</p> : <div key={i} className="h-5" />))}
       </div>
+    </div>
+  );
+}
+
+/** Timing shift and "load my own .lrc" controls, shown inside the lyrics search popup. */
+function LyricsTools({ track, compact, onLoaded }: { track: Track; compact?: boolean; onLoaded: () => void }) {
+  const offset = useLyricsOffset(track.id);
+  const fileRef = useRef<HTMLInputElement>(null);
+  const [error, setError] = useState(false);
+  const shown = `${offset > 0 ? '+' : ''}${offset.toFixed(2)} ${t('secUnit')}`;
+
+  const onFile = async (file: File | undefined) => {
+    if (!file) return;
+    setError(false);
+    const rec = parseLrcFile(await file.text(), { title: track.title, artist: track.artist });
+    if (!rec) {
+      setError(true);
+      return;
+    }
+    setManualLyricsChoice(track.id, {
+      id: -Date.now(),
+      trackName: rec.trackName,
+      artistName: rec.artistName,
+      albumName: rec.albumName,
+      duration: track.fullDuration ?? track.duration,
+      syncedLyrics: rec.syncedLyrics,
+      plainLyrics: rec.plainLyrics,
+    });
+    setLyricsOffset(track.id, rec.offsetSec);
+    onLoaded();
+  };
+
+  return (
+    <div className={cx('flex flex-wrap items-center gap-2', compact ? 'mt-2 text-[11px]' : 'mt-3 text-xs')}>
+      <div className="flex items-center gap-1 rounded-full bg-on-surface/8 px-1 py-0.5" title={t('lyricsOffsetHint')}>
+        <IconButton icon="remove" label={t('lyricsEarlier')} size="sm" tip={false} onClick={() => nudgeLyricsOffset(track.id, -LYRICS_OFFSET_STEP)} />
+        <button
+          type="button"
+          className={cx('min-w-[64px] text-center font-semibold tabular-nums', offset ? 'text-primary' : 'text-on-surface-variant')}
+          onClick={() => setLyricsOffset(track.id, 0)}
+          aria-label={t('lyricsOffsetReset')}
+        >
+          {shown}
+        </button>
+        <IconButton icon="add" label={t('lyricsLater')} size="sm" tip={false} onClick={() => nudgeLyricsOffset(track.id, LYRICS_OFFSET_STEP)} />
+      </div>
+      <button
+        type="button"
+        data-ripple
+        className="sl inline-flex items-center gap-1.5 rounded-full bg-on-surface/8 px-3 py-1.5 font-semibold text-on-surface-variant transition hover:bg-on-surface/14 hover:text-on-surface"
+        onClick={() => fileRef.current?.click()}
+      >
+        <Icon name="upload_file" size={16} />
+        <span>{t('lyricsLoadFile')}</span>
+      </button>
+      <input
+        ref={fileRef}
+        type="file"
+        accept=".lrc,.txt,text/plain"
+        className="hidden"
+        onChange={(e) => {
+          void onFile(e.target.files?.[0]);
+          e.target.value = '';
+        }}
+      />
+      {error && <span className="text-error">{t('lyricsFileEmpty')}</span>}
     </div>
   );
 }
@@ -425,6 +504,8 @@ function ManualLyricsPicker({
               )}
             </div>
 
+            <LyricsTools track={track} onLoaded={() => (setOpen(false), onSelect())} />
+
             <div className="mt-3 min-h-0 flex-1 space-y-1 overflow-y-auto pr-1">
               {results.length === 0 && !loading ? (
                 <div className="flex h-44 flex-col items-center justify-center gap-2 text-center text-sm text-on-surface-variant">
@@ -537,6 +618,8 @@ function ManualLyricsPicker({
               )}
             </div>
 
+            <LyricsTools track={track} compact onLoaded={() => (setOpen(false), onSelect())} />
+
             <div className="mt-2 min-h-0 flex-1 overflow-y-auto pr-0.5">
               {results.length === 0 && !loading ? (
                 <div className="py-6 text-center text-xs text-on-surface-variant">{t('noResults')}</div>
@@ -588,6 +671,7 @@ function ManualLyricsPicker({
 export function Lyrics({ track, variant, active = true }: { track: Track | null; variant: 'panel' | 'imm'; active?: boolean }) {
   const [rev, setRev] = useState(0);
   const st = useLyrics(track, rev);
+  const offset = useLyricsOffset(track?.id ?? '');
   if (!track) return null;
 
   return (
@@ -614,7 +698,7 @@ export function Lyrics({ track, variant, active = true }: { track: Track | null;
       ) : st.status === 'plain' ? (
         <PlainLyrics key={`${track.id}:${rev}`} lines={st.lines} preview={st.preview} variant={variant} />
       ) : (
-        <SyncedLyrics key={`${track.id}:${rev}`} lines={st.lines} variant={variant} activeSurface={active} />
+        <SyncedLyrics key={`${track.id}:${rev}`} lines={st.lines} variant={variant} activeSurface={active} offset={offset} />
       )}
     </div>
   );
