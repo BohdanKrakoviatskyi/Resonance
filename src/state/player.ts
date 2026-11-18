@@ -506,7 +506,23 @@ function syncDeckVolumes() {
     if (deck.dsp && deck.dsp.ctx.state !== 'closed') {
       deck.el.volume = 1;
       const finalGain = muted ? 0 : clamp(master * makeup * fade, 0, 1);
-      deck.dsp.channelGain.gain.setTargetAtTime(finalGain, deck.dsp.ctx.currentTime, 0.008);
+      const g = deck.dsp.channelGain.gain;
+      const now = deck.dsp.ctx.currentTime;
+      if (isWebKitPlayback()) {
+        // WebKit (macOS WKWebView) does not reliably apply a stream of setTargetAtTime events
+        // (the volume slider fires one per pointer move): the parameter can stay at its old value.
+        // Cancel what is pending and ramp linearly; a suspended context can't run automation
+        // at all, so there the value is assigned directly.
+        g.cancelScheduledValues(now);
+        if (deck.dsp.ctx.state === 'running') {
+          g.setValueAtTime(g.value, now);
+          g.linearRampToValueAtTime(finalGain, now + 0.02);
+        } else {
+          g.value = finalGain;
+        }
+      } else {
+        g.setTargetAtTime(finalGain, now, 0.008);
+      }
     } else {
       deck.el.volume = muted ? 0 : clamp(master * makeup * fade, 0, 1);
     }
@@ -1007,7 +1023,7 @@ export function useCurrentTrack(): Track | null {
  * streams and pads the second half with silence (invidious#913, audioplayers#1730).
  * Detect the doubling against the known track metadata and clamp to the real duration.
  */
-function isWebKitPlayback(): boolean {
+export function isWebKitPlayback(): boolean {
   const ua = navigator.userAgent;
   return ua.includes('Safari') && !ua.includes('Chrome') && !ua.includes('Chromium') && !ua.includes('Edg/');
 }
