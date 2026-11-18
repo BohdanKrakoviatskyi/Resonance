@@ -3,6 +3,7 @@ import { IconButton, Menu, Segmented, EmptyState, usePresence, type Vars } from 
 import { ArtCover, Cover, Eq } from './Cover';
 import { Lyrics } from './Lyrics';
 import { ProviderEmbed } from './ProviderEmbed';
+import { SleepTimerButton } from './SleepTimerButton';
 import { DislikeButton, LikeButton, PlaylistPicker, SourcePill } from './TrackList';
 import { useVtSource } from './MiniPlayer';
 import { cx, useStore } from '../lib/util';
@@ -99,6 +100,7 @@ export const NowPlaying = memo(function NowPlaying({ mode }: { mode: 'inline' | 
                 selected={!!anchor}
                 onClick={(e) => setAnchor(anchor ? null : e.currentTarget)}
               />
+              <SleepTimerButton />
             </div>
             <Segmented
               size="sm"
