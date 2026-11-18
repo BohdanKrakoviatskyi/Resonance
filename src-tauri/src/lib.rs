@@ -1,5 +1,6 @@
 pub mod auth_windows;
 pub mod backend;
+pub mod discord;
 pub mod playlist_import;
 pub mod yt;
 
@@ -128,6 +129,7 @@ pub fn run() {
         .manage(YtStreamProxy::default())
         .manage(YtStore::default())
         .manage(Backend::new())
+        .manage(discord::DiscordPresence::default())
         .setup(|app| {
             purge_retired_spotify_storage(app.handle());
             let app_handle = app.handle().clone();
@@ -184,6 +186,7 @@ pub fn run() {
             yt_playlist_artwork,
             yt_clear_cache,
             fetch_external_playlist,
+            discord::discord_set_presence,
             backend_rpc
         ])
         .run(tauri::generate_context!())

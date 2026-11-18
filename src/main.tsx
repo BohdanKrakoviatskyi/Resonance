@@ -6,6 +6,7 @@ import App from './App';
 import Splash from './components/Splash';
 import { initFx } from './lib/motion';
 import { initPlayer } from './state/player';
+import { initIntegrations } from './state/integrations';
 import { initializeShortcutRuntime } from './state/shortcut-runtime';
 import { initTheme } from './state/theme';
 
@@ -33,6 +34,7 @@ document.documentElement.dataset.distort = /^((?!chrome|android|crios|fxios|edg)
 if (!isSplash) {
   initPlayer();
   initializeShortcutRuntime();
+  initIntegrations();
 }
 initTheme();
 initFx();
