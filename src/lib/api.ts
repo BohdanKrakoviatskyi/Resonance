@@ -26,7 +26,9 @@ async function getJson(url: string): Promise<Json> {
   return response.json();
 }
 
-type SoundCloudTrackLike = Pick<SoundCloudTrackCard, 'id' | 'trackUrn' | 'title' | 'permalinkUrl' | 'artworkUrl' | 'duration' | 'user'> | Pick<SoundCloudSearchTrack, 'id' | 'urn' | 'title' | 'permalinkUrl' | 'artworkUrl' | 'duration' | 'user'>;
+type SoundCloudTrackLike =
+  | Pick<SoundCloudTrackCard, 'id' | 'trackUrn' | 'title' | 'permalinkUrl' | 'artworkUrl' | 'duration' | 'user' | 'publisherArtist'>
+  | Pick<SoundCloudSearchTrack, 'id' | 'urn' | 'title' | 'permalinkUrl' | 'artworkUrl' | 'duration' | 'user' | 'publisherArtist'>;
 
 export function mapSoundCloudTrack(track: SoundCloudTrackLike): Track {
   const duration = track.duration / 1000;
@@ -36,6 +38,7 @@ export function mapSoundCloudTrack(track: SoundCloudTrackLike): Track {
     cover: track.artworkUrl || undefined, thumb: track.artworkUrl || undefined,
     src: track.permalinkUrl || '', duration, fullDuration: duration || undefined,
     nativeId, source: 'soundcloud',
+    ...(track.publisherArtist?.trim() ? { metaArtist: track.publisherArtist.trim() } : {}),
   };
 }
 
@@ -242,7 +245,7 @@ async function fetchWordLyrics(t: Track): Promise<{ wordLevel: boolean; lines: L
   const res = await Promise.race([
     invoke<{ wordLevel: boolean; lines: { startMs: number; words: { startMs: number; durMs: number; text: string }[] }[] }>('lyrics_word_synced', {
       title: stripTrackNoise(t.title) || t.title,
-      artist: t.artist.replace(/\s+-\s+Topic$/i, ''),
+      artist: (t.metaArtist || t.artist).replace(/\s+-\s+Topic$/i, ''),
       durationMs,
     }).catch(() => null),
     timeout,
@@ -450,7 +453,7 @@ async function fetchSoundCloudLyrics(track: Track): Promise<LyricsData | null> {
   const result = await soundCloudTrackLyrics({
     trackId,
     title: track.title,
-    artist: track.artist,
+    artist: track.metaArtist || track.artist,
     durationMs: Math.round(durationSec * 1000),
   });
   if (result.isSynced && result.lines.length) {

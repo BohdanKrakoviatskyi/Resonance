@@ -54,6 +54,11 @@ const firstArtist = (value: string) =>
 
 export function stripTrackNoise(value: string): string {
   return value
+    // Emoji and pictographs ("🔥 song 🔥"), plus variation selectors / ZWJ left behind.
+    .replace(/[\p{Extended_Pictographic}\u{FE0F}\u{200D}\u{20E3}]/gu, ' ')
+    .replace(/[«»“”„]/g, ' ')
+    .replace(/\s*[[(]\s*(?:free(?:\s*(?:dl|download))?|out now|premiere|new|exclusive|explicit|clean|bass\s*boosted)\s*[\])]/gi, ' ')
+    .replace(/\b(?:free\s+download|out\s+now)\b/gi, ' ')
     .replace(/https?:\/\/\S+/gi, ' ')
     .replace(/#\S+/g, ' ')
     .replace(/\+\S+/g, ' ')
@@ -88,9 +93,21 @@ export function artistsMatch(queryArtist: string, candidateArtist: string): bool
   return tokenOverlapScore(queryArtist, candidateArtist) >= 0.65;
 }
 
-export function lyricsSearchQueries(track: Pick<Track, 'title' | 'artist' | 'source'>) {
+/**
+ * Speed-altered re-uploads ("slowed + reverb", "sped up", "nightcore"). Their lyrics are the
+ * original's, stretched in time; `kind` tells the matcher to accept a proportional duration.
+ */
+export function speedVariant(title: string): 'slowed' | 'spedUp' | null {
+  if (/\b(?:slowed|slow(?:ed)?\s*\+?\s*reverb|daycore)\b/i.test(title)) return 'slowed';
+  if (/\b(?:sped\s*up|speed\s*up|nightcore|fast(?:er)?\s*version)\b/i.test(title)) return 'spedUp';
+  return null;
+}
+
+export function lyricsSearchQueries(track: Pick<Track, 'title' | 'artist' | 'source'> & { metaArtist?: string }) {
   const cleanedTitle = stripTrackNoise(track.title);
+  // On SoundCloud the uploader is frequently a repost/fan account, so it is the weakest hint.
   const uploader = firstArtist(stripTrackNoise(track.artist));
+  const meta = track.metaArtist ? firstArtist(stripTrackNoise(track.metaArtist)) : '';
   const queries: { title: string; artist: string }[] = [];
 
   const add = (nextTitle: string, nextArtist: string) => {
@@ -110,6 +127,13 @@ export function lyricsSearchQueries(track: Pick<Track, 'title' | 'artist' | 'sou
 
   // Both SoundCloud and YouTube frequently encode "Real Artist - Track Name" inside `title`
   const parts = cleanedTitle.match(/^(.+?)\s+[–—-]\s+(.+)$/);
+  // Publisher metadata is the most trustworthy artist; pair it with the title part that isn't the artist.
+  if (meta) {
+    if (parts && normalizeLyricsText(parts[1]) === normalizeLyricsText(meta)) add(parts[2], meta);
+    else if (parts && normalizeLyricsText(parts[2]) === normalizeLyricsText(meta)) add(parts[1], meta);
+    else if (parts) add(parts[2], meta);
+    add(cleanedTitle, meta);
+  }
   if (parts) {
     const left = parts[1].trim();
     const right = parts[2].trim();

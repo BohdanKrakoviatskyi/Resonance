@@ -540,6 +540,7 @@ impl Sc {
                 artwork_url: artwork,
                 duration: vi(item, "duration"),
                 user: SearchUser { username: vs(&user, "username"), avatar_url: vs(&user, "avatar_url") },
+                publisher_artist: publisher_artist_of(item),
             });
         }
         Ok(results)
@@ -560,7 +561,9 @@ impl Sc {
             .flatten()
             .map(|item| {
                 let user = item.get("user").cloned().unwrap_or(Value::Null);
-                normalize_search_track(vi(item, "id"), &vs(item, "urn"), &vs(item, "title"), &vs(item, "permalink_url"), &vs(item, "artwork_url"), &vs(&user, "avatar_url"), vi(item, "duration"), &vs(&user, "username"))
+                let mut t = normalize_search_track(vi(item, "id"), &vs(item, "urn"), &vs(item, "title"), &vs(item, "permalink_url"), &vs(item, "artwork_url"), &vs(&user, "avatar_url"), vi(item, "duration"), &vs(&user, "username"));
+                t.publisher_artist = publisher_artist_of(item);
+                t
             })
             .collect())
     }
@@ -769,7 +772,7 @@ impl Sc {
                     continue;
                 }
                 let user = candidate.get("user").cloned().unwrap_or(Value::Null);
-                selection.tracks.push(normalize_search_track(
+                let mut track = normalize_search_track(
                     vi(&candidate, "id"),
                     &vs(&candidate, "urn"),
                     &vs(&candidate, "title"),
@@ -778,7 +781,9 @@ impl Sc {
                     &vs(&user, "avatar_url"),
                     vi(&candidate, "duration"),
                     &vs(&user, "username"),
-                ));
+                );
+                track.publisher_artist = publisher_artist_of(&candidate);
+                selection.tracks.push(track);
             }
             if !selection.title.is_empty() && (!selection.tracks.is_empty() || !selection.playlists.is_empty()) {
                 selections.push(selection);
@@ -952,6 +957,7 @@ pub fn normalize_search_track(id: i64, urn: &str, title: &str, permalink_url: &s
         artwork_url: artwork,
         duration,
         user: SearchUser { username: username.to_string(), avatar_url: avatar_url.to_string() },
+        publisher_artist: String::new(),
     }
 }
 
