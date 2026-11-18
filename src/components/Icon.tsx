@@ -10,7 +10,7 @@ export const ICONS = [
   'palette', 'park', 'pause', 'person', 'piano', 'play_arrow', 'playlist_add', 'playlist_add_check', 'playlist_remove',
   'queue_music', 'queue_play_next', 'refresh', 'remove', 'repeat', 'repeat_one', 'right_panel_close',
   'right_panel_open', 'rocket_launch', 'search', 'search_off', 'self_improvement', 'settings', 'shuffle', 'skip_next',
-  'skip_previous', 'thumb_down', 'translate', 'trending_up', 'tune', 'upload', 'upload_file', 'volume_down',
+  'skip_previous', 'sync', 'thumb_down', 'translate', 'trending_up', 'tune', 'upload', 'upload_file', 'volume_down',
   'volume_off', 'volume_up', 'wallpaper', 'water_drop', 'wifi_off',
 ] as const;
 

@@ -19,6 +19,8 @@ import {
 } from '../state/library';
 import { player, playQueue, prefetchPlaylistTopTracks, shufflePlay, toggle } from '../state/player';
 import { go, openDialog, openSearch, ui } from '../state/ui';
+import { importStore, syncImportedPlaylist } from '../state/import';
+import { LOCAL_PLAYLIST_ID, rescanLocal } from '../state/local-library';
 import { parseSoundCloudCollectionId } from '../lib/soundcloud-library';
 import { parseYtMusicCollectionId } from '../lib/ytmusic-library';
 import soundcloudLogo from '../assets/soundcloud.svg';
@@ -98,6 +100,7 @@ export default function Collection({ kind, id }: { kind: 'favorites' | 'playlist
 
   const pl = localPlaylist ?? scPl ?? ytPl;
   const isProviderPlaylist = Boolean(scCollection) || Boolean(ytCollection);
+  const importActive = useStore(importStore, (s) => s.active);
 
   useEffect(() => {
     if (!remotePlaylist) {
@@ -447,6 +450,12 @@ export default function Collection({ kind, id }: { kind: 'favorites' | 'playlist
             </Button>
             {kind === 'playlist' && !isProviderPlaylist && (
               <>
+                {localPlaylist?.sourceUrl && (
+                  <IconButton icon="sync" label={t('syncFromSource')} size="lg" disabled={importActive} onClick={() => void syncImportedPlaylist(localPlaylist.id)} />
+                )}
+                {pl?.id === LOCAL_PLAYLIST_ID && (
+                  <IconButton icon="sync" label={t('localRescan')} size="lg" onClick={() => void rescanLocal()} />
+                )}
                 <IconButton icon="edit" label={t('rename')} size="lg" onClick={() => openDialog({ kind: 'rename', id: pl!.id })} />
                 <IconButton icon="delete" label={t('delete')} size="lg" onClick={() => openDialog({ kind: 'delete', id: pl!.id })} />
               </>
