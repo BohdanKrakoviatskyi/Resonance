@@ -1,9 +1,9 @@
-import { type ReactNode } from 'react';
+import { useState, type ReactNode } from 'react';
 import { Icon, type IconName } from '../components/Icon';
 import { IconButton, Segmented, type Vars } from '../components/ui';
 import { cx, useStore } from '../lib/util';
 import { t } from '../lib/i18n';
-import { integrations, isValidDiscordId } from '../state/integrations';
+import { integrations, isValidDiscordId, lastfmLogin, lastfmLogout } from '../state/integrations';
 import { go } from '../state/ui';
 
 export function SettingsCard({ icon, title, sub, children, i }: { icon: IconName; title: string; sub?: string; children: ReactNode; i: number }) {
@@ -101,7 +101,102 @@ export default function Integrations() {
             )}
           </div>
         </SettingsCard>
+
+        <LastfmCard />
       </div>
     </div>
+  );
+}
+
+function LastfmCard() {
+  const enabled = useStore(integrations, (s) => s.lastfmEnabled);
+  const apiKey = useStore(integrations, (s) => s.lastfmApiKey);
+  const secret = useStore(integrations, (s) => s.lastfmSecret);
+  const user = useStore(integrations, (s) => s.lastfmUser);
+  const queued = useStore(integrations, (s) => s.lastfmQueue.length);
+  const scrobbled = useStore(integrations, (s) => s.lastfmScrobbled);
+  const error = useStore(integrations, (s) => s.lastfmError);
+  const [username, setUsername] = useState('');
+  const [password, setPassword] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [loginError, setLoginError] = useState('');
+  const keysOk = /^[0-9a-f]{32}$/i.test(apiKey.trim()) && /^[0-9a-f]{32}$/i.test(secret.trim());
+
+  const login = async () => {
+    setBusy(true);
+    setLoginError('');
+    try {
+      await lastfmLogin(username, password);
+      setPassword('');
+    } catch (e) {
+      setLoginError(String(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <SettingsCard icon="graphic_eq" title="Last.fm" sub={t('lastfmDesc')} i={2}>
+      <Segmented
+        value={enabled ? 'on' : 'off'}
+        onChange={(v) => integrations.set({ lastfmEnabled: v === 'on' })}
+        options={[
+          { value: 'on', label: t('enabled'), icon: 'check' },
+          { value: 'off', label: t('disabled') },
+        ]}
+      />
+      <div className={cx('mt-5 grid gap-4 transition-opacity duration-300', !enabled && 'pointer-events-none opacity-40')}>
+        {user ? (
+          <div className="flex flex-wrap items-center gap-3">
+            <span className="grid h-10 w-10 place-items-center rounded-full bg-primary/18 text-primary">
+              <Icon name="person" fill size={22} />
+            </span>
+            <div className="min-w-0 flex-1">
+              <div className="font-semibold">{user}</div>
+              <div className="text-xs text-on-surface-variant">{t('lastfmStats', { n: scrobbled, q: queued })}</div>
+            </div>
+            <button
+              type="button"
+              data-ripple
+              className="sl rounded-full bg-on-surface/8 px-4 py-2 text-sm font-semibold transition hover:bg-on-surface/14"
+              onClick={() => void lastfmLogout()}
+            >
+              {t('lastfmLogout')}
+            </button>
+          </div>
+        ) : (
+          <>
+            <div className="grid gap-3 sm:grid-cols-2">
+              <TextInput label="API key" value={apiKey} onChange={(v) => integrations.set({ lastfmApiKey: v.trim() })} />
+              <TextInput label="Shared secret" type="password" value={secret} onChange={(v) => integrations.set({ lastfmSecret: v.trim() })} />
+            </div>
+            <p className="-mt-1 text-xs text-on-surface-variant">{t('lastfmKeysHint')}</p>
+            <div className={cx('grid gap-3 sm:grid-cols-2', !keysOk && 'pointer-events-none opacity-40')}>
+              <TextInput label={t('lastfmUsername')} value={username} onChange={setUsername} />
+              <TextInput label={t('lastfmPassword')} type="password" value={password} onChange={setPassword} />
+            </div>
+            <div className="flex flex-wrap items-center gap-3">
+              <button
+                type="button"
+                data-ripple
+                disabled={!keysOk || !username.trim() || !password || busy}
+                className="sl rounded-full bg-primary px-5 py-2.5 text-sm font-semibold text-on-primary transition disabled:opacity-40"
+                onClick={() => void login()}
+              >
+                {busy ? t('lastfmLoggingIn') : t('lastfmLogin')}
+              </button>
+              <span className="text-xs text-on-surface-variant">{t('lastfmPasswordHint')}</span>
+            </div>
+            {loginError && <p className="text-xs text-error">{loginError}</p>}
+          </>
+        )}
+        {user && error && (
+          <p className="flex items-center gap-1.5 text-xs text-error">
+            <Icon name="error" size={16} />
+            {error}
+          </p>
+        )}
+      </div>
+    </SettingsCard>
   );
 }

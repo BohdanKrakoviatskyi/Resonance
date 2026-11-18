@@ -1,6 +1,7 @@
 pub mod auth_windows;
 pub mod backend;
 pub mod discord;
+pub mod lastfm;
 pub mod playlist_import;
 pub mod yt;
 
@@ -187,6 +188,11 @@ pub fn run() {
             yt_clear_cache,
             fetch_external_playlist,
             discord::discord_set_presence,
+            lastfm::lastfm_login,
+            lastfm::lastfm_status,
+            lastfm::lastfm_logout,
+            lastfm::lastfm_now_playing,
+            lastfm::lastfm_scrobble,
             backend_rpc
         ])
         .run(tauri::generate_context!())
