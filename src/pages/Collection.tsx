@@ -21,6 +21,26 @@ import { player, playQueue, prefetchPlaylistTopTracks, shufflePlay, toggle } fro
 import { go, openDialog, openSearch, ui } from '../state/ui';
 import { importStore, syncImportedPlaylist } from '../state/import';
 import { LOCAL_PLAYLIST_ID, rescanLocal } from '../state/local-library';
+import { canDownload, downloadTracks, offline, offlineId } from '../state/offline';
+import { getTrack as getLibTrack } from '../state/library';
+
+/** Downloads every YouTube track in the list; shows progress while the queue runs. */
+function DownloadAllButton({ ids }: { ids: string[] }) {
+  const tracks = ids.map((id) => getLibTrack(id)).filter((tr) => canDownload(tr)) as NonNullable<ReturnType<typeof getLibTrack>>[];
+  const done = useStore(offline, (s) => tracks.filter((tr) => offlineId(tr)! in s.downloaded).length);
+  const busy = useStore(offline, (s) => s.active !== null);
+  if (!tracks.length) return null;
+  const all = done === tracks.length;
+  return (
+    <IconButton
+      icon={all ? 'download_done' : 'download'}
+      label={all ? t('offlineAllDownloaded') : `${t('offlineDownloadAll')} (${done}/${tracks.length})`}
+      size="lg"
+      selected={all || busy}
+      onClick={() => !all && downloadTracks(tracks)}
+    />
+  );
+}
 import { parseSoundCloudCollectionId } from '../lib/soundcloud-library';
 import { parseYtMusicCollectionId } from '../lib/ytmusic-library';
 import soundcloudLogo from '../assets/soundcloud.svg';
@@ -448,6 +468,7 @@ export default function Collection({ kind, id }: { kind: 'favorites' | 'playlist
             <Button size="lg" variant="tonal" icon="shuffle" disabled={!visibleIds.length} onClick={() => shufflePlay(visibleIds)}>
               {t('shuffle')}
             </Button>
+            <DownloadAllButton ids={visibleIds} />
             {kind === 'playlist' && !isProviderPlaylist && (
               <>
                 {localPlaylist?.sourceUrl && (

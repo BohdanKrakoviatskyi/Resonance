@@ -8,6 +8,7 @@ import { initFx } from './lib/motion';
 import { initPlayer } from './state/player';
 import { initIntegrations } from './state/integrations';
 import { initLocalLibrary } from './state/local-library';
+import { initOffline } from './state/offline';
 import { initializeShortcutRuntime } from './state/shortcut-runtime';
 import { initTheme } from './state/theme';
 
@@ -37,6 +38,7 @@ if (!isSplash) {
   initializeShortcutRuntime();
   initIntegrations();
   initLocalLibrary();
+  initOffline();
 }
 initTheme();
 initFx();
