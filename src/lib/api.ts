@@ -1,6 +1,7 @@
 import type { LyricLine, Track } from '../types';
 import { findYouTubeFallbackCandidate, youtubeFallbackQueries } from './youtube-match';
-import { findLyricsCandidate, lyricsSearchQueries, toSeconds, type LyricsCandidate } from './lyrics-match';
+import { findLyricsCandidate, lyricsSearchQueries, stripTrackNoise, toSeconds, type LyricsCandidate } from './lyrics-match';
+import { fromWordLines, parseEnhancedWords } from './lyric-words';
 import { rpc } from './backend';
 import { upscaleYtmArtwork } from './ytmusic-library';
 
@@ -219,10 +220,35 @@ export function parseLrc(s: string): LyricLine[] {
   for (const line of s.split('\n')) {
     const stamps = [...line.matchAll(/\[(\d+):(\d+(?:\.\d+)?)\]/g)];
     if (!stamps.length) continue;
-    const text = line.replace(/\[[^\]]*\]/g, '').trim();
-    for (const m of stamps) out.push({ t: +m[1] * 60 + +m[2], text });
+    const body = line.replace(/\[[^\]]*\]/g, '');
+    // Enhanced LRC carries <mm:ss.xx> word tags; repeated stamps share one text, so only the first gets words.
+    const enhanced = parseEnhancedWords(body);
+    stamps.forEach((m, i) => {
+      const entry: LyricLine = { t: +m[1] * 60 + +m[2], text: enhanced.text };
+      if (enhanced.words && i === 0) entry.words = enhanced.words;
+      out.push(entry);
+    });
   }
   return out.sort((a, b) => a.t - b.t);
+}
+
+/** Word-timed lyrics from the backend (NetEase YRC), or null when no trustworthy match exists. */
+async function fetchWordLyrics(t: Track): Promise<LyricLine[] | null> {
+  if (!('__TAURI_INTERNALS__' in window)) return null;
+  const { invoke } = await import('@tauri-apps/api/core');
+  const durationMs = Math.round(toSeconds(t.fullDuration ?? t.duration) * 1000);
+  // Line lyrics wait for this, so keep it short; a slow lookup just means line timing.
+  const timeout = new Promise<null>((r) => setTimeout(() => r(null), 3500));
+  const lines = await Promise.race([
+    invoke<{ startMs: number; words: { startMs: number; durMs: number; text: string }[] }[]>('lyrics_word_synced', {
+      title: stripTrackNoise(t.title) || t.title,
+      artist: t.artist.replace(/\s+-\s+Topic$/i, ''),
+      durationMs,
+    }).catch(() => null),
+    timeout,
+  ]);
+  const mapped = lines ? fromWordLines(lines) : [];
+  return mapped.length >= 4 ? withGaps(mapped) : null;
 }
 
 /** Inserts "• • •" breathing lines for intros and long instrumental breaks. */
@@ -393,8 +419,11 @@ export async function getLyrics(t: Track, forceRefresh = false): Promise<LyricsD
   if (forceRefresh) lyricsCache.delete(t.id);
   let p = lyricsCache.get(t.id);
   if (!p) {
-    p = (t.source === 'soundcloud' ? fetchSoundCloudLyrics(t) : fetchLyrics(t))
-      .catch(() => null)
+    const lineLevel = (t.source === 'soundcloud' ? fetchSoundCloudLyrics(t) : fetchLyrics(t)).catch(() => null);
+    const wordLevel = fetchWordLyrics(t).catch(() => null);
+    // Both run in parallel; karaoke timing wins when a strict match exists, otherwise line timing.
+    p = Promise.all([lineLevel, wordLevel])
+      .then(([lines, words]): LyricsData | null => (words ? { ...(lines ?? {}), synced: words, plain: undefined } : lines))
       .then((value) => {
         if (!value) lyricsCache.delete(t.id);
         return value;

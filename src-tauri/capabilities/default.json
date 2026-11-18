@@ -23,6 +23,7 @@
     "allow-discord-presence",
     "allow-lastfm",
     "allow-local-library",
+    "allow-word-lyrics",
     "dialog:allow-open"
   ]
 }
