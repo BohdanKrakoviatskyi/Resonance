@@ -25,6 +25,7 @@
     "allow-local-library",
     "allow-word-lyrics",
     "allow-offline",
+    "allow-whisper",
     "dialog:allow-open"
   ]
 }

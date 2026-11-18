@@ -28,7 +28,7 @@ jobs:
       - name: Install Linux dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y build-essential curl wget file libxdo-dev libssl-dev libasound2-dev libayatana-appindicator3-dev librsvg2-dev libwebkit2gtk-4.1-dev
+          sudo apt-get install -y build-essential curl wget file libxdo-dev libssl-dev libasound2-dev libayatana-appindicator3-dev librsvg2-dev libwebkit2gtk-4.1-dev libclang-dev cmake
 
       - run: npm ci
       - run: npx tsc --noEmit
@@ -68,9 +68,15 @@ jobs:
         if: startsWith(matrix.platform, 'ubuntu-')
         run: |
           sudo apt-get update
-          sudo apt-get install -y build-essential curl wget file libxdo-dev libssl-dev libasound2-dev libayatana-appindicator3-dev librsvg2-dev libwebkit2gtk-4.1-dev
+          sudo apt-get install -y build-essential curl wget file libxdo-dev libssl-dev libasound2-dev libayatana-appindicator3-dev librsvg2-dev libwebkit2gtk-4.1-dev libclang-dev cmake
 
       - run: npm ci
+
+      # whisper.cpp bindings are generated with bindgen, which needs libclang (preinstalled LLVM).
+      - name: Point bindgen at LLVM (Windows)
+        if: startsWith(matrix.platform, 'windows-')
+        shell: bash
+        run: echo "LIBCLANG_PATH=C:\\Program Files\\LLVM\\bin" >> "$GITHUB_ENV"
 
       # macOS code signing + notarization, enabled only when the Apple secrets exist.
       # Missing secrets arrive as empty strings, which the Tauri bundler would treat as a broken

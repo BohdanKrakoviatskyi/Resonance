@@ -6,6 +6,7 @@ pub mod local;
 pub mod yandex_import;
 pub mod lyrics_words;
 pub mod offline;
+pub mod transcribe;
 pub mod playlist_import;
 pub mod yt;
 
@@ -136,6 +137,7 @@ pub fn run() {
         .manage(YtStore::default())
         .manage(Backend::new())
         .manage(discord::DiscordPresence::default())
+        .manage(transcribe::WhisperWorker::default())
         .setup(|app| {
             purge_retired_spotify_storage(app.handle());
             let app_handle = app.handle().clone();
@@ -205,6 +207,12 @@ pub fn run() {
             offline::offline_download,
             offline::offline_remove,
             offline::offline_list,
+            transcribe::whisper_models,
+            transcribe::whisper_download,
+            transcribe::whisper_cancel_download,
+            transcribe::whisper_delete,
+            transcribe::whisper_transcribe,
+            transcribe::whisper_cancel,
             backend_rpc
         ])
         .run(tauri::generate_context!())

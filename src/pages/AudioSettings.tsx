@@ -1,4 +1,13 @@
-import { type ReactNode } from 'react';
+import { useEffect, type ReactNode } from 'react';
+import {
+  cancelWhisperDownload,
+  deleteWhisperModel,
+  downloadWhisperModel,
+  refreshWhisperModels,
+  whisper,
+  type WhisperLoad,
+} from '../state/whisper';
+import { threadsFor } from '../lib/transcript-lrc';
 import { Icon, type IconName } from '../components/Icon';
 import { IconButton, Segmented, Slider, type Vars } from '../components/ui';
 import { cx, useStore } from '../lib/util';
@@ -136,8 +145,122 @@ export default function AudioSettings() {
         </Card>
 
         <FxCard />
+        <WhisperCard />
       </div>
     </div>
+  );
+}
+
+function WhisperCard() {
+  const s = useStore(whisper, (x) => x);
+  const cores = navigator.hardwareConcurrency || 4;
+  useEffect(() => void refreshWhisperModels(), []);
+  const dl = s.downloading;
+  const pct = dl && dl.total ? Math.round((dl.received / dl.total) * 100) : 0;
+
+  return (
+    <Card icon="auto_awesome" title={t('whisperTitle')} sub={t('whisperDesc')} i={4}>
+      <div className="mb-2 text-sm font-semibold">{t('whisperModel')}</div>
+      <div className="grid gap-2">
+        {s.models.map((m) => {
+          const selected = s.model === m.id;
+          const busy = dl?.model === m.id;
+          return (
+            <div
+              key={m.id}
+              className={cx(
+                'flex flex-wrap items-center gap-3 rounded-2xl px-4 py-2.5 ring-1 transition',
+                selected ? 'bg-primary/12 ring-primary/40' : 'bg-on-surface/5 ring-transparent',
+              )}
+            >
+              <button
+                type="button"
+                className="flex min-w-0 flex-1 items-center gap-3 text-left disabled:opacity-60"
+                disabled={!m.installed}
+                onClick={() => whisper.set({ model: m.id })}
+                aria-pressed={selected}
+              >
+                <span className={cx('grid h-5 w-5 place-items-center rounded-full ring-2', selected && m.installed ? 'bg-primary ring-primary' : 'ring-on-surface-variant/50')}>
+                  {selected && m.installed && <Icon name="check" size={14} className="text-on-primary" />}
+                </span>
+                <span className="font-semibold">{m.id}</span>
+                <span className="text-xs text-on-surface-variant">
+                  {m.sizeMb} MB{m.installed ? ` · ${t('whisperInstalled')}` : ''}
+                </span>
+              </button>
+              {busy ? (
+                <span className="flex items-center gap-3 text-xs tabular-nums text-on-surface-variant">
+                  <span className="h-1.5 w-28 overflow-hidden rounded-full bg-on-surface/10">
+                    <span className="block h-full rounded-full bg-primary transition-[width]" style={{ width: `${pct}%` }} />
+                  </span>
+                  {pct}%
+                  <button type="button" className="font-semibold text-error hover:underline" onClick={() => void cancelWhisperDownload()}>
+                    {t('whisperCancel')}
+                  </button>
+                </span>
+              ) : m.installed ? (
+                <button type="button" className="text-xs font-semibold text-error hover:underline" onClick={() => void deleteWhisperModel(m.id)}>
+                  {t('whisperDelete')}
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  data-ripple
+                  disabled={!!dl}
+                  className="sl rounded-full bg-primary px-3.5 py-1.5 text-xs font-semibold text-on-primary disabled:opacity-40"
+                  onClick={() => void downloadWhisperModel(m.id)}
+                >
+                  {t('whisperDownload')}
+                </button>
+              )}
+            </div>
+          );
+        })}
+      </div>
+      <p className="mt-2.5 text-xs text-on-surface-variant">{t('whisperModelHint')}</p>
+
+      <div className="mt-5">
+        <div className="mb-2 text-sm font-semibold">{t('whisperLoad')}</div>
+        <Segmented<WhisperLoad>
+          value={s.load}
+          onChange={(v) => whisper.set({ load: v })}
+          options={[
+            { value: 'low', label: t('whisperLoadLow') },
+            { value: 'medium', label: t('whisperLoadMedium') },
+            { value: 'high', label: t('whisperLoadHigh') },
+          ]}
+        />
+        <p className="mt-2.5 text-xs text-on-surface-variant">{t('whisperLoadHint', { n: threadsFor(s.load, cores), total: cores })}</p>
+      </div>
+
+      <div className="mt-5">
+        <div className="mb-2 text-sm font-semibold">{t('whisperLang')}</div>
+        <Segmented
+          value={s.lang}
+          onChange={(v) => whisper.set({ lang: v })}
+          options={[
+            { value: 'auto', label: t('whisperLangAuto') },
+            { value: 'ru', label: 'RU' },
+            { value: 'uk', label: 'UK' },
+            { value: 'en', label: 'EN' },
+          ]}
+        />
+      </div>
+
+      <div className="mt-5">
+        <div className="mb-2 text-sm font-semibold">{t('whisperAuto')}</div>
+        <Segmented
+          value={s.auto ? 'on' : 'off'}
+          onChange={(v) => whisper.set({ auto: v === 'on' })}
+          options={[
+            { value: 'on', label: t('enabled'), icon: 'check' },
+            { value: 'off', label: t('disabled') },
+          ]}
+        />
+        <p className="mt-2.5 text-xs text-on-surface-variant">{t('whisperAutoHint')}</p>
+      </div>
+      {s.error && <p className="mt-3 text-xs text-error">{s.error}</p>}
+    </Card>
   );
 }
 
