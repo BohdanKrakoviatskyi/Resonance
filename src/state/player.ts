@@ -11,6 +11,7 @@ import { rankRecommendations } from '../lib/recommendations';
 import { createPendingAudioSeek, pendingAudioSeekFor, type PendingAudioSeek } from '../lib/pending-audio-seek';
 import { canFallbackToOutgoingDeck, evaluateAutoCrossfadeTrigger, planAutoCrossfade } from '../lib/crossfade-plan';
 import { stepQueueIndex, shouldAdvanceAfterError } from '../lib/player-queue';
+import { clampFx, FX_OFF, FX_PRESETS, makeImpulse, type FxPreset, type FxSettings } from '../lib/audio-fx';
 import { onProviderState, providerCommand } from '../lib/provider-player';
 import type { Track } from '../types';
 
@@ -66,6 +67,9 @@ interface DeckDsp {
   channelGain: GainNode;
   /** Post-EQ tap for the fullscreen equalizer's live spectrum (never connected to the output). */
   analyser: AnalyserNode;
+  /** Parallel wet branch for the reverb effect. */
+  convolver: ConvolverNode;
+  wetGain: GainNode;
 }
 
 interface Deck {
@@ -124,6 +128,8 @@ export const player = createStore({
   // 5-band Equalizer settings
   eqPreset: 'flat' as EqPreset,
   eqGains: [0, 0, 0, 0, 0] as number[],
+  // Speed / pitch / reverb
+  fx: FX_OFF as FxSettings,
   // Runtime crossfade progress state
   isCrossfading: false,
   fadeProgress: 0,
@@ -288,9 +294,44 @@ function isEqActive(): boolean {
 /** How many views currently want the live spectrum (it needs the Web Audio graph to exist). */
 let spectrumConsumers = 0;
 
+const isReverbActive = () => player.get().fx.reverb > 0.001;
+
 function isDspNeeded(): boolean {
-  return player.get().normalizationEnabled || isEqActive() || spectrumConsumers > 0;
+  return player.get().normalizationEnabled || isEqActive() || isReverbActive() || spectrumConsumers > 0;
 }
+
+/** Both decks share one impulse response; it only depends on the sample rate. */
+let impulseBuffer: AudioBuffer | null = null;
+function getImpulse(ctx: AudioContext): AudioBuffer {
+  if (impulseBuffer && impulseBuffer.sampleRate === ctx.sampleRate) return impulseBuffer;
+  const [l, r] = makeImpulse(ctx.sampleRate);
+  const buf = ctx.createBuffer(2, l.length, ctx.sampleRate);
+  buf.copyToChannel(l as Float32Array<ArrayBuffer>, 0);
+  buf.copyToChannel(r as Float32Array<ArrayBuffer>, 1);
+  impulseBuffer = buf;
+  return buf;
+}
+
+/** Applies speed/pitch to both decks; defaultPlaybackRate makes it survive new sources. */
+function applyPlaybackRate() {
+  const { speed, keepPitch } = player.get().fx;
+  for (const deck of decks) {
+    const el = deck.el as HTMLAudioElement & { preservesPitch?: boolean; webkitPreservesPitch?: boolean };
+    el.preservesPitch = keepPitch;
+    el.webkitPreservesPitch = keepPitch;
+    el.defaultPlaybackRate = speed;
+    el.playbackRate = speed;
+  }
+}
+
+export function setFx(patch: Partial<FxSettings>) {
+  const next = clampFx({ ...player.get().fx, ...patch });
+  player.set({ fx: next });
+  applyPlaybackRate();
+  refreshAllDspChains();
+}
+
+export const setFxPreset = (preset: Exclude<FxPreset, 'custom'>) => setFx(FX_PRESETS[preset]);
 
 function ensureDeckDsp(deck: Deck): DeckDsp | undefined {
   if (deck.dsp) return deck.dsp;
@@ -326,7 +367,13 @@ function ensureDeckDsp(deck: Deck): DeckDsp | undefined {
     limiter.attack.value = 0.001;
     limiter.release.value = 0.08;
 
-    deck.dsp = { ctx, source, preGain, eqFilters, compressor, limiter, channelGain, analyser };
+    const convolver = ctx.createConvolver();
+    convolver.buffer = getImpulse(ctx);
+    const wetGain = ctx.createGain();
+    wetGain.gain.value = 0;
+    convolver.connect(wetGain);
+
+    deck.dsp = { ctx, source, preGain, eqFilters, compressor, limiter, channelGain, analyser, convolver, wetGain };
     configureDeckDspChain(deck);
     return deck.dsp;
   } catch {
@@ -358,13 +405,17 @@ function configureDeckDspChain(deck: Deck) {
     dsp.compressor.disconnect();
     dsp.limiter.disconnect();
     dsp.channelGain.disconnect();
+    dsp.wetGain.disconnect();
   } catch {
     /* ignore */
   }
 
   applyEqGainsToDsp(dsp);
+  const reverbOn = isReverbActive();
+  // Up to ~-1.5 dB wet at full mix: a pleasant hall, never a wash.
+  dsp.wetGain.gain.setTargetAtTime(reverbOn ? player.get().fx.reverb * 0.85 : 0, now, 0.05);
 
-  if (normalizationEnabled || eqActive) {
+  if (normalizationEnabled || eqActive || reverbOn) {
     dsp.preGain.gain.setTargetAtTime(normalizationEnabled ? preset.preGainLinear : 1.0, now, 0.015);
 
     let prev: AudioNode = dsp.source;
@@ -386,6 +437,11 @@ function configureDeckDspChain(deck: Deck) {
       dsp.compressor.release.setTargetAtTime(0.22, now, 0.015);
       prev.connect(dsp.compressor);
       prev = dsp.compressor;
+    }
+
+    if (reverbOn) {
+      prev.connect(dsp.convolver);
+      dsp.wetGain.connect(dsp.limiter);
     }
 
     // Always route through the brickwall limiter when EQ or normalization is active so +dB EQ boosts never clip
@@ -2544,7 +2600,10 @@ export function initPlayer() {
     crossfadeCurve: s.crossfadeCurve,
     eqPreset: s.eqPreset,
     eqGains: s.eqGains,
+    fx: s.fx,
   }));
+  player.set({ fx: clampFx(player.get().fx ?? FX_OFF) });
+  applyPlaybackRate();
   const s = player.get();
   const curId = s.queue[s.index];
   const q = s.queue.filter((id) => getTrack(id));
