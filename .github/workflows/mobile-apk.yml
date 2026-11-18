@@ -66,9 +66,10 @@ jobs:
           npm run typecheck
           npm run build
 
-      - name: Cargo Check for aarch64-apple-ios
+      - name: Cargo Test & Check for aarch64-apple-ios
         working-directory: mobile/src-tauri
         run: |
+          cargo test
           SDK_PATH=$(xcrun --sdk iphoneos --show-sdk-path)
           export BINDGEN_EXTRA_CLANG_ARGS_aarch64_apple_ios="--sysroot=${SDK_PATH} --target=arm64-apple-ios15.0"
           cargo check --lib --target aarch64-apple-ios
@@ -120,13 +121,12 @@ jobs:
         with:
           workspaces: mobile/src-tauri
 
-      - name: Install Mobile Frontend & Run Rust Unit Tests
+      - name: Install & Build Mobile Frontend
         working-directory: mobile
         run: |
           npm ci
           npm run typecheck
           npm run build
-          cargo test --manifest-path src-tauri/Cargo.toml
 
       - name: Initialize & Configure Android Project
         working-directory: mobile
