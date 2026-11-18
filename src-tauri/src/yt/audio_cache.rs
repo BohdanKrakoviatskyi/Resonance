@@ -224,7 +224,7 @@ impl AudioCache {
             for e in entries.flatten() {
                 let name = e.file_name().to_string_lossy().to_string();
                 let id = name.split('.').next().unwrap_or("");
-                if busy_ids.contains(id) {
+                if busy_ids.contains(id) || is_pinned(&self.dir, &name) {
                     continue;
                 }
                 let size = e.metadata().map(|m| m.len()).unwrap_or(0);
@@ -240,6 +240,38 @@ impl AudioCache {
     pub fn write_slots(&self) -> &Arc<Semaphore> {
         &self.write_slots
     }
+
+    /// Marks a complete file as downloaded for offline use: never evicted, kept by "clear cache".
+    pub fn pin(&self, video_id: &str) -> Option<u64> {
+        let meta = self.lookup_complete(video_id)?;
+        std::fs::write(self.dir.join(format!("{video_id}.pin")), b"1").ok()?;
+        Some(meta.total_bytes)
+    }
+
+    pub fn unpin(&self, video_id: &str) {
+        if is_valid_video_id(video_id) {
+            let _ = std::fs::remove_file(self.dir.join(format!("{video_id}.pin")));
+        }
+    }
+
+    /// Downloaded (pinned and complete) ids with their sizes.
+    pub fn pinned(&self) -> Vec<(String, u64)> {
+        let Ok(entries) = std::fs::read_dir(&self.dir) else { return Vec::new() };
+        entries
+            .flatten()
+            .filter_map(|e| {
+                let name = e.file_name().to_string_lossy().to_string();
+                let id = name.strip_suffix(".pin")?.to_string();
+                let meta = self.lookup_complete(&id)?;
+                Some((id, meta.total_bytes))
+            })
+            .collect()
+    }
+}
+
+fn is_pinned(dir: &Path, file_name: &str) -> bool {
+    let id = file_name.split('.').next().unwrap_or("");
+    !id.is_empty() && dir.join(format!("{id}.pin")).is_file()
 }
 
 pub fn ext_for_mime(mime: &str) -> &'static str {
@@ -284,7 +316,47 @@ fn prune_orphans(dir: &Path) {
             if !dir.join(main_path).is_file() {
                 let _ = std::fs::remove_file(&path);
             }
+        } else if let Some(id) = name.strip_suffix(".pin") {
+            // A pin without any finished file is stale.
+            let has_file = ["webm", "m4a", "opus", "mp3", "ogg"].iter().any(|ext| dir.join(format!("{id}.{ext}.done")).is_file());
+            if !has_file {
+                let _ = std::fs::remove_file(&path);
+            }
         }
+    }
+}
+
+#[cfg(test)]
+mod pin_tests {
+    use super::*;
+
+    #[test]
+    fn eviction_skips_pinned_downloads() {
+        let dir = std::env::temp_dir().join(format!("resonance-cache-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let old = dir.join("aaaaaaaaaaa.webm");
+        let pinned = dir.join("bbbbbbbbbbb.webm");
+        std::fs::write(&old, vec![0u8; 1000]).unwrap();
+        std::fs::write(&pinned, vec![0u8; 1000]).unwrap();
+        std::fs::write(dir.join("aaaaaaaaaaa.webm.done"), b"ok").unwrap();
+        std::fs::write(dir.join("bbbbbbbbbbb.webm.done"), b"ok").unwrap();
+        std::fs::write(dir.join("bbbbbbbbbbb.pin"), b"1").unwrap();
+        // Make the pinned file the oldest, so plain LRU would delete it first.
+        let f = std::fs::OpenOptions::new().write(true).open(&pinned).unwrap();
+        f.set_modified(SystemTime::UNIX_EPOCH + Duration::from_secs(10)).unwrap();
+        drop(f);
+
+        enforce_disk_limit(&dir, 500);
+        let pinned_kept = pinned.is_file();
+        let old_removed = !old.is_file();
+
+        prune_orphans(&dir);
+        let pin_kept = dir.join("bbbbbbbbbbb.pin").is_file();
+        std::fs::remove_dir_all(&dir).ok();
+
+        assert!(pinned_kept, "pinned file must survive eviction");
+        assert!(old_removed, "unpinned file over the limit is evicted");
+        assert!(pin_kept, "pin with a finished file is not an orphan");
     }
 }
 
@@ -296,7 +368,11 @@ fn enforce_disk_limit(dir: &Path, max_bytes: u64) {
     let mut total = 0u64;
     for e in entries.flatten() {
         let name = e.file_name().to_string_lossy().to_string();
-        if name.ends_with(".part") || name.ends_with(".done") || name.ends_with(".meta") {
+        if name.ends_with(".part") || name.ends_with(".done") || name.ends_with(".meta") || name.ends_with(".pin") {
+            continue;
+        }
+        // Offline downloads neither count toward nor get evicted by the cache limit.
+        if is_pinned(dir, &name) {
             continue;
         }
         if let Ok(meta) = e.metadata() {

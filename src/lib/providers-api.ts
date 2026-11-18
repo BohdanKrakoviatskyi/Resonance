@@ -38,6 +38,7 @@ export type SoundCloudSearchTrack = {
   artworkUrl: string;
   duration: number;
   user: { username: string; avatarUrl: string };
+  publisherArtist?: string;
 };
 export type SoundCloudTrackCard = {
   id: number;
@@ -47,6 +48,7 @@ export type SoundCloudTrackCard = {
   artworkUrl?: string;
   duration: number;
   user: { username: string };
+  publisherArtist?: string;
 };
 export type SoundCloudPlaylistCard = {
   id: string;

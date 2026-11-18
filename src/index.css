@@ -546,6 +546,13 @@ html[data-theme=light] { color-scheme: light; }
     background: linear-gradient(90deg, currentColor calc(var(--lp, 0) * 125% - 25%), color-mix(in oklab, currentColor 48%, transparent) calc(var(--lp, 0) * 125%));
     -webkit-background-clip: text; background-clip: text; -webkit-text-fill-color: transparent;
   }
+  /* Karaoke lines: the line itself is solid, each word carries its own fill (--wp, 0..1). */
+  .lyric[data-state=active] .lyric-text[data-words] { background: none; -webkit-text-fill-color: currentColor; }
+  .lyric[data-state=active] .lyric-word {
+    background: linear-gradient(90deg, currentColor calc(var(--wp, 0) * 115% - 15%), color-mix(in oklab, currentColor 45%, transparent) calc(var(--wp, 0) * 115%));
+    -webkit-background-clip: text; background-clip: text; -webkit-text-fill-color: transparent;
+    -webkit-box-decoration-break: clone; box-decoration-break: clone;
+  }
   .lyric-dots { display: inline-flex; gap: .32em; padding: .25em 0; vertical-align: middle; }
   .lyric-dots i { width: .4em; height: .4em; border-radius: 50%; background: currentColor; opacity: .4; }
   .lyric[data-state=active] .lyric-dots { animation: breathe 2.2s ease-in-out infinite; }
@@ -628,6 +635,9 @@ html[data-theme=light] { color-scheme: light; }
   .immersive[data-live=true][data-visible=true] .imm-right { animation-delay: 60ms; }
   @keyframes imm-enter { from { opacity: 0; transform: translateY(18px) scale(1.03); } to { opacity: 1; transform: none; } }
   .imm-scrim { position: absolute; inset: 0; z-index: -1; background: color-mix(in oklab, var(--md-surface) 22%, transparent); }
+  /* Audio-reactive layer: above the scrim, below every control; never intercepts input. */
+  .imm-viz { position: fixed; inset: auto 0 0 0; z-index: -1; width: 100%; height: 36vh; pointer-events: none; color: var(--md-primary);
+    mask-image: linear-gradient(to top, #000 55%, transparent); }
   .imm-top { display: flex; align-items: center; justify-content: flex-end; padding: 18px 22px; }
   .imm-grid {
     display: grid;

@@ -1,0 +1,72 @@
+import { createStore } from '../lib/util';
+import { fadeFactor, SLEEP_FADE_MS, type SleepMode } from '../lib/sleep-timer-plan';
+import { dur, player, realCurTime, setVolume, toggle } from './player';
+
+/** Not persisted on purpose: a sleep timer should never survive an app restart. */
+export const sleepTimer = createStore({ mode: { kind: 'off' } as SleepMode });
+
+let ticker: number | null = null;
+let unsubIndex: (() => void) | null = null;
+/** Volume before the fade started; restored after we pause or when the timer is cancelled. */
+let savedVolume: number | null = null;
+
+function restoreVolume() {
+  if (savedVolume !== null) setVolume(savedVolume);
+  savedVolume = null;
+}
+
+function stopWatchers() {
+  if (ticker !== null) clearInterval(ticker);
+  ticker = null;
+  unsubIndex?.();
+  unsubIndex = null;
+}
+
+function finish() {
+  stopWatchers();
+  if (player.get().playing) toggle();
+  restoreVolume();
+  sleepTimer.set({ mode: { kind: 'off' } });
+}
+
+function tick() {
+  const { mode } = sleepTimer.get();
+  if (mode.kind !== 'at') return;
+  const now = Date.now();
+  if (now >= mode.endsAt) return finish();
+  const f = fadeFactor(mode, now, SLEEP_FADE_MS);
+  if (f < 1) {
+    if (savedVolume === null) savedVolume = player.get().volume;
+    setVolume(savedVolume * f);
+  }
+}
+
+export function setSleepTimer(next: { minutes: number } | 'endOfTrack' | 'off') {
+  stopWatchers();
+  restoreVolume();
+  if (next === 'off') {
+    sleepTimer.set({ mode: { kind: 'off' } });
+    return;
+  }
+  if (next === 'endOfTrack') {
+    const s0 = player.get();
+    const startId = s0.queue[s0.index];
+    sleepTimer.set({ mode: { kind: 'endOfTrack' } });
+    unsubIndex = player.subscribe(() => {
+      const s = player.get();
+      // A different track became current (auto-next, crossfade, manual skip) or the queue ran out.
+      if (s.queue[s.index] !== startId || s.state === 'idle') finish();
+    });
+    // With repeat-one the id never changes, so a jump from the tail back to the start counts as the end.
+    let lastT = realCurTime();
+    ticker = window.setInterval(() => {
+      const t = realCurTime();
+      const d = dur();
+      if (d > 10 && lastT > d - 3 && t < 2) finish();
+      else lastT = t;
+    }, 500);
+    return;
+  }
+  sleepTimer.set({ mode: { kind: 'at', endsAt: Date.now() + next.minutes * 60_000 } });
+  ticker = window.setInterval(tick, 250);
+}

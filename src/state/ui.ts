@@ -9,7 +9,8 @@ export type Route =
   | { name: 'appearance' }
   | { name: 'providers' }
   | { name: 'shortcuts' }
-  | { name: 'audio' };
+  | { name: 'audio' }
+  | { name: 'integrations' };
 
 export type Dialog =
   | { kind: 'create'; trackId?: string; initialTab?: 'scratch' | 'import' }
@@ -41,6 +42,8 @@ function parse(): Route {
       return { name: 'shortcuts' };
     case 'audio':
       return { name: 'audio' };
+    case 'integrations':
+      return { name: 'integrations' };
     default:
       return { name: 'home' };
   }

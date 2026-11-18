@@ -19,6 +19,55 @@ import {
 } from '../state/library';
 import { player, playQueue, prefetchPlaylistTopTracks, shufflePlay, toggle } from '../state/player';
 import { go, openDialog, openSearch, ui } from '../state/ui';
+import { importStore, syncImportedPlaylist } from '../state/import';
+import { LOCAL_PLAYLIST_ID, rescanLocal } from '../state/local-library';
+import { canDownload, downloadTracks, offline, offlineId } from '../state/offline';
+import { getTrack as getLibTrack } from '../state/library';
+import { recognizeMissing, stopRecognizeMissing, whisper } from '../state/whisper';
+
+/** Recognizes lyrics for every track in the list that no source has, in the background. */
+function RecognizeAllButton({ ids }: { ids: string[] }) {
+  const ready = useStore(whisper, (s) => s.models.some((m) => m.id === s.model && m.installed));
+  const batch = useStore(whisper, (s) => s.batch);
+  if (!ready || !ids.length) return null;
+  if (batch) {
+    return (
+      <IconButton
+        icon="close"
+        size="lg"
+        selected
+        label={t('whisperBatchProgress', { checked: batch.checked, total: batch.total, found: batch.recognized })}
+        onClick={stopRecognizeMissing}
+      />
+    );
+  }
+  return (
+    <IconButton
+      icon="auto_awesome"
+      size="lg"
+      label={t('whisperBatchStart')}
+      onClick={() => void recognizeMissing(ids.map((id) => getLibTrack(id)).filter((tr): tr is NonNullable<typeof tr> => !!tr))}
+    />
+  );
+}
+
+/** Downloads every YouTube track in the list; shows progress while the queue runs. */
+function DownloadAllButton({ ids }: { ids: string[] }) {
+  const tracks = ids.map((id) => getLibTrack(id)).filter((tr) => canDownload(tr)) as NonNullable<ReturnType<typeof getLibTrack>>[];
+  const done = useStore(offline, (s) => tracks.filter((tr) => offlineId(tr)! in s.downloaded).length);
+  const busy = useStore(offline, (s) => s.active !== null);
+  if (!tracks.length) return null;
+  const all = done === tracks.length;
+  return (
+    <IconButton
+      icon={all ? 'download_done' : 'download'}
+      label={all ? t('offlineAllDownloaded') : `${t('offlineDownloadAll')} (${done}/${tracks.length})`}
+      size="lg"
+      selected={all || busy}
+      onClick={() => !all && downloadTracks(tracks)}
+    />
+  );
+}
 import { parseSoundCloudCollectionId } from '../lib/soundcloud-library';
 import { parseYtMusicCollectionId } from '../lib/ytmusic-library';
 import soundcloudLogo from '../assets/soundcloud.svg';
@@ -98,6 +147,7 @@ export default function Collection({ kind, id }: { kind: 'favorites' | 'playlist
 
   const pl = localPlaylist ?? scPl ?? ytPl;
   const isProviderPlaylist = Boolean(scCollection) || Boolean(ytCollection);
+  const importActive = useStore(importStore, (s) => s.active);
 
   useEffect(() => {
     if (!remotePlaylist) {
@@ -445,8 +495,16 @@ export default function Collection({ kind, id }: { kind: 'favorites' | 'playlist
             <Button size="lg" variant="tonal" icon="shuffle" disabled={!visibleIds.length} onClick={() => shufflePlay(visibleIds)}>
               {t('shuffle')}
             </Button>
+            <DownloadAllButton ids={visibleIds} />
+            <RecognizeAllButton ids={visibleIds} />
             {kind === 'playlist' && !isProviderPlaylist && (
               <>
+                {localPlaylist?.sourceUrl && (
+                  <IconButton icon="sync" label={t('syncFromSource')} size="lg" disabled={importActive} onClick={() => void syncImportedPlaylist(localPlaylist.id)} />
+                )}
+                {pl?.id === LOCAL_PLAYLIST_ID && (
+                  <IconButton icon="sync" label={t('localRescan')} size="lg" onClick={() => void rescanLocal()} />
+                )}
                 <IconButton icon="edit" label={t('rename')} size="lg" onClick={() => openDialog({ kind: 'rename', id: pl!.id })} />
                 <IconButton icon="delete" label={t('delete')} size="lg" onClick={() => openDialog({ kind: 'delete', id: pl!.id })} />
               </>

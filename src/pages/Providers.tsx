@@ -4,6 +4,9 @@ import { listen } from '@tauri-apps/api/event';
 import { Button, IconButton, type Vars } from '../components/ui';
 import { t, type Key } from '../lib/i18n';
 import { go } from '../state/ui';
+import { Icon } from '../components/Icon';
+import { cx, useStore } from '../lib/util';
+import { addLocalFolder, LOCAL_PLAYLIST_ID, localLibrary, removeLocalFolder, rescanLocal } from '../state/local-library';
 import {
   soundCloudAuthLogin,
   soundCloudAuthLogout,
@@ -298,8 +301,59 @@ export default function Providers() {
       </header>
       <div className="grid gap-4">
         {PROVIDERS.map((provider, index) => <ProviderCard key={provider.id} provider={provider} index={index + 1} />)}
+        <LocalFilesCard index={PROVIDERS.length + 1} />
       </div>
 
     </div>
+  );
+}
+
+function LocalFilesCard({ index }: { index: number }) {
+  const folders = useStore(localLibrary, (s) => s.folders);
+  const scanning = useStore(localLibrary, (s) => s.scanning);
+  const count = useStore(localLibrary, (s) => s.count);
+  const error = useStore(localLibrary, (s) => s.error);
+
+  return (
+    <section className="card anim-in min-w-0" style={{ '--i': index } as Vars} aria-labelledby="local-title">
+      <div className="mb-4 flex items-center gap-3">
+        <span className="grid h-12 w-12 shrink-0 place-items-center rounded-[16px] bg-secondary-container text-on-secondary-container">
+          <Icon name="folder" fill size={24} />
+        </span>
+        <div className="min-w-0 flex-1">
+          <h2 id="local-title" className="headline text-lg leading-tight">{t('localFiles')}</h2>
+          <p className="text-sm text-on-surface-variant">
+            {folders.length ? t('localCount', { n: count }) : t('localDesc')}
+          </p>
+        </div>
+        {folders.length > 0 && (
+          <IconButton icon="refresh" label={t('localRescan')} variant="tonal" disabled={scanning} onClick={() => void rescanLocal()} className={cx(scanning && 'spin-slow')} />
+        )}
+      </div>
+
+      {folders.length > 0 && (
+        <ul className="mb-4 grid gap-1.5">
+          {folders.map((f) => (
+            <li key={f} className="flex items-center gap-2 rounded-2xl bg-on-surface/6 py-1.5 pl-4 pr-1.5">
+              <span className="min-w-0 flex-1 truncate text-sm" title={f}>{f}</span>
+              <IconButton icon="close" label={t('localRemoveFolder')} size="sm" onClick={() => void removeLocalFolder(f)} />
+            </li>
+          ))}
+        </ul>
+      )}
+
+      <div className="flex flex-wrap items-center gap-3">
+        <Button icon="add" onClick={() => void addLocalFolder().catch((e) => localLibrary.set({ error: String(e) }))} disabled={scanning}>
+          {t('localAddFolder')}
+        </Button>
+        {count > 0 && (
+          <Button variant="tonal" icon="queue_music" onClick={() => go({ name: 'playlist', id: LOCAL_PLAYLIST_ID })}>
+            {t('localOpen')}
+          </Button>
+        )}
+        {scanning && <span className="text-sm text-on-surface-variant">{t('localScanning')}</span>}
+      </div>
+      {error && <p className="mt-3 text-xs text-error">{error}</p>}
+    </section>
   );
 }

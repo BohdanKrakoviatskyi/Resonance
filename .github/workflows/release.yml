@@ -28,7 +28,7 @@ jobs:
       - name: Install Linux dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y build-essential curl wget file libxdo-dev libssl-dev libasound2-dev libayatana-appindicator3-dev librsvg2-dev libwebkit2gtk-4.1-dev
+          sudo apt-get install -y build-essential curl wget file libxdo-dev libssl-dev libasound2-dev libayatana-appindicator3-dev librsvg2-dev libwebkit2gtk-4.1-dev libclang-dev cmake
 
       - run: npm ci
       - run: npx tsc --noEmit
@@ -68,12 +68,49 @@ jobs:
         if: startsWith(matrix.platform, 'ubuntu-')
         run: |
           sudo apt-get update
-          sudo apt-get install -y build-essential curl wget file libxdo-dev libssl-dev libasound2-dev libayatana-appindicator3-dev librsvg2-dev libwebkit2gtk-4.1-dev
+          sudo apt-get install -y build-essential curl wget file libxdo-dev libssl-dev libasound2-dev libayatana-appindicator3-dev librsvg2-dev libwebkit2gtk-4.1-dev libclang-dev cmake
 
       - run: npm ci
 
+      # whisper.cpp bindings are generated with bindgen, which needs libclang (preinstalled LLVM).
+      - name: Point bindgen at LLVM (Windows)
+        if: startsWith(matrix.platform, 'windows-')
+        shell: bash
+        run: echo "LIBCLANG_PATH=C:\\Program Files\\LLVM\\bin" >> "$GITHUB_ENV"
+
+      # macOS code signing + notarization, enabled only when the Apple secrets exist.
+      # Missing secrets arrive as empty strings, which the Tauri bundler would treat as a broken
+      # certificate, so they are exported only when set. Without them the build stays ad-hoc signed.
+      - name: Configure Apple signing
+        if: startsWith(matrix.platform, 'macos-')
+        shell: bash
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          if [ -n "$APPLE_CERTIFICATE" ] && [ -n "$APPLE_SIGNING_IDENTITY" ]; then
+            for v in APPLE_CERTIFICATE APPLE_CERTIFICATE_PASSWORD APPLE_SIGNING_IDENTITY; do
+              echo "$v=${!v}" >> "$GITHUB_ENV"
+            done
+            echo "Code signing enabled"
+          else
+            echo "No Apple certificate secrets: building ad-hoc signed"
+          fi
+          if [ -n "$APPLE_ID" ] && [ -n "$APPLE_PASSWORD" ] && [ -n "$APPLE_TEAM_ID" ]; then
+            for v in APPLE_ID APPLE_PASSWORD APPLE_TEAM_ID; do
+              echo "$v=${!v}" >> "$GITHUB_ENV"
+            done
+            echo "Notarization enabled"
+          fi
+
       - uses: tauri-apps/tauri-action@v0
         env:
+          # whisper.cpp uses std::filesystem, which Apple's libc++ only offers from macOS 10.15.
+          MACOSX_DEPLOYMENT_TARGET: "11.0"
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}

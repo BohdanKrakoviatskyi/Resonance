@@ -54,6 +54,14 @@ const firstArtist = (value: string) =>
 
 export function stripTrackNoise(value: string): string {
   return value
+    // Emoji and pictographs ("🔥 song 🔥"), plus variation selectors / ZWJ left behind.
+    .replace(/[\p{Extended_Pictographic}\u{FE0F}\u{200D}\u{20E3}]/gu, ' ')
+    .replace(/[«»“”„]/g, ' ')
+    .replace(/\s*[[(]\s*(?:free(?:\s*(?:dl|download))?|out now|premiere|new|exclusive|explicit|clean|bass\s*boosted)\s*[\])]/gi, ' ')
+    .replace(/\b(?:free\s+download|out\s+now)\b/gi, ' ')
+    // Release-version markers: same words, same lyrics ("(Remastered 2011)", "- Radio Edit").
+    .replace(/\s*[[(][^\])]*\b(?:remaster(?:ed)?|radio\s+edit|single\s+version|album\s+version|original\s+version|mono|stereo|deluxe|bonus\s+track|edit)\b[^\])]*[\])]/gi, ' ')
+    .replace(/\s+[-–—]\s+(?:(?:\d{4}\s+)?remaster(?:ed)?(?:\s+\d{4})?(?:\s+version)?|radio\s+edit|single\s+version|album\s+version|mono|stereo)\s*$/i, '')
     .replace(/https?:\/\/\S+/gi, ' ')
     .replace(/#\S+/g, ' ')
     .replace(/\+\S+/g, ' ')
@@ -88,9 +96,21 @@ export function artistsMatch(queryArtist: string, candidateArtist: string): bool
   return tokenOverlapScore(queryArtist, candidateArtist) >= 0.65;
 }
 
-export function lyricsSearchQueries(track: Pick<Track, 'title' | 'artist' | 'source'>) {
+/**
+ * Speed-altered re-uploads ("slowed + reverb", "sped up", "nightcore"). Their lyrics are the
+ * original's, stretched in time; `kind` tells the matcher to accept a proportional duration.
+ */
+export function speedVariant(title: string): 'slowed' | 'spedUp' | null {
+  if (/\b(?:slowed|slow(?:ed)?\s*\+?\s*reverb|daycore)\b/i.test(title)) return 'slowed';
+  if (/\b(?:sped\s*up|speed\s*up|nightcore|fast(?:er)?\s*version)\b/i.test(title)) return 'spedUp';
+  return null;
+}
+
+export function lyricsSearchQueries(track: Pick<Track, 'title' | 'artist' | 'source'> & { metaArtist?: string }) {
   const cleanedTitle = stripTrackNoise(track.title);
+  // On SoundCloud the uploader is frequently a repost/fan account, so it is the weakest hint.
   const uploader = firstArtist(stripTrackNoise(track.artist));
+  const meta = track.metaArtist ? firstArtist(stripTrackNoise(track.metaArtist)) : '';
   const queries: { title: string; artist: string }[] = [];
 
   const add = (nextTitle: string, nextArtist: string) => {
@@ -110,6 +130,13 @@ export function lyricsSearchQueries(track: Pick<Track, 'title' | 'artist' | 'sou
 
   // Both SoundCloud and YouTube frequently encode "Real Artist - Track Name" inside `title`
   const parts = cleanedTitle.match(/^(.+?)\s+[–—-]\s+(.+)$/);
+  // Publisher metadata is the most trustworthy artist; pair it with the title part that isn't the artist.
+  if (meta) {
+    if (parts && normalizeLyricsText(parts[1]) === normalizeLyricsText(meta)) add(parts[2], meta);
+    else if (parts && normalizeLyricsText(parts[2]) === normalizeLyricsText(meta)) add(parts[1], meta);
+    else if (parts) add(parts[2], meta);
+    add(cleanedTitle, meta);
+  }
   if (parts) {
     const left = parts[1].trim();
     const right = parts[2].trim();
@@ -138,57 +165,6 @@ export type LyricsCandidate = {
   plainLyrics?: string;
   instrumental?: boolean;
 };
-
-export function findLyricsCandidate<T extends LyricsCandidate>(
-  candidates: T[],
-  query: { title: string; artist: string },
-  rawDuration: number,
-  tolerance = 4,
-): T | null {
-  const wantSec = toSeconds(rawDuration);
-  const queryTitleNorm = normalizeLyricsText(stripTrackNoise(query.title));
-  if (!queryTitleNorm) return null;
-  const wordCount = titleWordCount(query.title);
-
-  const scored: { candidate: T; score: number }[] = [];
-
-  for (const candidate of candidates) {
-    if (!candidate.syncedLyrics && !candidate.plainLyrics && !candidate.instrumental) continue;
-
-    const candTitle = candidate.trackName ?? '';
-    const candArtist = candidate.artistName ?? '';
-    const candSec = toSeconds(candidate.duration);
-
-    const titleSim = tokenOverlapScore(query.title, candTitle);
-    const exactTitle = normalizeLyricsText(stripTrackNoise(candTitle)) === queryTitleNorm;
-    if (!exactTitle && titleSim < 0.75) continue;
-
-    const artistOk = artistsMatch(query.artist, candArtist);
-    const deltaSec = wantSec > 0 && candSec > 0 ? Math.abs(wantSec - candSec) : 0;
-
-    if (wantSec > 0 && candSec > 0) {
-      if (deltaSec > tolerance) continue;
-    }
-
-    // Strict anti-false-positive rule:
-    // If the artist does NOT match, we ONLY allow the candidate when the title has at least
-    // 3 unique words AND exact title match AND duration matches within ±1.5 seconds.
-    // Otherwise (e.g. 1-word title "самолёт" or "молчи" from a different artist), reject immediately!
-    if (!artistOk) {
-      if (wordCount < 3 || !exactTitle || wantSec <= 0 || candSec <= 0 || deltaSec > 1.5) {
-        continue;
-      }
-    }
-
-    const durBonus = wantSec > 0 && candSec > 0 ? Math.max(0, 1 - deltaSec / Math.max(tolerance, 1)) : 0.5;
-    const syncBonus = candidate.syncedLyrics ? 0.15 : 0;
-    const score = (exactTitle ? 1 : titleSim) * 0.55 + (artistOk ? 0.35 : 0) + durBonus * 0.1 + syncBonus;
-    scored.push({ candidate, score });
-  }
-
-  scored.sort((a, b) => b.score - a.score);
-  return scored[0]?.candidate ?? null;
-}
 
 /** Strict validator for Genius / external candidates that lack a reliable duration field. */
 export function matchesGeniusCandidate(

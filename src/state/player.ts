@@ -11,6 +11,9 @@ import { rankRecommendations } from '../lib/recommendations';
 import { createPendingAudioSeek, pendingAudioSeekFor, type PendingAudioSeek } from '../lib/pending-audio-seek';
 import { canFallbackToOutgoingDeck, evaluateAutoCrossfadeTrigger, planAutoCrossfade } from '../lib/crossfade-plan';
 import { stepQueueIndex, shouldAdvanceAfterError } from '../lib/player-queue';
+import { isLocalTrack, localStreamUrl } from './local-library';
+import { clampFx, FX_OFF, FX_PRESETS, makeImpulse, type FxPreset, type FxSettings } from '../lib/audio-fx';
+import { isWebKitPlaybackUserAgent, webkitDoubledDuration as detectWebkitDoubledDuration } from '../lib/webkit-playback';
 import { onProviderState, providerCommand } from '../lib/provider-player';
 import type { Track } from '../types';
 
@@ -66,6 +69,9 @@ interface DeckDsp {
   channelGain: GainNode;
   /** Post-EQ tap for the fullscreen equalizer's live spectrum (never connected to the output). */
   analyser: AnalyserNode;
+  /** Parallel wet branch for the reverb effect. */
+  convolver: ConvolverNode;
+  wetGain: GainNode;
 }
 
 interface Deck {
@@ -124,6 +130,8 @@ export const player = createStore({
   // 5-band Equalizer settings
   eqPreset: 'flat' as EqPreset,
   eqGains: [0, 0, 0, 0, 0] as number[],
+  // Speed / pitch / reverb
+  fx: FX_OFF as FxSettings,
   // Runtime crossfade progress state
   isCrossfading: false,
   fadeProgress: 0,
@@ -288,9 +296,44 @@ function isEqActive(): boolean {
 /** How many views currently want the live spectrum (it needs the Web Audio graph to exist). */
 let spectrumConsumers = 0;
 
+const isReverbActive = () => player.get().fx.reverb > 0.001;
+
 function isDspNeeded(): boolean {
-  return player.get().normalizationEnabled || isEqActive() || spectrumConsumers > 0;
+  return player.get().normalizationEnabled || isEqActive() || isReverbActive() || spectrumConsumers > 0;
 }
+
+/** Both decks share one impulse response; it only depends on the sample rate. */
+let impulseBuffer: AudioBuffer | null = null;
+function getImpulse(ctx: AudioContext): AudioBuffer {
+  if (impulseBuffer && impulseBuffer.sampleRate === ctx.sampleRate) return impulseBuffer;
+  const [l, r] = makeImpulse(ctx.sampleRate);
+  const buf = ctx.createBuffer(2, l.length, ctx.sampleRate);
+  buf.copyToChannel(l as Float32Array<ArrayBuffer>, 0);
+  buf.copyToChannel(r as Float32Array<ArrayBuffer>, 1);
+  impulseBuffer = buf;
+  return buf;
+}
+
+/** Applies speed/pitch to both decks; defaultPlaybackRate makes it survive new sources. */
+function applyPlaybackRate() {
+  const { speed, keepPitch } = player.get().fx;
+  for (const deck of decks) {
+    const el = deck.el as HTMLAudioElement & { preservesPitch?: boolean; webkitPreservesPitch?: boolean };
+    el.preservesPitch = keepPitch;
+    el.webkitPreservesPitch = keepPitch;
+    el.defaultPlaybackRate = speed;
+    el.playbackRate = speed;
+  }
+}
+
+export function setFx(patch: Partial<FxSettings>) {
+  const next = clampFx({ ...player.get().fx, ...patch });
+  player.set({ fx: next });
+  applyPlaybackRate();
+  refreshAllDspChains();
+}
+
+export const setFxPreset = (preset: Exclude<FxPreset, 'custom'>) => setFx(FX_PRESETS[preset]);
 
 function ensureDeckDsp(deck: Deck): DeckDsp | undefined {
   if (deck.dsp) return deck.dsp;
@@ -326,7 +369,13 @@ function ensureDeckDsp(deck: Deck): DeckDsp | undefined {
     limiter.attack.value = 0.001;
     limiter.release.value = 0.08;
 
-    deck.dsp = { ctx, source, preGain, eqFilters, compressor, limiter, channelGain, analyser };
+    const convolver = ctx.createConvolver();
+    convolver.buffer = getImpulse(ctx);
+    const wetGain = ctx.createGain();
+    wetGain.gain.value = 0;
+    convolver.connect(wetGain);
+
+    deck.dsp = { ctx, source, preGain, eqFilters, compressor, limiter, channelGain, analyser, convolver, wetGain };
     configureDeckDspChain(deck);
     return deck.dsp;
   } catch {
@@ -358,13 +407,17 @@ function configureDeckDspChain(deck: Deck) {
     dsp.compressor.disconnect();
     dsp.limiter.disconnect();
     dsp.channelGain.disconnect();
+    dsp.wetGain.disconnect();
   } catch {
     /* ignore */
   }
 
   applyEqGainsToDsp(dsp);
+  const reverbOn = isReverbActive();
+  // Up to ~-1.5 dB wet at full mix: a pleasant hall, never a wash.
+  dsp.wetGain.gain.setTargetAtTime(reverbOn ? player.get().fx.reverb * 0.85 : 0, now, 0.05);
 
-  if (normalizationEnabled || eqActive) {
+  if (normalizationEnabled || eqActive || reverbOn) {
     dsp.preGain.gain.setTargetAtTime(normalizationEnabled ? preset.preGainLinear : 1.0, now, 0.015);
 
     let prev: AudioNode = dsp.source;
@@ -386,6 +439,11 @@ function configureDeckDspChain(deck: Deck) {
       dsp.compressor.release.setTargetAtTime(0.22, now, 0.015);
       prev.connect(dsp.compressor);
       prev = dsp.compressor;
+    }
+
+    if (reverbOn) {
+      prev.connect(dsp.convolver);
+      dsp.wetGain.connect(dsp.limiter);
     }
 
     // Always route through the brickwall limiter when EQ or normalization is active so +dB EQ boosts never clip
@@ -449,7 +507,23 @@ function syncDeckVolumes() {
     if (deck.dsp && deck.dsp.ctx.state !== 'closed') {
       deck.el.volume = 1;
       const finalGain = muted ? 0 : clamp(master * makeup * fade, 0, 1);
-      deck.dsp.channelGain.gain.setTargetAtTime(finalGain, deck.dsp.ctx.currentTime, 0.008);
+      const g = deck.dsp.channelGain.gain;
+      const now = deck.dsp.ctx.currentTime;
+      if (isWebKitPlayback()) {
+        // WebKit (macOS WKWebView) does not reliably apply a stream of setTargetAtTime events
+        // (the volume slider fires one per pointer move): the parameter can stay at its old value.
+        // Cancel what is pending and ramp linearly; a suspended context can't run automation
+        // at all, so there the value is assigned directly.
+        g.cancelScheduledValues(now);
+        if (deck.dsp.ctx.state === 'running') {
+          g.setValueAtTime(g.value, now);
+          g.linearRampToValueAtTime(finalGain, now + 0.02);
+        } else {
+          g.value = finalGain;
+        }
+      } else {
+        g.setTargetAtTime(finalGain, now, 0.008);
+      }
     } else {
       deck.el.volume = muted ? 0 : clamp(master * makeup * fade, 0, 1);
     }
@@ -950,18 +1024,14 @@ export function useCurrentTrack(): Track | null {
  * streams and pads the second half with silence (invidious#913, audioplayers#1730).
  * Detect the doubling against the known track metadata and clamp to the real duration.
  */
-function isWebKitPlayback(): boolean {
-  const ua = navigator.userAgent;
-  return ua.includes('Safari') && !ua.includes('Chrome') && !ua.includes('Chromium') && !ua.includes('Edg/');
+export function isWebKitPlayback(): boolean {
+  return isWebKitPlaybackUserAgent(navigator.userAgent);
 }
 
 /** Returns the real duration when WebKit doubled it, otherwise null. */
 function webkitDoubledDuration(track: Track | null | undefined, elDuration: number): number | null {
   if (!isWebKitPlayback() || !track || !isYouTubeTrack(track)) return null;
-  const meta = track.duration;
-  if (!isFinite(elDuration) || elDuration <= 0 || !meta || meta < 30) return null;
-  if (elDuration >= meta * 1.7 && elDuration <= meta * 2.35) return meta;
-  return null;
+  return detectWebkitDoubledDuration(track.duration, elDuration);
 }
 
 export const dur = () => {
@@ -1126,6 +1196,15 @@ async function resolvePlayableStream(
       attempts: res.attempts,
     };
   }
+  if (isLocalTrack(tr)) {
+    return {
+      url: await localStreamUrl(tr),
+      hls: false,
+      preview: false,
+      resolveMs: Math.round(performance.now() - t0),
+      attempts: [{ method: 'local_file', outcome: 'ok', durationMs: Math.round(performance.now() - t0) }],
+    };
+  }
   if (tr.source === 'soundcloud' && tr.nativeId) {
     const scRes = await trackStream(tr.nativeId);
     const scMs = Math.round(performance.now() - t0);
@@ -1142,6 +1221,12 @@ async function resolvePlayableStream(
     resolveMs: 0,
     attempts: [{ method: 'direct_src', outcome: 'ok', durationMs: 0 }],
   };
+}
+
+/** Stream URL for offline analysis (speech recognition). Uses the same resolver as playback. */
+export async function streamUrlForAnalysis(tr: Track): Promise<{ url: string; hls: boolean }> {
+  const s = await resolvePlayableStream(tr, undefined, undefined, false);
+  return { url: s.url, hls: s.hls };
 }
 
 /**
@@ -2116,17 +2201,41 @@ export function adjustVolumePos(d: number) {
   setVolumePos(volumeToPos(player.get().volume) + d);
 }
 
+let volumeDiagnosticTimer: ReturnType<typeof setTimeout> | null = null;
+
+function scheduleVolumeDiagnostic() {
+  if (volumeDiagnosticTimer !== null) clearTimeout(volumeDiagnosticTimer);
+  volumeDiagnosticTimer = setTimeout(() => {
+    volumeDiagnosticTimer = null;
+    const deck = getActiveDeck();
+    const dsp = deck.dsp;
+    const ctx = dsp?.ctx;
+    const gain = dsp?.channelGain.gain.value;
+    const s = player.get();
+    const preset = NORMALIZATION_PRESETS[s.normalizationTarget] ?? NORMALIZATION_PRESETS.normal;
+    const makeup = s.normalizationEnabled ? preset.makeupLinear : 1;
+    const expected = s.muted ? 0 : clamp(s.volume * makeup * deck.fadeMultiplier, 0, 1);
+    logTrackTiming(
+      currentRequestId,
+      'volume_sync',
+      `track=${currentTrack()?.id ?? 'none'} provider=${usesProviderPlayback(currentTrack())} master=${s.volume} muted=${s.muted} webkit=${isWebKitPlayback()} dsp=${Boolean(dsp)} ctx=${ctx?.state ?? 'none'} element=${deck.el.volume} gain=${gain ?? 'none'} expected=${expected.toFixed(3)}`,
+    );
+  }, 500);
+}
+
 export function setVolume(v: number) {
   v = Math.round(clamp(v, 0, 1) * 1000) / 1000;
   if (usesProviderPlayback(currentTrack())) providerCommand('setVolume', v);
   player.set({ volume: v, muted: false });
   syncDeckVolumes();
+  scheduleVolumeDiagnostic();
 }
 export function toggleMute() {
   const m = !player.get().muted;
   if (usesProviderPlayback(currentTrack())) providerCommand('setVolume', m ? 0 : player.get().volume);
   player.set({ muted: m });
   syncDeckVolumes();
+  scheduleVolumeDiagnostic();
 }
 
 /** Next-track selection changed: drop any stale preload and re-warm the upcoming queue. */
@@ -2544,7 +2653,10 @@ export function initPlayer() {
     crossfadeCurve: s.crossfadeCurve,
     eqPreset: s.eqPreset,
     eqGains: s.eqGains,
+    fx: s.fx,
   }));
+  player.set({ fx: clampFx(player.get().fx ?? FX_OFF) });
+  applyPlaybackRate();
   const s = player.get();
   const curId = s.queue[s.index];
   const q = s.queue.filter((id) => getTrack(id));

@@ -124,6 +124,8 @@ pub struct TrackCard {
     #[serde(skip_serializing_if = "is_zero")]
     pub likes_count: i64,
     pub user: UserName,
+    #[serde(skip_serializing_if = "is_empty_str")]
+    pub publisher_artist: String,
 }
 
 #[derive(Debug, Clone, Default, Serialize)]
@@ -155,6 +157,8 @@ pub struct SearchTrack {
     pub artwork_url: String,
     pub duration: i64,
     pub user: SearchUser,
+    #[serde(skip_serializing_if = "is_empty_str")]
+    pub publisher_artist: String,
 }
 
 #[derive(Debug, Clone, Default, Serialize)]
@@ -337,11 +341,23 @@ pub struct ScTrack {
     pub playback_count: i64,
     pub likes_count: i64,
     pub username: String,
+    /// Real performer from SoundCloud's publisher metadata; the uploader is often a re-upload account.
+    pub publisher_artist: String,
+}
+
+/// `publisher_metadata.artist`, falling back to the legacy `metadata_artist` field.
+pub fn publisher_artist_of(v: &Value) -> String {
+    let p = v.pointer("/publisher_metadata/artist").and_then(Value::as_str).unwrap_or_default().trim();
+    if !p.is_empty() {
+        return p.to_string();
+    }
+    vs(v, "metadata_artist").trim().to_string()
 }
 
 impl ScTrack {
     pub fn parse(v: &Value) -> Self {
         Self {
+            publisher_artist: publisher_artist_of(v),
             id: vi(v, "id"),
             urn: vs(v, "urn"),
             title: vs(v, "title"),
@@ -366,6 +382,7 @@ impl ScTrack {
             playback_count: self.playback_count,
             likes_count: self.likes_count,
             user: UserName { username: self.username.clone() },
+            publisher_artist: self.publisher_artist.clone(),
         }
     }
 
