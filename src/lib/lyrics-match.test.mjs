@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { findLyricsCandidate, lyricsSearchQueries, matchesGeniusCandidate, toSeconds } from './lyrics-match.ts';
+import { findLyricsCandidate, lyricsSearchQueries, matchesGeniusCandidate, speedVariant, stripTrackNoise, toSeconds } from './lyrics-match.ts';
 
 test('uses the song title and artist from an official video title', () => {
   const queries = lyricsSearchQueries({
@@ -64,4 +64,28 @@ test('requires strict artist and title match for Genius candidates without durat
     matchesGeniusCandidate({ title: 'самолёт', artist: 'zer0cks' }, { title: 'самолёт', artist: 'zer0cks' }),
     true,
   );
+});
+
+test('strips emoji, free-download tags and guillemets', () => {
+  assert.equal(stripTrackNoise('🔥 «Звезда» [FREE DL] 🔥'), 'Звезда');
+  assert.equal(stripTrackNoise('Song (free download) out now'), 'Song');
+});
+
+test('publisher artist beats a repost uploader on SoundCloud', () => {
+  const queries = lyricsSearchQueries({
+    title: 'Скриптонит - Положение (slowed + reverb) [FREE]',
+    artist: 'best_slowed_songs_2024',
+    metaArtist: 'Скриптонит',
+    source: 'soundcloud',
+  });
+  assert.deepEqual(queries[0], { title: 'Положение', artist: 'Скриптонит' });
+  assert.ok(queries.some((q) => q.artist === 'best_slowed_songs_2024'), 'uploader stays as a last resort');
+  assert.ok(queries.findIndex((q) => q.artist === 'best_slowed_songs_2024') > 0);
+});
+
+test('detects speed-altered versions', () => {
+  assert.equal(speedVariant('Song (Slowed + Reverb)'), 'slowed');
+  assert.equal(speedVariant('Song - sped up'), 'spedUp');
+  assert.equal(speedVariant('Song (Nightcore)'), 'spedUp');
+  assert.equal(speedVariant('Slow Dancing'), null);
 });

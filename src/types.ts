@@ -31,6 +31,8 @@ export interface Track {
   preview?: boolean;
   playback?: 'direct';
   source: Source;
+  /** Real performer from provider metadata (SoundCloud publisher_metadata), when the uploader differs. */
+  metaArtist?: string;
   lyrics?: LyricLine[];
 }
 
