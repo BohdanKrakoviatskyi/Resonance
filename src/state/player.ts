@@ -13,6 +13,7 @@ import { canFallbackToOutgoingDeck, evaluateAutoCrossfadeTrigger, planAutoCrossf
 import { stepQueueIndex, shouldAdvanceAfterError } from '../lib/player-queue';
 import { isLocalTrack, localStreamUrl } from './local-library';
 import { clampFx, FX_OFF, FX_PRESETS, makeImpulse, type FxPreset, type FxSettings } from '../lib/audio-fx';
+import { isWebKitPlaybackUserAgent, webkitDoubledDuration as detectWebkitDoubledDuration } from '../lib/webkit-playback';
 import { onProviderState, providerCommand } from '../lib/provider-player';
 import type { Track } from '../types';
 
@@ -1024,17 +1025,13 @@ export function useCurrentTrack(): Track | null {
  * Detect the doubling against the known track metadata and clamp to the real duration.
  */
 export function isWebKitPlayback(): boolean {
-  const ua = navigator.userAgent;
-  return ua.includes('Safari') && !ua.includes('Chrome') && !ua.includes('Chromium') && !ua.includes('Edg/');
+  return isWebKitPlaybackUserAgent(navigator.userAgent);
 }
 
 /** Returns the real duration when WebKit doubled it, otherwise null. */
 function webkitDoubledDuration(track: Track | null | undefined, elDuration: number): number | null {
   if (!isWebKitPlayback() || !track || !isYouTubeTrack(track)) return null;
-  const meta = track.duration;
-  if (!isFinite(elDuration) || elDuration <= 0 || !meta || meta < 30) return null;
-  if (elDuration >= meta * 1.7 && elDuration <= meta * 2.35) return meta;
-  return null;
+  return detectWebkitDoubledDuration(track.duration, elDuration);
 }
 
 export const dur = () => {
@@ -2204,17 +2201,41 @@ export function adjustVolumePos(d: number) {
   setVolumePos(volumeToPos(player.get().volume) + d);
 }
 
+let volumeDiagnosticTimer: ReturnType<typeof setTimeout> | null = null;
+
+function scheduleVolumeDiagnostic() {
+  if (volumeDiagnosticTimer !== null) clearTimeout(volumeDiagnosticTimer);
+  volumeDiagnosticTimer = setTimeout(() => {
+    volumeDiagnosticTimer = null;
+    const deck = getActiveDeck();
+    const dsp = deck.dsp;
+    const ctx = dsp?.ctx;
+    const gain = dsp?.channelGain.gain.value;
+    const s = player.get();
+    const preset = NORMALIZATION_PRESETS[s.normalizationTarget] ?? NORMALIZATION_PRESETS.normal;
+    const makeup = s.normalizationEnabled ? preset.makeupLinear : 1;
+    const expected = s.muted ? 0 : clamp(s.volume * makeup * deck.fadeMultiplier, 0, 1);
+    logTrackTiming(
+      currentRequestId,
+      'volume_sync',
+      `track=${currentTrack()?.id ?? 'none'} provider=${usesProviderPlayback(currentTrack())} master=${s.volume} muted=${s.muted} webkit=${isWebKitPlayback()} dsp=${Boolean(dsp)} ctx=${ctx?.state ?? 'none'} element=${deck.el.volume} gain=${gain ?? 'none'} expected=${expected.toFixed(3)}`,
+    );
+  }, 500);
+}
+
 export function setVolume(v: number) {
   v = Math.round(clamp(v, 0, 1) * 1000) / 1000;
   if (usesProviderPlayback(currentTrack())) providerCommand('setVolume', v);
   player.set({ volume: v, muted: false });
   syncDeckVolumes();
+  scheduleVolumeDiagnostic();
 }
 export function toggleMute() {
   const m = !player.get().muted;
   if (usesProviderPlayback(currentTrack())) providerCommand('setVolume', m ? 0 : player.get().volume);
   player.set({ muted: m });
   syncDeckVolumes();
+  scheduleVolumeDiagnostic();
 }
 
 /** Next-track selection changed: drop any stale preload and re-warm the upcoming queue. */
