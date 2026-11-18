@@ -39,6 +39,15 @@ test('requires strict artist and title match for Genius candidates without durat
   );
 });
 
+test('strips release-version markers but keeps real title words', () => {
+  assert.equal(stripTrackNoise('Song (Remastered 2011)'), 'Song');
+  assert.equal(stripTrackNoise('Song - 2011 Remaster'), 'Song');
+  assert.equal(stripTrackNoise('Song [Radio Edit]'), 'Song');
+  assert.equal(stripTrackNoise('Song - Single Version'), 'Song');
+  assert.equal(stripTrackNoise('Edit My Heart'), 'Edit My Heart');
+  assert.equal(stripTrackNoise('Mono No Aware'), 'Mono No Aware');
+});
+
 test('strips emoji, free-download tags and guillemets', () => {
   assert.equal(stripTrackNoise('🔥 «Звезда» [FREE DL] 🔥'), 'Звезда');
   assert.equal(stripTrackNoise('Song (free download) out now'), 'Song');

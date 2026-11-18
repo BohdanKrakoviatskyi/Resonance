@@ -81,16 +81,23 @@ export function findLyricsMatch<T extends LyricsCandidate>(
   wantDuration: number,
   speed: SpeedKind = null,
 ): { candidate: T; timeScale: number } | null {
-  let best: { candidate: T; timeScale: number; score: number } | null = null;
+  // Any record that passes the match check with timestamps wins over plain text, however the
+  // scores compare: losing sync is far worse than a slightly weaker (but accepted) match.
+  type Best = { candidate: T; timeScale: number; score: number } | null;
+  let synced: Best = null;
+  let other: Best = null;
   for (const c of candidates) {
     if (!c.syncedLyrics && !c.plainLyrics && !c.instrumental) continue;
     for (const q of queries) {
       const m = matchScore(q, { title: c.trackName ?? '', artist: c.artistName ?? '', duration: c.duration ?? 0 }, wantDuration, speed);
       if (!m) continue;
-      const score = m.score + (c.syncedLyrics ? 0.08 : 0);
-      if (!best || score > best.score) best = { candidate: c, timeScale: m.timeScale, score };
+      const entry = { candidate: c, timeScale: m.timeScale, score: m.score };
+      if (c.syncedLyrics) {
+        if (!synced || entry.score > synced.score) synced = entry;
+      } else if (!other || entry.score > other.score) other = entry;
     }
   }
+  const best = synced ?? other;
   return best && { candidate: best.candidate, timeScale: best.timeScale };
 }
 
