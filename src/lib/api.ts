@@ -1,7 +1,7 @@
 import type { LyricLine, Track } from '../types';
 import { findYouTubeFallbackCandidate, youtubeFallbackQueries } from './youtube-match';
-import { findLyricsCandidate, lyricsSearchQueries, speedVariant, stripTrackNoise, toSeconds, type LyricsCandidate } from './lyrics-match';
-import { pickBest } from './lyrics-identify';
+import { lyricsSearchQueries, speedVariant, stripTrackNoise, toSeconds, type LyricsCandidate } from './lyrics-match';
+import { findLyricsMatch, pickBest } from './lyrics-identify';
 import { fromWordLines, parseEnhancedWords } from './lyric-words';
 import { rpc } from './backend';
 import { upscaleYtmArtwork } from './ytmusic-library';
@@ -236,6 +236,19 @@ export function parseLrc(s: string): LyricLine[] {
   return out.sort((a, b) => a.t - b.t);
 }
 
+/** Stretches synced timestamps for slowed / sped-up copies (scale = playing length / original length). */
+export function scaleLyrics(d: LyricsData | null, scale: number): LyricsData | null {
+  if (!d?.synced || Math.abs(scale - 1) < 0.005) return d;
+  return {
+    ...d,
+    synced: d.synced.map((l) => ({
+      ...l,
+      t: l.t * scale,
+      ...(l.words ? { words: l.words.map((w) => ({ ...w, t: w.t * scale, d: w.d * scale })) } : {}),
+    })),
+  };
+}
+
 /**
  * Lyrics from YouTube Music (LyricFind / Musixmatch licensed, timed when available).
  * YouTube tracks use their own video id; anything else is first identified in the YouTube Music
@@ -286,6 +299,7 @@ async function fetchWordLyrics(t: Track): Promise<{ wordLevel: boolean; lines: L
       title: stripTrackNoise(t.title) || t.title,
       artist: (t.metaArtist || t.artist).replace(/\s+-\s+Topic$/i, ''),
       durationMs,
+      speed: speedVariant(t.title),
     }).catch(() => null),
     timeout,
   ]);
@@ -461,8 +475,20 @@ export async function getLyrics(t: Track, forceRefresh = false): Promise<LyricsD
     const overriddenData = lyricsDataFromRecord(override);
     if (overriddenData) return overriddenData;
   }
-  if (forceRefresh) lyricsCache.delete(t.id);
+  if (forceRefresh) {
+    lyricsCache.delete(t.id);
+    persistedLyrics.remove(t.id);
+  }
   let p = lyricsCache.get(t.id);
+  if (!p) {
+    const stored = persistedLyrics.get(t.id);
+    if (stored) {
+      p = Promise.resolve(stored);
+      lyricsCache.set(t.id, p);
+      evictLyricsCache();
+      return p;
+    }
+  }
   if (!p) {
     const lineLevel = (t.source === 'soundcloud' ? fetchSoundCloudLyrics(t) : fetchLyrics(t)).catch(() => null);
     const wordLevel = fetchWordLyrics(t).catch(() => null);
@@ -480,6 +506,7 @@ export async function getLyrics(t: Track, forceRefresh = false): Promise<LyricsD
       })
       .then((value) => {
         if (!value) lyricsCache.delete(t.id);
+        else persistedLyrics.put(t.id, value);
         return value;
       });
     lyricsCache.set(t.id, p);
@@ -487,6 +514,69 @@ export async function getLyrics(t: Track, forceRefresh = false): Promise<LyricsD
   }
   return p;
 }
+
+/**
+ * Found lyrics survive restarts so a track is looked up once, not on every play.
+ * localStorage, LRU-capped and expiring, so stale or wrong results eventually refresh.
+ */
+const persistedLyrics = (() => {
+  const KEY = 'resonance.lyrics_cache.v1';
+  const MAX = 400;
+  const TTL = 30 * 86400_000;
+  type Entry = { at: number; d: LyricsData };
+  let map: Record<string, Entry> | null = null;
+  const load = () => {
+    if (map) return map;
+    try {
+      map = JSON.parse(localStorage.getItem(KEY) || '{}') as Record<string, Entry>;
+    } catch {
+      map = {};
+    }
+    return map;
+  };
+  let saveTimer = 0;
+  const save = () => {
+    clearTimeout(saveTimer);
+    saveTimer = window.setTimeout(() => {
+      const m = load();
+      const ids = Object.keys(m);
+      if (ids.length > MAX) for (const id of ids.sort((a, b) => m[a].at - m[b].at).slice(0, ids.length - MAX)) delete m[id];
+      try {
+        localStorage.setItem(KEY, JSON.stringify(m));
+      } catch {
+        // Quota: drop the older half and retry once.
+        for (const id of Object.keys(m).sort((a, b) => m[a].at - m[b].at).slice(0, Math.ceil(ids.length / 2))) delete m[id];
+        try {
+          localStorage.setItem(KEY, JSON.stringify(m));
+        } catch {
+          /* give up; in-memory cache still works */
+        }
+      }
+    }, 800);
+  };
+  return {
+    get(id: string): LyricsData | null {
+      const e = load()[id];
+      if (!e) return null;
+      if (Date.now() - e.at > TTL) {
+        delete load()[id];
+        save();
+        return null;
+      }
+      return e.d;
+    },
+    put(id: string, d: LyricsData) {
+      load()[id] = { at: Date.now(), d };
+      save();
+    },
+    remove(id: string) {
+      if (load()[id]) {
+        delete load()[id];
+        save();
+      }
+    },
+  };
+})();
 
 async function fetchSoundCloudLyrics(track: Track): Promise<LyricsData | null> {
   const match = track.nativeId?.match(/(\d+)$/);
@@ -510,15 +600,20 @@ async function fetchSoundCloudLyrics(track: Track): Promise<LyricsData | null> {
 
 async function fetchLyrics(t: Track): Promise<LyricsData | null> {
   const durationSec = toSeconds(t.fullDuration ?? t.duration);
-  const tolerance = t.source === 'youtube' ? 8 : 4;
   const queries = lyricsSearchQueries(t);
-  let rec: LyricsCandidate | null = null;
-  for (const query of queries) {
-    const params = new URLSearchParams({ track_name: query.title, artist_name: query.artist });
-    const results = await getJson(`https://lrclib.net/api/search?${params}`);
-    rec = findLyricsCandidate(Array.isArray(results) ? results : [], query, durationSec, tolerance);
-    if (rec) break;
+  const speed = speedVariant(t.title);
+  const search = async (params: Record<string, string>): Promise<LyricsCandidate[]> => {
+    const results = await getJson(`https://lrclib.net/api/search?${new URLSearchParams(params)}`).catch(() => null);
+    return Array.isArray(results) ? (results as LyricsCandidate[]) : [];
+  };
+  // Fuzzy-scored across every query variant instead of first-strict-hit.
+  let pool = (await Promise.all(queries.slice(0, 3).map((q) => search({ track_name: q.title, artist_name: q.artist })))).flat();
+  let match = findLyricsMatch(pool, queries, durationSec, speed);
+  if (!match && queries[0]) {
+    // The artist may be a nickname: search by title alone and let scoring sort it out.
+    pool = await search({ q: queries[0].title });
+    match = findLyricsMatch(pool, queries, durationSec, speed);
   }
-  if (!rec) return null;
-  return lyricsDataFromRecord(rec);
+  if (!match) return null;
+  return scaleLyrics(lyricsDataFromRecord(match.candidate), match.timeScale);
 }

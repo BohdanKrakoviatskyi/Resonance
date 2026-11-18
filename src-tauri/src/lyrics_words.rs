@@ -86,26 +86,86 @@ pub fn norm(s: &str) -> String {
     out.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
-/// Picks the NetEase song id that matches title, artist and duration (±3 s).
-pub fn pick_song(songs: &[Value], title: &str, artist: &str, duration_ms: i64) -> Option<i64> {
+/// Share of `want`'s words found in `have` (both already normalized).
+fn word_overlap(want: &str, have: &str) -> f64 {
+    let w: Vec<&str> = want.split(' ').filter(|s| !s.is_empty()).collect();
+    if w.is_empty() {
+        return 0.0;
+    }
+    let h: std::collections::HashSet<&str> = have.split(' ').collect();
+    w.iter().filter(|x| h.contains(*x)).count() as f64 / w.len() as f64
+}
+
+/// Duration fit → (score, time scale). Mirrors the frontend's `lyrics-identify.ts`.
+fn duration_fit(want_ms: i64, have_ms: i64, speed: Option<&str>) -> Option<(f64, f64)> {
+    if want_ms <= 0 || have_ms <= 0 {
+        return Some((0.5, 1.0));
+    }
+    let ratio = want_ms as f64 / have_ms as f64;
+    match speed {
+        Some("slowed") if (1.05..=1.4).contains(&ratio) => return Some((1.0, ratio)),
+        Some("spedUp") if (0.7..=0.96).contains(&ratio) => return Some((1.0, ratio)),
+        _ => {}
+    }
+    match (want_ms - have_ms).abs() {
+        d if d <= 3000 => Some((1.0, 1.0)),
+        d if d <= 8000 => Some((0.75, 1.0)),
+        d if d <= 35000 => Some((0.35, 1.0)),
+        _ => None,
+    }
+}
+
+/// Picks the best NetEase song by fuzzy title/artist/duration score → (id, time scale).
+pub fn pick_song(songs: &[Value], title: &str, artist: &str, duration_ms: i64, speed: Option<&str>) -> Option<(i64, f64)> {
     let want_title = norm(title);
     let want_artist = norm(artist.split([',', '&']).next().unwrap_or(artist));
     if want_title.is_empty() {
         return None;
     }
+    let title_words = want_title.split(' ').count();
     songs
         .iter()
         .filter_map(|s| {
             let id = s.get("id")?.as_i64()?;
             let name = norm(s.get("name")?.as_str()?);
-            let dur = s.get("duration").and_then(Value::as_i64).unwrap_or(0);
+            let exact = name == want_title;
+            let title_sim = if exact { 1.0 } else { word_overlap(&want_title, &name) * 0.7 + word_overlap(&name, &want_title) * 0.3 };
+            if title_sim < 0.6 {
+                return None;
+            }
             let artists: Vec<String> = s.get("artists")?.as_array()?.iter().filter_map(|a| a.get("name")?.as_str().map(norm)).collect();
-            let artist_ok = artists.iter().any(|a| !a.is_empty() && (a == &want_artist || want_artist.contains(a.as_str()) || a.contains(want_artist.as_str())));
-            let dur_diff = (dur - duration_ms).abs();
-            (name == want_title && artist_ok && (duration_ms <= 0 || dur_diff <= 3000)).then_some((id, dur_diff))
+            let artist_ok = !want_artist.is_empty()
+                && artists.iter().any(|a| !a.is_empty() && (a == &want_artist || want_artist.contains(a.as_str()) || a.contains(want_artist.as_str())));
+            let have_ms = s.get("duration").and_then(Value::as_i64).unwrap_or(0);
+            let (dur_score, scale) = duration_fit(duration_ms, have_ms, speed)?;
+            // Tie-break equal scores by the closer length (1 ms ≈ 1e-7 points).
+            let tie = if duration_ms > 0 && have_ms > 0 && scale == 1.0 { (duration_ms - have_ms).abs() as f64 * 1e-7 } else { 0.0 };
+            // No artist evidence: only a distinctive exact title of matching length.
+            if !artist_ok && !(exact && dur_score >= 1.0 && title_words >= 3) {
+                return None;
+            }
+            let score = title_sim * 0.5 + if artist_ok { 0.3 } else { 0.0 } + dur_score * 0.2;
+            (score >= 0.62).then_some((id, scale, score - tie))
         })
-        .min_by_key(|(_, d)| *d)
-        .map(|(id, _)| id)
+        // Strictly-better replaces, so exact ties keep NetEase's own search ranking.
+        .fold(None::<(i64, f64, f64)>, |best, c| match best {
+            Some(b) if b.2 >= c.2 => Some(b),
+            _ => Some(c),
+        })
+        .map(|(id, scale, _)| (id, scale))
+}
+
+fn scale_lines(lines: &mut [WordLine], scale: f64) {
+    if (scale - 1.0).abs() < 0.005 {
+        return;
+    }
+    for l in lines {
+        l.start_ms = (l.start_ms as f64 * scale).round() as i64;
+        for w in &mut l.words {
+            w.start_ms = (w.start_ms as f64 * scale).round() as i64;
+            w.dur_ms = ((w.dur_ms as f64 * scale).round() as i64).max(1);
+        }
+    }
 }
 
 async fn get(http: &reqwest::Client, url: &str, query: &[(&str, String)]) -> Result<Value, String> {
@@ -165,20 +225,22 @@ pub struct NeteaseLyrics {
 
 /// Word-timed lines when available, otherwise NetEase's line-synced lyrics; empty when no trustworthy match.
 #[tauri::command]
-pub async fn lyrics_word_synced(title: String, artist: String, duration_ms: i64) -> Result<NeteaseLyrics, String> {
+pub async fn lyrics_word_synced(title: String, artist: String, duration_ms: i64, speed: Option<String>) -> Result<NeteaseLyrics, String> {
     let http = reqwest::Client::new();
     let q = format!("{artist} {title}");
-    let found = get(&http, SEARCH, &[("s", q), ("type", "1".into()), ("limit", "10".into())]).await?;
+    let found = get(&http, SEARCH, &[("s", q), ("type", "1".into()), ("limit", "15".into())]).await?;
     let songs = found.pointer("/result/songs").and_then(Value::as_array).cloned().unwrap_or_default();
-    let Some(id) = pick_song(&songs, &title, &artist, duration_ms) else {
+    let Some((id, scale)) = pick_song(&songs, &title, &artist, duration_ms, speed.as_deref()) else {
         return Ok(NeteaseLyrics { word_level: false, lines: Vec::new() });
     };
     let lyr = get(&http, LYRIC, &[("id", id.to_string()), ("lv", "1".into()), ("yv", "1".into()), ("tv", "-1".into())]).await?;
-    let words = parse_yrc(lyr.pointer("/yrc/lyric").and_then(Value::as_str).unwrap_or_default());
+    let mut words = parse_yrc(lyr.pointer("/yrc/lyric").and_then(Value::as_str).unwrap_or_default());
     if !words.is_empty() {
+        scale_lines(&mut words, scale);
         return Ok(NeteaseLyrics { word_level: true, lines: words });
     }
-    let lines = parse_lrc_lines(lyr.pointer("/lrc/lyric").and_then(Value::as_str).unwrap_or_default());
+    let mut lines = parse_lrc_lines(lyr.pointer("/lrc/lyric").and_then(Value::as_str).unwrap_or_default());
+    scale_lines(&mut lines, scale);
     Ok(NeteaseLyrics { word_level: false, lines })
 }
 
@@ -207,7 +269,7 @@ mod tests {
     #[test]
     #[ignore]
     fn live_netease_lookup() {
-        let res = tauri::async_runtime::block_on(lyrics_word_synced("One More Time".into(), "Daft Punk".into(), 320_000)).unwrap();
+        let res = tauri::async_runtime::block_on(lyrics_word_synced("One More Time".into(), "Daft Punk".into(), 320_000, None)).unwrap();
         assert!(res.word_level);
         let lines = res.lines;
         assert!(lines.len() > 10, "got {} lines", lines.len());
@@ -237,9 +299,15 @@ mod tests {
             json!({"id": 2, "name": "One More Time", "duration": 200000, "artists": [{"name": "Cover Band"}]}),
             json!({"id": 3, "name": "One More Time (Live)", "duration": 321500, "artists": [{"name": "Daft Punk"}]}),
         ];
-        assert_eq!(pick_song(&songs, "One More Time", "Daft Punk", 321000), Some(3), "closest duration among strict matches");
-        assert_eq!(pick_song(&songs, "One More Time", "Daft Punk", 250000), None, "duration too far");
-        assert_eq!(pick_song(&songs, "Other Song", "Daft Punk", 320000), None);
-        assert_eq!(pick_song(&songs, "One More Time", "Daft Punk, Romanthony", 320000), Some(1));
+        let id = |r: Option<(i64, f64)>| r.map(|x| x.0);
+        assert_eq!(id(pick_song(&songs, "One More Time", "Daft Punk", 320500, None)), Some(1), "exact title and duration wins");
+        assert_eq!(id(pick_song(&songs, "One More Time", "Daft Punk", 400000, None)), None, "duration too far");
+        assert_eq!(id(pick_song(&songs, "Other Song", "Daft Punk", 320000, None)), None);
+        assert_eq!(id(pick_song(&songs, "One More Time", "Daft Punk, Romanthony", 320000, None)), Some(1));
+        assert_eq!(id(pick_song(&songs, "One More Time", "Some Uploader", 200000, None)), Some(2), "unknown artist: a 3-word exact title with the exact length is accepted");
+        assert_eq!(id(pick_song(&songs, "One More", "Some Uploader", 200000, None)), None, "but not a short title");
+        let slowed = pick_song(&songs, "One More Time", "Daft Punk", 384000, Some("slowed")).unwrap();
+        assert_eq!(slowed.0, 1);
+        assert!((slowed.1 - 1.2).abs() < 1e-9);
     }
 }
