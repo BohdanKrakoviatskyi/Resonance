@@ -8,12 +8,15 @@ import {
   setCrossfadeCurve,
   setCrossfadeDuration,
   setCrossfadeEnabled,
+  setFx,
+  setFxPreset,
   setNormalizationEnabled,
   setNormalizationTarget,
   type CrossfadeCurve,
   type NormalizationTarget,
 } from '../state/player';
 import { go } from '../state/ui';
+import { detectPreset, semitones, SPEED_MAX, SPEED_MIN, type FxPreset } from '../lib/audio-fx';
 
 function Card({ icon, title, sub, children, i }: { icon: IconName; title: string; sub?: string; children: ReactNode; i: number }) {
   return (
@@ -131,7 +134,52 @@ export default function AudioSettings() {
             </div>
           </div>
         </Card>
+
+        <FxCard />
       </div>
     </div>
+  );
+}
+
+function FxCard() {
+  const fx = useStore(player, (s) => s.fx);
+  const preset = detectPreset(fx);
+  const st = semitones(fx);
+  const pitchLabel = fx.keepPitch || Math.abs(st) < 0.05 ? '' : ` · ${st > 0 ? '+' : ''}${st.toFixed(1)} ${t('semitonesUnit')}`;
+
+  return (
+    <Card icon="animation" title={t('fxTitle')} sub={t('fxDesc')} i={3}>
+      <Segmented<FxPreset>
+        value={preset}
+        onChange={(v) => v !== 'custom' && setFxPreset(v)}
+        options={[
+          { value: 'off', label: t('fxOff') },
+          { value: 'slowedReverb', label: t('fxSlowedReverb'), icon: 'water_drop' },
+          { value: 'nightcore', label: t('fxNightcore'), icon: 'bolt' },
+          ...(preset === 'custom' ? [{ value: 'custom' as const, label: t('fxCustom'), icon: 'tune' as const }] : []),
+        ]}
+      />
+
+      <Row label={t('fxSpeed')} value={`${fx.speed.toFixed(2)}×${pitchLabel}`}>
+        <Slider value={fx.speed} min={SPEED_MIN} max={SPEED_MAX} step={0.01} onChange={(v) => setFx({ speed: v })} label={t('fxSpeed')} />
+      </Row>
+
+      <div className="mt-5">
+        <div className="mb-2 text-sm font-semibold">{t('fxPitchMode')}</div>
+        <Segmented
+          value={fx.keepPitch ? 'keep' : 'vinyl'}
+          onChange={(v) => setFx({ keepPitch: v === 'keep' })}
+          options={[
+            { value: 'keep', label: t('fxKeepPitch') },
+            { value: 'vinyl', label: t('fxVinyl') },
+          ]}
+        />
+      </div>
+
+      <Row label={t('fxReverb')} value={`${Math.round(fx.reverb * 100)}%`}>
+        <Slider value={fx.reverb} min={0} max={1} step={0.01} onChange={(v) => setFx({ reverb: v })} label={t('fxReverb')} />
+      </Row>
+      <p className="mt-2.5 text-xs text-on-surface-variant">{t('fxNote')}</p>
+    </Card>
   );
 }
