@@ -90,17 +90,27 @@ jobs:
           cache: npm
           cache-dependency-path: mobile/package-lock.json
 
-      - uses: actions/setup-java@v4
+      - uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: "17"
 
-      - uses: android-actions/setup-android@v3
-
-      - name: Install Android SDK 36, Build-Tools & NDK 27
+      - name: Configure Preinstalled Android SDK 36, Build-Tools & NDK
         run: |
-          yes | sdkmanager --licenses >/dev/null || true
-          sdkmanager "platforms;android-36" "build-tools;35.0.0" "ndk;27.2.12479018"
+          SDK_ROOT="${ANDROID_HOME:-/usr/local/lib/android/sdk}"
+          SDKMANAGER=$(ls -d "${SDK_ROOT}"/cmdline-tools/*/bin/sdkmanager | sort -V | tail -n 1)
+          echo "Using sdkmanager: ${SDKMANAGER}"
+          yes | "${SDKMANAGER}" --licenses >/dev/null || true
+          "${SDKMANAGER}" "platform-tools" "platforms;android-36" "build-tools;35.0.0"
+          if ! ls -d "${SDK_ROOT}"/ndk/27* >/dev/null 2>&1 && ! ls -d "${SDK_ROOT}"/ndk/28* >/dev/null 2>&1; then
+            "${SDKMANAGER}" "ndk;27.2.12479018"
+          fi
+          NDK_DIR=$(ls -d "${SDK_ROOT}"/ndk/* | sort -V | tail -n 1)
+          echo "ANDROID_HOME=${SDK_ROOT}" >> "$GITHUB_ENV"
+          echo "ANDROID_SDK_ROOT=${SDK_ROOT}" >> "$GITHUB_ENV"
+          echo "ANDROID_NDK_HOME=${NDK_DIR}" >> "$GITHUB_ENV"
+          echo "NDK_HOME=${NDK_DIR}" >> "$GITHUB_ENV"
+          echo "Selected NDK: ${NDK_DIR}"
 
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -120,18 +130,12 @@ jobs:
 
       - name: Initialize & Configure Android Project
         working-directory: mobile
-        env:
-          NDK_HOME: ${{ env.ANDROID_HOME }}/ndk/27.2.12479018
-          ANDROID_NDK_HOME: ${{ env.ANDROID_HOME }}/ndk/27.2.12479018
         run: |
           npx tauri android init --ci --skip-targets-install
           node scripts/configure-android.mjs
 
       - name: Build Release APK (arm64-v8a)
         working-directory: mobile
-        env:
-          NDK_HOME: ${{ env.ANDROID_HOME }}/ndk/27.2.12479018
-          ANDROID_NDK_HOME: ${{ env.ANDROID_HOME }}/ndk/27.2.12479018
         run: |
           TOOLCHAIN="${ANDROID_NDK_HOME}/toolchains/llvm/prebuilt/linux-x86_64"
           export CC_aarch64_linux_android="${TOOLCHAIN}/bin/aarch64-linux-android26-clang"
