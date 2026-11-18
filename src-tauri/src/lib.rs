@@ -2,6 +2,7 @@ pub mod auth_windows;
 pub mod backend;
 pub mod discord;
 pub mod lastfm;
+pub mod local;
 pub mod playlist_import;
 pub mod yt;
 
@@ -125,6 +126,7 @@ pub fn run() {
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
+        .plugin(tauri_plugin_dialog::init())
         .manage(YtMusicLoginState::default())
         .manage(SoundCloudLoginState::default())
         .manage(YtStreamProxy::default())
@@ -193,6 +195,8 @@ pub fn run() {
             lastfm::lastfm_logout,
             lastfm::lastfm_now_playing,
             lastfm::lastfm_scrobble,
+            local::local_scan,
+            local::local_base_url,
             backend_rpc
         ])
         .run(tauri::generate_context!())

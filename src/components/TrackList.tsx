@@ -112,6 +112,13 @@ export function TrackMenu({ track, anchor, onClose, playlistId }: { track: Track
 }
 
 export function SourcePill({ track }: { track: Track }) {
+  if (track.source === 'local') {
+    return (
+      <span className="provider-logo grid place-items-center text-on-surface-variant" title={t('localFiles')} aria-label={t('localFiles')}>
+        <Icon name="folder" fill size={16} />
+      </span>
+    );
+  }
   const label = track.source === 'soundcloud' ? 'SoundCloud' : 'YouTube Music';
   const logo = track.source === 'soundcloud' ? soundcloudLogo : youtubeMusicLogo;
   return <img className="provider-logo" src={logo} alt={label} title={label} />;

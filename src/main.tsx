@@ -7,6 +7,7 @@ import Splash from './components/Splash';
 import { initFx } from './lib/motion';
 import { initPlayer } from './state/player';
 import { initIntegrations } from './state/integrations';
+import { initLocalLibrary } from './state/local-library';
 import { initializeShortcutRuntime } from './state/shortcut-runtime';
 import { initTheme } from './state/theme';
 
@@ -35,6 +36,7 @@ if (!isSplash) {
   initPlayer();
   initializeShortcutRuntime();
   initIntegrations();
+  initLocalLibrary();
 }
 initTheme();
 initFx();

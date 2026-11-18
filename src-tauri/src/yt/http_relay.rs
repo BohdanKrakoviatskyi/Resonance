@@ -108,6 +108,12 @@ pub async fn handle_proxy_connection(
     }
 
     let path = raw_target.split('?').next().unwrap_or(raw_target);
+    if let Some(id) = path.strip_prefix("/local/") {
+        return serve_registered_local(&mut socket, &method, range_header.as_deref(), id, &cors_origin).await;
+    }
+    if let Some(id) = path.strip_prefix("/local-cover/") {
+        return serve_local_cover(&mut socket, id, &cors_origin).await;
+    }
     let is_prefetch = raw_target.contains("prefetch=1");
     let video_id = path.trim_start_matches("/yt-stream/").trim();
     if !is_valid_video_id(video_id) {
@@ -487,6 +493,55 @@ async fn write_memory_range(
     );
     let _ = socket.write_all(hdr.as_bytes()).await;
     let _ = socket.write_all(data).await;
+    Ok(())
+}
+
+async fn respond_status(socket: &mut TcpStream, status: &str) -> Result<(), String> {
+    let _ = socket
+        .write_all(format!("HTTP/1.1 {status}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").as_bytes())
+        .await;
+    Ok(())
+}
+
+/// Serves a file from the user's local library. Only ids registered by `local_scan` resolve.
+async fn serve_registered_local(
+    socket: &mut TcpStream,
+    method: &str,
+    range_header: Option<&str>,
+    id: &str,
+    cors_origin: &str,
+) -> Result<(), String> {
+    if !crate::local::is_valid_id(id) {
+        return respond_status(socket, "400 Bad Request").await;
+    }
+    let Some(path) = crate::local::lookup(id) else {
+        return respond_status(socket, "404 Not Found").await;
+    };
+    let Ok(meta) = tokio::fs::metadata(&path).await else {
+        return respond_status(socket, "404 Not Found").await;
+    };
+    let ct = crate::local::content_type(&path);
+    serve_local_file(socket, method, range_header, &path, meta.len(), ct, cors_origin).await
+}
+
+async fn serve_local_cover(socket: &mut TcpStream, id: &str, cors_origin: &str) -> Result<(), String> {
+    if !crate::local::is_valid_id(id) {
+        return respond_status(socket, "400 Bad Request").await;
+    }
+    let Some(path) = crate::local::lookup(id) else {
+        return respond_status(socket, "404 Not Found").await;
+    };
+    let cover = tokio::task::spawn_blocking(move || crate::local::cover_bytes(&path)).await.ok().flatten();
+    let Some((mime, bytes)) = cover else {
+        return respond_status(socket, "404 Not Found").await;
+    };
+    let hdr = format!(
+        "HTTP/1.1 200 OK\r\n{cors_origin}Content-Type: {mime}\r\nContent-Length: {}\r\nCache-Control: private, max-age=86400\r\nConnection: close\r\n\r\n",
+        bytes.len()
+    );
+    if socket.write_all(hdr.as_bytes()).await.is_ok() {
+        let _ = socket.write_all(&bytes).await;
+    }
     Ok(())
 }
 

@@ -11,6 +11,7 @@ import { rankRecommendations } from '../lib/recommendations';
 import { createPendingAudioSeek, pendingAudioSeekFor, type PendingAudioSeek } from '../lib/pending-audio-seek';
 import { canFallbackToOutgoingDeck, evaluateAutoCrossfadeTrigger, planAutoCrossfade } from '../lib/crossfade-plan';
 import { stepQueueIndex, shouldAdvanceAfterError } from '../lib/player-queue';
+import { isLocalTrack, localStreamUrl } from './local-library';
 import { clampFx, FX_OFF, FX_PRESETS, makeImpulse, type FxPreset, type FxSettings } from '../lib/audio-fx';
 import { onProviderState, providerCommand } from '../lib/provider-player';
 import type { Track } from '../types';
@@ -1180,6 +1181,15 @@ async function resolvePlayableStream(
       cacheHit: res.cacheHit,
       resolveMs: res.resolveMs ?? Math.round(performance.now() - t0),
       attempts: res.attempts,
+    };
+  }
+  if (isLocalTrack(tr)) {
+    return {
+      url: await localStreamUrl(tr),
+      hls: false,
+      preview: false,
+      resolveMs: Math.round(performance.now() - t0),
+      attempts: [{ method: 'local_file', outcome: 'ok', durationMs: Math.round(performance.now() - t0) }],
     };
   }
   if (tr.source === 'soundcloud' && tr.nativeId) {
