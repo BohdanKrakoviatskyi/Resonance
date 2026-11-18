@@ -1,0 +1,210 @@
+name: Mobile APK Build
+
+on:
+  push:
+    branches:
+      - "feat/mobile*"
+    tags:
+      - "mobile-v*"
+
+permissions:
+  contents: write
+
+jobs:
+  verify-desktop-untouched:
+    name: Verify Desktop Untouched & Green
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Assert zero changes to Desktop files
+        run: |
+          git fetch origin main:refs/remotes/origin/main
+          DIFF=$(git diff origin/main...HEAD -- src/ src-tauri/ package.json package-lock.json vite.config.ts tsconfig.json index.html scripts/ .github/workflows/release.yml)
+          if [ -n "$DIFF" ]; then
+            echo "ERROR: Desktop files were modified on mobile branch!"
+            echo "$DIFF"
+            exit 1
+          fi
+          echo "Verified: 0 bytes changed in Desktop files."
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+      - run: npx tsc --noEmit
+      - run: npm test
+
+  check-ios:
+    name: Verify iOS Target Compilation
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: mobile/package-lock.json
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-ios
+
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: mobile/src-tauri
+
+      - name: Build Mobile Frontend
+        working-directory: mobile
+        run: |
+          npm ci
+          npm run typecheck
+          npm run build
+
+      - name: Cargo Check for aarch64-apple-ios
+        working-directory: mobile/src-tauri
+        run: |
+          SDK_PATH=$(xcrun --sdk iphoneos --show-sdk-path)
+          export BINDGEN_EXTRA_CLANG_ARGS_aarch64_apple_ios="--sysroot=${SDK_PATH} --target=arm64-apple-ios15.0"
+          cargo check --lib --target aarch64-apple-ios
+
+  build-android-apk:
+    name: Build Signed Android Release APK
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Host Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential libclang-dev pkg-config zip unzip
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: mobile/package-lock.json
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - uses: android-actions/setup-android@v3
+
+      - name: Install Android SDK 36, Build-Tools & NDK 27
+        run: |
+          yes | sdkmanager --licenses >/dev/null || true
+          sdkmanager "platforms;android-36" "build-tools;35.0.0" "ndk;27.2.12479018"
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android
+
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: mobile/src-tauri
+
+      - name: Install Mobile Frontend & Run Rust Unit Tests
+        working-directory: mobile
+        run: |
+          npm ci
+          npm run typecheck
+          npm run build
+          cargo test --manifest-path src-tauri/Cargo.toml
+
+      - name: Initialize & Configure Android Project
+        working-directory: mobile
+        env:
+          NDK_HOME: ${{ env.ANDROID_HOME }}/ndk/27.2.12479018
+          ANDROID_NDK_HOME: ${{ env.ANDROID_HOME }}/ndk/27.2.12479018
+        run: |
+          npx tauri android init --ci --skip-targets-install
+          node scripts/configure-android.mjs
+
+      - name: Build Release APK (arm64-v8a)
+        working-directory: mobile
+        env:
+          NDK_HOME: ${{ env.ANDROID_HOME }}/ndk/27.2.12479018
+          ANDROID_NDK_HOME: ${{ env.ANDROID_HOME }}/ndk/27.2.12479018
+        run: |
+          TOOLCHAIN="${ANDROID_NDK_HOME}/toolchains/llvm/prebuilt/linux-x86_64"
+          export CC_aarch64_linux_android="${TOOLCHAIN}/bin/aarch64-linux-android26-clang"
+          export CXX_aarch64_linux_android="${TOOLCHAIN}/bin/aarch64-linux-android26-clang++"
+          export AR_aarch64_linux_android="${TOOLCHAIN}/bin/llvm-ar"
+          export CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER="${TOOLCHAIN}/bin/aarch64-linux-android26-clang"
+          export BINDGEN_EXTRA_CLANG_ARGS_aarch64_linux_android="--sysroot=${TOOLCHAIN}/sysroot --target=aarch64-linux-android26"
+          npx tauri android build --apk --target aarch64
+
+      - name: Align & Sign Release APK
+        working-directory: mobile
+        env:
+          MOBILE_KEYSTORE_BASE64: ${{ secrets.MOBILE_KEYSTORE_BASE64 }}
+          MOBILE_KEYSTORE_PASSWORD: ${{ secrets.MOBILE_KEYSTORE_PASSWORD }}
+          MOBILE_KEY_ALIAS: ${{ secrets.MOBILE_KEY_ALIAS }}
+        run: |
+          BUILD_TOOLS=$(ls -d "${ANDROID_HOME}"/build-tools/* | sort -V | tail -n 1)
+          echo "Using Android build-tools: $BUILD_TOOLS"
+          UNSIGNED_APK=$(find src-tauri/gen/android/app/build/outputs/apk -type f -name "*release*.apk" | head -n 1)
+          if [ -z "$UNSIGNED_APK" ]; then
+            UNSIGNED_APK=$(find src-tauri/gen/android/app/build/outputs/apk -type f -name "*.apk" | head -n 1)
+          fi
+          if [ -z "$UNSIGNED_APK" ]; then
+            echo "ERROR: Built APK not found!"
+            find src-tauri/gen/android/app/build/outputs -maxdepth 5 || true
+            exit 1
+          fi
+          echo "Found built APK: $UNSIGNED_APK"
+
+          KEYSTORE_PATH="${RUNNER_TEMP}/resonance-mobile.p12"
+          if [ -n "$MOBILE_KEYSTORE_BASE64" ] && [ -n "$MOBILE_KEYSTORE_PASSWORD" ]; then
+            echo "$MOBILE_KEYSTORE_BASE64" | base64 -d > "$KEYSTORE_PATH"
+            KS_PASS="$MOBILE_KEYSTORE_PASSWORD"
+            KS_ALIAS="${MOBILE_KEY_ALIAS:-resonance}"
+          else
+            KS_PASS="ResonanceMobileSign2026"
+            KS_ALIAS="resonance"
+            keytool -genkeypair -v \
+              -storetype PKCS12 \
+              -keystore "$KEYSTORE_PATH" \
+              -alias "$KS_ALIAS" \
+              -keyalg RSA \
+              -keysize 2048 \
+              -validity 10000 \
+              -storepass "$KS_PASS" \
+              -keypass "$KS_PASS" \
+              -dname "CN=Resonance Mobile, OU=Mobile, O=Resonance, L=Internet, S=Internet, C=US"
+          fi
+
+          mkdir -p release-out
+          ALIGNED_APK="${RUNNER_TEMP}/aligned.apk"
+          FINAL_APK="release-out/Resonance-Mobile-v0.1.0-arm64-v8a.apk"
+
+          "${BUILD_TOOLS}/zipalign" -f -p 4 "$UNSIGNED_APK" "$ALIGNED_APK"
+          "${BUILD_TOOLS}/apksigner" sign \
+            --ks "$KEYSTORE_PATH" \
+            --ks-key-alias "$KS_ALIAS" \
+            --ks-pass "pass:${KS_PASS}" \
+            --key-pass "pass:${KS_PASS}" \
+            --v1-signing-enabled true \
+            --v2-signing-enabled true \
+            --v3-signing-enabled true \
+            --out "$FINAL_APK" \
+            "$ALIGNED_APK"
+
+          "${BUILD_TOOLS}/apksigner" verify --verbose "$FINAL_APK"
+          rm -f "$KEYSTORE_PATH" "$ALIGNED_APK"
+          ls -lh "$FINAL_APK"
+
+      - name: Upload Signed APK Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Resonance-Mobile-APK
+          path: mobile/release-out/Resonance-Mobile-v0.1.0-arm64-v8a.apk
+          if-no-files-found: error
+          retention-days: 30
