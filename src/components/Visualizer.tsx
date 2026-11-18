@@ -1,13 +1,16 @@
 import { useEffect, useRef } from 'react';
 import { binSpectrum } from '../lib/eq-curve';
 import { createStore, persist } from '../lib/util';
-import { SPECTRUM_BINS, acquireSpectrum, readSpectrum } from '../state/player';
+import { SPECTRUM_BINS, acquireSpectrum, isWebKitPlayback, readSpectrum } from '../state/player';
 
 export type VizMode = 'off' | 'bars' | 'wave';
 export const VIZ_MODES: VizMode[] = ['off', 'bars', 'wave'];
 
-export const vizStore = createStore({ mode: 'bars' as VizMode });
-persist('resonance.viz.v1', vizStore, (s) => ({ mode: s.mode }));
+// The visualizer needs the Web Audio graph, which routes all playback (and the volume control)
+// through audio nodes. On WebKit that has misbehaved, so there it stays opt-in; elsewhere it's on.
+// v2 key: v1 could hold a "bars" default that was never a choice.
+export const vizStore = createStore({ mode: (isWebKitPlayback() ? 'off' : 'bars') as VizMode });
+persist('resonance.viz.v2', vizStore, (s) => ({ mode: s.mode }));
 
 export const cycleViz = () => {
   const i = VIZ_MODES.indexOf(vizStore.get().mode);
