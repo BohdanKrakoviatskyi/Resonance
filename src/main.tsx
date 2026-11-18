@@ -10,6 +10,7 @@ import { initIntegrations } from './state/integrations';
 import { initLocalLibrary } from './state/local-library';
 import { initOffline } from './state/offline';
 import { initCustomCss } from './state/custom-css';
+import { initWhisper } from './state/whisper';
 import { initializeShortcutRuntime } from './state/shortcut-runtime';
 import { initTheme } from './state/theme';
 
@@ -41,6 +42,7 @@ if (!isSplash) {
   initLocalLibrary();
   initOffline();
   initCustomCss();
+  initWhisper();
 }
 initTheme();
 initFx();

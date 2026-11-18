@@ -1210,6 +1210,12 @@ async function resolvePlayableStream(
   };
 }
 
+/** Stream URL for offline analysis (speech recognition). Uses the same resolver as playback. */
+export async function streamUrlForAnalysis(tr: Track): Promise<{ url: string; hls: boolean }> {
+  const s = await resolvePlayableStream(tr, undefined, undefined, false);
+  return { url: s.url, hls: s.hls };
+}
+
 /**
  * Ждёт готовности потока на `<audio>` (`canplay` / `loadeddata` или `readyState >= 2`) с проверкой `requestId`
  * перед вызовом `el.play()`, чтобы исключить ложные `pause`/`error` во время резолва.

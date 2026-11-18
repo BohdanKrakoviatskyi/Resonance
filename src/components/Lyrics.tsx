@@ -16,7 +16,10 @@ import { stripTrackNoise } from '../lib/lyrics-match';
 import { parseLrcFile } from '../lib/lrc-file';
 import { wordProgress } from '../lib/lyric-words';
 import { LYRICS_OFFSET_STEP, nudgeLyricsOffset, setLyricsOffset, useLyricsOffset } from '../state/lyrics-offset';
-import { onFrame, player, seek, toggle } from '../state/player';
+import { currentTrack, onFrame, player, seek, toggle } from '../state/player';
+import { transcribeTrack, whisper } from '../state/whisper';
+import { go } from '../state/ui';
+import { useStore } from '../lib/util';
 import type { LyricLine, Track } from '../types';
 
 type LState =
@@ -694,10 +697,58 @@ function ManualLyricsPicker({
   );
 }
 
+/** "No lyrics" helper: recognize them locally, or point to the settings to get a model. */
+function RecognizeLyrics({ track }: { track: Track }) {
+  const busy = useStore(whisper, (s) => s.activeTrack === track.id);
+  const ready = useStore(whisper, (s) => s.models.some((m) => m.id === s.model && m.installed));
+  const error = useStore(whisper, (s) => s.error);
+  if (busy) {
+    return (
+      <span className="mt-1 flex items-center gap-2 text-sm text-on-surface-variant">
+        <Loader size={18} />
+        {t('whisperRunning')}
+      </span>
+    );
+  }
+  return (
+    <div className="mt-1 flex flex-col items-center gap-1.5">
+      <button
+        type="button"
+        data-ripple
+        className="sl inline-flex items-center gap-2 rounded-full bg-primary/16 px-4 py-2 text-sm font-semibold text-primary transition hover:bg-primary/24"
+        onClick={() => (ready ? void transcribeTrack(track) : go({ name: 'audio' }))}
+      >
+        <Icon name="auto_awesome" size={18} />
+        {ready ? t('whisperRecognize') : t('whisperSetup')}
+      </button>
+      {error && <span className="max-w-[260px] text-center text-xs text-error">{error}</span>}
+    </div>
+  );
+}
+
 export function Lyrics({ track, variant, active = true }: { track: Track | null; variant: 'panel' | 'imm'; active?: boolean }) {
   const [rev, setRev] = useState(0);
   const st = useLyrics(track, rev);
   const offset = useLyricsOffset(track?.id ?? '');
+  const completed = useStore(whisper, (s) => s.completed);
+  const auto = useStore(whisper, (s) => s.auto);
+  const modelReady = useStore(whisper, (s) => s.models.some((m) => m.id === s.model && m.installed));
+
+  // Recognition finished for this track (from any view): reload to show the stored lyrics.
+  useEffect(() => {
+    if (track && completed.startsWith(`${track.id}:`)) setRev((r) => r + 1);
+  }, [completed, track]);
+
+  // Auto mode: after a few seconds of actual listening (skipped tracks never start a job).
+  const noLyrics = st.status === 'none' && !st.instrumental;
+  useEffect(() => {
+    if (!track || !noLyrics || !auto || !modelReady) return;
+    const timer = window.setTimeout(() => {
+      if (currentTrack()?.id === track.id && player.get().playing) void transcribeTrack(track);
+    }, 8000);
+    return () => clearTimeout(timer);
+  }, [track, noLyrics, auto, modelReady]);
+
   if (!track) return null;
 
   return (
@@ -720,6 +771,7 @@ export function Lyrics({ track, variant, active = true }: { track: Track | null;
             <Icon name={st.instrumental ? 'piano' : 'lyrics'} size={34} className="text-on-secondary-container" />
           </Shape>
           <span>{st.instrumental ? t('instrumental') : t('noLyrics')}</span>
+          {!st.instrumental && <RecognizeLyrics track={track} />}
         </div>
       ) : st.status === 'plain' ? (
         <PlainLyrics key={`${track.id}:${rev}`} lines={st.lines} preview={st.preview} variant={variant} />
