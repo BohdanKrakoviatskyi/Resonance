@@ -4,6 +4,7 @@ import { IconButton, Menu, Slider, usePresence } from './ui';
 import { ArtCover, Cover } from './Cover';
 import { EqPanel } from './EqPanel';
 import { Lyrics } from './Lyrics';
+import { Visualizer, cycleViz, vizStore } from './Visualizer';
 import { Controls, Seek, TimeNow, TimeTotal } from './Seek';
 import { DislikeButton, LikeButton, PlaylistPicker, SourcePill } from './TrackList';
 import { clamp, cx, useStore } from '../lib/util';
@@ -284,6 +285,7 @@ export function Immersive() {
   const [anchor, setAnchor] = useState<HTMLElement | null>(null);
   const [fs, setFs] = useState(false);
   const [rightMode, setRightMode] = useState<'lyrics' | 'eq'>('lyrics');
+  const vizMode = useStore(vizStore, (s) => s.mode);
 
   useEffect(() => {
     const f = () => setFs(!!document.fullscreenElement);
@@ -306,9 +308,18 @@ export function Immersive() {
   return (
     <div className="immersive" data-live={vt ? undefined : true} data-visible={vt ? true : visible} role="dialog" aria-modal="true" aria-label={t('fullscreenLyrics')}>
       <div className="imm-scrim" />
+      {vizMode !== 'off' && open && <Visualizer mode={vizMode} />}
       <div className="imm-top">
         <div className="flex flex-wrap items-center justify-end gap-2">
           <TopBarCrossfadePill />
+          <IconButton
+            icon="animation"
+            label={`${t('visualizer')}: ${t(vizMode === 'off' ? 'vizOff' : vizMode === 'bars' ? 'vizBars' : 'vizWave')}`}
+            variant="glass"
+            selected={vizMode !== 'off'}
+            onClick={cycleViz}
+            tip="bottom"
+          />
           <div className="mr-1 inline-flex items-center gap-1 rounded-full bg-on-surface/9 p-1 ring-1 ring-white/10 backdrop-blur-md" role="group">
             <button
               type="button"
