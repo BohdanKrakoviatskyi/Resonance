@@ -201,6 +201,7 @@ pub fn run() {
             local::local_scan,
             local::local_base_url,
             lyrics_words::lyrics_word_synced,
+            yt::lyrics_ytm::ytm_lyrics,
             offline::offline_download,
             offline::offline_remove,
             offline::offline_list,
