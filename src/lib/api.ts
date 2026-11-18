@@ -506,7 +506,9 @@ export async function getLyrics(t: Track, forceRefresh = false): Promise<LyricsD
       })
       .then((value) => {
         if (!value) lyricsCache.delete(t.id);
-        else persistedLyrics.put(t.id, value);
+        // Only timed lyrics are final. Plain text may be the result of a synced source timing out,
+        // so it is kept for this session only and looked up again after a restart.
+        else if (value.synced?.length) persistedLyrics.put(t.id, value);
         return value;
       });
     lyricsCache.set(t.id, p);
@@ -520,7 +522,13 @@ export async function getLyrics(t: Track, forceRefresh = false): Promise<LyricsD
  * localStorage, LRU-capped and expiring, so stale or wrong results eventually refresh.
  */
 const persistedLyrics = (() => {
-  const KEY = 'resonance.lyrics_cache.v1';
+  // v2: v1 could hold plain-text results that hid timed lyrics found later.
+  const KEY = 'resonance.lyrics_cache.v2';
+  try {
+    localStorage.removeItem('resonance.lyrics_cache.v1');
+  } catch {
+    /* ignore */
+  }
   const MAX = 400;
   const TTL = 30 * 86400_000;
   type Entry = { at: number; d: LyricsData };
@@ -617,3 +625,11 @@ async function fetchLyrics(t: Track): Promise<LyricsData | null> {
   if (!match) return null;
   return scaleLyrics(lyricsDataFromRecord(match.candidate), match.timeScale);
 }
+
+/** Individual lyrics sources, for diagnostics (which source found what for a track). */
+export const lyricsSources = {
+  lrclib: (t: Track) => fetchLyrics(t),
+  soundcloud: (t: Track) => fetchSoundCloudLyrics(t),
+  netease: (t: Track) => fetchWordLyrics(t),
+  ytm: (t: Track) => fetchYtmLyrics(t),
+};

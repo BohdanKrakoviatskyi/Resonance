@@ -59,6 +59,9 @@ export function stripTrackNoise(value: string): string {
     .replace(/[«»“”„]/g, ' ')
     .replace(/\s*[[(]\s*(?:free(?:\s*(?:dl|download))?|out now|premiere|new|exclusive|explicit|clean|bass\s*boosted)\s*[\])]/gi, ' ')
     .replace(/\b(?:free\s+download|out\s+now)\b/gi, ' ')
+    // Release-version markers: same words, same lyrics ("(Remastered 2011)", "- Radio Edit").
+    .replace(/\s*[[(][^\])]*\b(?:remaster(?:ed)?|radio\s+edit|single\s+version|album\s+version|original\s+version|mono|stereo|deluxe|bonus\s+track|edit)\b[^\])]*[\])]/gi, ' ')
+    .replace(/\s+[-–—]\s+(?:(?:\d{4}\s+)?remaster(?:ed)?(?:\s+\d{4})?(?:\s+version)?|radio\s+edit|single\s+version|album\s+version|mono|stereo)\s*$/i, '')
     .replace(/https?:\/\/\S+/gi, ' ')
     .replace(/#\S+/g, ' ')
     .replace(/\+\S+/g, ' ')

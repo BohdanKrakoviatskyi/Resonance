@@ -63,6 +63,18 @@ test('slowed and sped up uploads match the original with a time scale', () => {
   assert.equal(matchScore(q, { title: 'Положение', artist: 'Скриптонит', duration: 200 }, 236, null), null, 'no scaling without the marker');
 });
 
+test('a passing synced record beats a better-scoring plain one', () => {
+  const r = findLyricsMatch(
+    [
+      { trackName: 'Song', artistName: 'Artist', duration: 200, plainLyrics: 'plain' },
+      { trackName: 'Song (Remastered 2011)', artistName: 'Artist', duration: 206, syncedLyrics: '[00:01.00] s' },
+    ],
+    [{ title: 'Song', artist: 'Artist' }],
+    200,
+  );
+  assert.ok(r?.candidate.syncedLyrics, 'timestamps must not be lost to a plain-text record');
+});
+
 test('pickBest chooses the strongest candidate across query variants', () => {
   const r = pickBest(
     [{ title: 'Положение', artist: 'uploader' }, q],
