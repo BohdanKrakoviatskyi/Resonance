@@ -1,0 +1,39 @@
+# Mobile app ACL permissions.
+
+[[permission]]
+identifier = "allow-mobile-commands"
+description = "Allow all Resonance Mobile backend, proxy, auth, and native audio commands."
+commands.allow = [
+  "backend_rpc",
+  "get_local_proxy_info",
+  "resolve_yt_stream_url",
+  "search_yt_tracks",
+  "yt_search_suggestions",
+  "yt_radio_tracks",
+  "fetch_yt_playlist_tracks",
+  "yt_auth_status",
+  "yt_auth_save",
+  "yt_auth_logout",
+  "yt_library_cached",
+  "yt_library_sync",
+  "yt_playlist_tracks_cached",
+  "yt_playlist_tracks_sync",
+  "yt_playlist_artwork",
+  "yt_clear_cache",
+  "fetch_external_playlist",
+  "frontend_log",
+  "start_ytmusic_login",
+  "start_soundcloud_login",
+  "mobile_audio_set_queue",
+  "mobile_audio_play",
+  "mobile_audio_pause",
+  "mobile_audio_seek",
+  "mobile_audio_skip_to",
+  "mobile_audio_next",
+  "mobile_audio_prev",
+  "mobile_audio_get_state",
+  "mobile_audio_set_eq",
+  "mobile_audio_set_repeat_shuffle",
+  "mobile_cache_get_limit",
+  "mobile_cache_set_limit"
+]
