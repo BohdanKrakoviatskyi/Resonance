@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { matchScore, pickBest } from './lyrics-identify.ts';
+import { findLyricsMatch, matchScore, pickBest } from './lyrics-identify.ts';
 
 const q = { title: 'Положение', artist: 'Скриптонит' };
 
@@ -22,9 +22,36 @@ test('rejects a different song or a different artist with a short title', () => 
   assert.equal(matchScore(q, { title: 'Положение', artist: 'Скриптонит', duration: 200 }, 400), null, 'way off in length');
 });
 
-test('an unknown uploader can still match on exact title and length', () => {
-  const m = matchScore({ title: 'Положение', artist: 'repost_acc_77' }, { title: 'Положение', artist: 'Скриптонит', duration: 200 }, 201);
-  assert.ok(m, 'exact title + duration is enough without artist');
+test('an unknown uploader matches only on a distinctive exact title and length', () => {
+  const long = matchScore({ title: 'Не убивая тебя совсем', artist: 'repost_acc_77' }, { title: 'Не убивая тебя совсем', artist: 'kyNZai', duration: 200 }, 201);
+  assert.ok(long, '3+ word exact title + duration is enough without artist');
+  const short = matchScore({ title: 'Положение', artist: 'repost_acc_77' }, { title: 'Положение', artist: 'Скриптонит', duration: 200 }, 201);
+  assert.equal(short, null, 'one-word titles need the artist');
+});
+
+test('findLyricsMatch keeps the old false-positive guards', () => {
+  const none = findLyricsMatch(
+    [
+      { trackName: 'Стратосферный самолёт', artistName: 'Детский хор', duration: 113, syncedLyrics: '[00:00.00] x' },
+      { trackName: 'самолёт', artistName: 'Чужой Автор', duration: 113, syncedLyrics: '[00:00.00] y' },
+    ],
+    [{ title: 'самолёт', artist: 'zer0cks' }],
+    113,
+  );
+  assert.equal(none, null);
+  const video = findLyricsMatch([{ trackName: 'Love Me Not', artistName: 'Ravyn Lenae', duration: 215, syncedLyrics: '[00:00.00] l' }], [{ title: 'Love Me Not', artist: 'Ravyn Lenae' }], 219);
+  assert.equal(video?.candidate.trackName, 'Love Me Not');
+  const prefersSynced = findLyricsMatch(
+    [
+      { trackName: 'Song', artistName: 'A', duration: 200, plainLyrics: 'p' },
+      { trackName: 'Song', artistName: 'A', duration: 200, syncedLyrics: '[00:01.00] s' },
+    ],
+    [{ title: 'Song', artist: 'A' }],
+    200,
+  );
+  assert.ok(prefersSynced?.candidate.syncedLyrics);
+  const slowed = findLyricsMatch([{ trackName: 'Song', artistName: 'A', duration: 200, syncedLyrics: '[00:01.00] s' }], [{ title: 'Song', artist: 'A' }], 240, 'slowed');
+  assert.equal(slowed?.timeScale, 1.2);
 });
 
 test('slowed and sped up uploads match the original with a time scale', () => {

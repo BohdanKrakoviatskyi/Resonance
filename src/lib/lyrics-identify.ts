@@ -3,7 +3,7 @@
  * (YouTube Music search) and to rank lyrics candidates. Replaces hard pass/fail rules with a
  * weighted score, while still refusing obvious false positives (other song, other artist).
  */
-import { artistsMatch, normalizeLyricsText, stripTrackNoise, tokenOverlapScore, toSeconds } from './lyrics-match.ts';
+import { artistsMatch, normalizeLyricsText, stripTrackNoise, titleWordCount, tokenOverlapScore, toSeconds, type LyricsCandidate } from './lyrics-match.ts';
 
 export type SpeedKind = 'slowed' | 'spedUp' | null;
 
@@ -63,11 +63,35 @@ export function matchScore(
   const dur = durationScore(toSeconds(wantDuration), toSeconds(cand.duration), speed);
   if (!dur) return null;
 
-  // Without any artist evidence only an exact title with a well-matching length is believable.
-  if (artistSim < 0.3 && !(exactTitle && dur.score >= 0.75)) return null;
+  // Without any artist evidence only a distinctive (3+ word) exact title with a matching length is
+  // believable; one- and two-word titles collide across thousands of unrelated songs.
+  if (artistSim < 0.3 && !(exactTitle && dur.score === 1 && titleWordCount(query.title) >= 3)) return null;
 
   const score = titleSim * 0.5 + artistSim * 0.3 + dur.score * 0.2;
   return score >= 0.62 ? { score, timeScale: dur.timeScale } : null;
+}
+
+/**
+ * LRCLIB-style lyrics records → best usable record plus the time scale to apply.
+ * Synced lyrics get a small bonus over plain text for otherwise equal matches.
+ */
+export function findLyricsMatch<T extends LyricsCandidate>(
+  candidates: T[],
+  queries: { title: string; artist: string }[],
+  wantDuration: number,
+  speed: SpeedKind = null,
+): { candidate: T; timeScale: number } | null {
+  let best: { candidate: T; timeScale: number; score: number } | null = null;
+  for (const c of candidates) {
+    if (!c.syncedLyrics && !c.plainLyrics && !c.instrumental) continue;
+    for (const q of queries) {
+      const m = matchScore(q, { title: c.trackName ?? '', artist: c.artistName ?? '', duration: c.duration ?? 0 }, wantDuration, speed);
+      if (!m) continue;
+      const score = m.score + (c.syncedLyrics ? 0.08 : 0);
+      if (!best || score > best.score) best = { candidate: c, timeScale: m.timeScale, score };
+    }
+  }
+  return best && { candidate: best.candidate, timeScale: best.timeScale };
 }
 
 /** Best candidate across several query variants, or null. */
