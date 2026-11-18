@@ -1,4 +1,4 @@
-export type Source = 'soundcloud' | 'youtube';
+export type Source = 'soundcloud' | 'youtube' | 'local';
 
 export interface LyricLine {
   t: number;
