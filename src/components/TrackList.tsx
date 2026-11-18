@@ -12,6 +12,7 @@ import {
 } from '../lib/track-window';
 import { getTrack, isDisliked, isLiked, library, toggleDislike, toggleLike, togglePlaylistTrack } from '../state/library';
 import { addToQueue, player, playNext, playQueue, prefetchTrackByIdLowPriority, toggle } from '../state/player';
+import { canDownload, downloadTracks, removeDownload, useIsDownloaded, useIsQueued } from '../state/offline';
 import { openDialog, openSearch } from '../state/ui';
 import type { Track } from '../types';
 import soundcloudLogo from '../assets/soundcloud.svg';
@@ -102,12 +103,24 @@ export function TrackMenu({ track, anchor, onClose, playlistId }: { track: Track
           <MenuItem i={1} icon="add_to_queue" label={t('addToQueue')} onClick={() => (addToQueue(track.id), close())} />
           <MenuItem i={2} icon="playlist_add" label={t('addToPlaylist')} trailing="chevron_right" onClick={() => setSub(true)} />
           {playlistId && <MenuItem i={3} icon="playlist_remove" label={t('removeFromPlaylist')} onClick={() => (togglePlaylistTrack(playlistId, track.id), close())} />}
+          {canDownload(track) && <DownloadMenuItem track={track} onDone={close} />}
           <div className="menu-div" />
           <MenuItem i={4} icon="person" label={t('goToArtist')} onClick={() => (openSearch(track.artist), close())} />
           <MenuItem i={5} icon="thumb_down" label={t('dislike')} onClick={() => (toggleDislike(track.id), close())} />
         </>
       )}
     </Menu>
+  );
+}
+
+function DownloadMenuItem({ track, onDone }: { track: Track; onDone: () => void }) {
+  const downloaded = useIsDownloaded(track);
+  const queued = useIsQueued(track);
+  if (queued) return <MenuItem i={3} icon="download" label={t('offlineDownloading')} />;
+  return downloaded ? (
+    <MenuItem i={3} icon="delete" label={t('offlineRemove')} onClick={() => (void removeDownload(track), onDone())} />
+  ) : (
+    <MenuItem i={3} icon="download" label={t('offlineDownload')} onClick={() => (downloadTracks([track]), onDone())} />
   );
 }
 

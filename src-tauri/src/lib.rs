@@ -5,6 +5,7 @@ pub mod lastfm;
 pub mod local;
 pub mod yandex_import;
 pub mod lyrics_words;
+pub mod offline;
 pub mod playlist_import;
 pub mod yt;
 
@@ -200,6 +201,9 @@ pub fn run() {
             local::local_scan,
             local::local_base_url,
             lyrics_words::lyrics_word_synced,
+            offline::offline_download,
+            offline::offline_remove,
+            offline::offline_list,
             backend_rpc
         ])
         .run(tauri::generate_context!())
