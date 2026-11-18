@@ -66,6 +66,9 @@ fn is_allowed_playlist_url(url: &Url) -> bool {
         return false;
     }
     let host = url.host_str().unwrap_or_default().to_ascii_lowercase();
+    if crate::yandex_import::is_yandex_music_host(&host) || host == "api.music.yandex.net" {
+        return true;
+    }
     matches!(
         host.as_str(),
         "youtube.com"
@@ -149,6 +152,10 @@ async fn fetch_html(http: &Client, url: &str) -> Result<String, String> {
     }
     let bytes = read_response_limited(resp, 8 << 20).await?;
     String::from_utf8(bytes).map_err(|e| format!("Invalid page encoding: {e}"))
+}
+
+pub(crate) async fn read_limited(response: reqwest::Response, max_bytes: usize) -> Result<Vec<u8>, String> {
+    read_response_limited(response, max_bytes).await
 }
 
 async fn read_response_limited(
@@ -780,6 +787,9 @@ pub async fn fetch_external_playlist(url: String) -> Result<ExternalPlaylistDto,
     ) || host.ends_with(".music.apple.com")
     {
         return fetch_apple_music_playlist(&http, &parsed).await;
+    }
+    if crate::yandex_import::is_yandex_music_host(&host) {
+        return crate::yandex_import::fetch_yandex_music(&http, &parsed).await;
     }
 
     Err("Unsupported playlist link.".to_string())

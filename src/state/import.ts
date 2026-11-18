@@ -11,7 +11,8 @@ import {
   soundCloudUserLikesByInput,
 } from '../lib/providers-api';
 import { matchExternalTrack, type ImportReviewReason, type SourceTrackInput } from '../lib/import-match';
-import { createImportedPlaylist, registerTracks } from './library';
+import { syncKey } from '../lib/sync-key';
+import { appendNewTracks, createImportedPlaylist, getTrack, library, registerTracks, setPlaylistSource } from './library';
 import { go, openDialog, snack, ui } from './ui';
 import { player } from './player';
 
@@ -21,7 +22,8 @@ export type ImportSourceKind =
   | 'soundcloud_likes'
   | 'spotify'
   | 'deezer'
-  | 'apple_music';
+  | 'apple_music'
+  | 'yandex';
 
 export type ImportPhase =
   | 'idle'
@@ -61,6 +63,11 @@ export interface ImportJobState {
   reviewItems: ImportReviewItem[];
   error?: string;
   createdPlaylistId?: string;
+  /** Original link and mode, saved on the playlist for later syncs. */
+  sourceUrl?: string;
+  sourceMode?: 'playlist' | 'sc_likes';
+  /** When set, new tracks are merged into this playlist instead of creating one. */
+  targetPlaylistId?: string;
 }
 
 const INITIAL_STATE: ImportJobState = {
@@ -79,6 +86,9 @@ const INITIAL_STATE: ImportJobState = {
   reviewItems: [],
   error: undefined,
   createdPlaylistId: undefined,
+  sourceUrl: undefined,
+  sourceMode: undefined,
+  targetPlaylistId: undefined,
 };
 
 export const importStore = createStore<ImportJobState>({ ...INITIAL_STATE });
@@ -250,6 +260,9 @@ export function detectImportSource(raw: string, mode: 'playlist' | 'sc_likes' = 
     if (['music.apple.com', 'geo.music.apple.com', 'itunes.apple.com'].includes(host) || host.endsWith('.music.apple.com')) {
       return { source: 'apple_music', label: 'Apple Music' };
     }
+    if (/^music\.yandex\.(ru|com|by|kz|uz)$/.test(host)) {
+      return { source: 'yandex', label: 'Яндекс Музыка' };
+    }
   } catch {
     return null;
   }
@@ -275,8 +288,18 @@ export function cancelPlaylistImport() {
 function finalizeTracksAndSave(tracks: Track[], name: string, artworkUrl?: string, pendingTrackId?: string) {
   importStore.set({ phase: 'finalizing' });
   stopImportPreview();
+  const { targetPlaylistId, sourceUrl, sourceMode } = importStore.get();
+
+  if (targetPlaylistId) {
+    const added = appendNewTracks(targetPlaylistId, tracks);
+    importStore.set({ ...INITIAL_STATE, phase: 'completed', createdPlaylistId: targetPlaylistId });
+    if (ui.get().dialog?.kind === 'import-review') ui.set({ dialog: null });
+    snack(added ? t('syncAdded', { n: added }) : t('syncNothingNew'));
+    return;
+  }
 
   const createdId = createImportedPlaylist(name, tracks, artworkUrl, pendingTrackId);
+  if (sourceUrl && sourceMode) setPlaylistSource(createdId, sourceUrl, sourceMode);
   importStore.set({
     ...INITIAL_STATE,
     phase: 'completed',
@@ -297,11 +320,33 @@ function finalizeTracksAndSave(tracks: Track[], name: string, artworkUrl?: strin
   }
 }
 
+function existingTrackKeys(playlistId: string) {
+  const pl = library.get().playlists.find((p) => p.id === playlistId);
+  const ids = new Set(pl?.ids ?? []);
+  const keys = new Set<string>();
+  for (const id of ids) {
+    const tr = getTrack(id);
+    if (tr) keys.add(syncKey(tr.title, tr.artist));
+  }
+  return { ids, keys };
+}
+
+/** Pulls new tracks from the link the playlist was imported from. */
+export function syncImportedPlaylist(playlistId: string) {
+  const pl = library.get().playlists.find((p) => p.id === playlistId);
+  if (!pl?.sourceUrl) return Promise.resolve();
+  snack(t('syncStarted', { name: pl.name }));
+  return startPlaylistImport({ input: pl.sourceUrl, mode: pl.sourceMode ?? 'playlist', targetPlaylistId: pl.id, customName: pl.name }).catch((e) =>
+    snack(e instanceof Error ? e.message : String(e)),
+  );
+}
+
 export async function startPlaylistImport(opts: {
   input: string;
   mode: 'playlist' | 'sc_likes';
   customName?: string;
   pendingTrackId?: string;
+  targetPlaylistId?: string;
 }) {
   if (importStore.get().active) {
     throw new Error(t('importAlreadyRunning'));
@@ -321,6 +366,9 @@ export async function startPlaylistImport(opts: {
     source: detected.source,
     playlistName: opts.customName?.trim() || detected.label,
     pendingTrackId: opts.pendingTrackId,
+    sourceUrl: opts.input.trim(),
+    sourceMode: opts.mode,
+    targetPlaylistId: opts.targetPlaylistId,
   });
 
   try {
@@ -391,6 +439,17 @@ export async function startPlaylistImport(opts: {
     }
 
     if (ac.signal.aborted) return;
+
+    // Syncing: only tracks that are not in the playlist yet go through (slow) matching.
+    if (opts.targetPlaylistId) {
+      const existing = existingTrackKeys(opts.targetPlaylistId);
+      if (directTracks !== null) directTracks = directTracks.filter((tr) => !existing.ids.has(tr.id) && !existing.keys.has(syncKey(tr.title, tr.artist)));
+      externalItems = externalItems.filter((it) => !existing.keys.has(syncKey(it.title, it.artist)));
+      if ((directTracks ?? externalItems).length === 0) {
+        finalizeTracksAndSave([], '', undefined, undefined);
+        return;
+      }
+    }
 
     const finalName = opts.customName?.trim() || remoteTitle || t('newPlaylist');
     importStore.set({

@@ -3,6 +3,7 @@ pub mod backend;
 pub mod discord;
 pub mod lastfm;
 pub mod local;
+pub mod yandex_import;
 pub mod playlist_import;
 pub mod yt;
 

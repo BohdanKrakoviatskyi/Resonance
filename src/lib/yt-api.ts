@@ -96,7 +96,7 @@ export type ExternalPlaylistTrack = {
 };
 
 export type ExternalPlaylistResponse = {
-  source: 'youtube' | 'spotify' | 'deezer' | 'apple_music';
+  source: 'youtube' | 'spotify' | 'deezer' | 'apple_music' | 'yandex';
   title: string;
   artworkUrl?: string;
   tracks: ExternalPlaylistTrack[];

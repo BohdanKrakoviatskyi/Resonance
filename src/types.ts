@@ -32,6 +32,10 @@ export interface Playlist {
   created: number;
   artworkUrl?: string;
   section?: PlaylistSection;
+  /** Link the playlist was imported from; enables "Update from source". */
+  sourceUrl?: string;
+  sourceMode?: 'playlist' | 'sc_likes';
+  syncedAt?: number;
 }
 
 export interface SoundCloudPlaylist {
