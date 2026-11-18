@@ -713,6 +713,33 @@ export function createImportedPlaylist(name: string, tracks: Track[], artworkUrl
   return p.id;
 }
 
+/** Remembers where an imported playlist came from so it can be refreshed later. */
+export function setPlaylistSource(id: string, sourceUrl: string, sourceMode: 'playlist' | 'sc_likes') {
+  library.set((s) => ({
+    playlists: s.playlists.map((p) => (p.id === id ? { ...p, sourceUrl, sourceMode, syncedAt: Date.now() } : p)),
+  }));
+}
+
+/** Appends tracks that are not in the playlist yet. Returns how many were added. */
+export function appendNewTracks(id: string, tracks: Track[]): number {
+  registerTracks(tracks);
+  let added = 0;
+  library.set((s) => {
+    const pl = s.playlists.find((p) => p.id === id);
+    if (!pl) return {};
+    const have = new Set(pl.ids);
+    const fresh = tracks.filter((tr) => tr?.id && !have.has(tr.id) && (have.add(tr.id), true));
+    added = fresh.length;
+    const cache = { ...s.cache };
+    for (const tr of fresh) cache[tr.id] = tr;
+    return {
+      cache,
+      playlists: s.playlists.map((p) => (p.id === id ? { ...p, ids: [...p.ids, ...fresh.map((tr) => tr.id)], syncedAt: Date.now() } : p)),
+    };
+  });
+  return added;
+}
+
 export function renamePlaylist(id: string, name: string) {
   library.set((s) => ({ playlists: s.playlists.map((p) => (p.id === id ? { ...p, name: name.trim() || p.name } : p)) }));
 }

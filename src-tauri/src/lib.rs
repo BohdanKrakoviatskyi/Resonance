@@ -1,5 +1,12 @@
 pub mod auth_windows;
 pub mod backend;
+pub mod discord;
+pub mod lastfm;
+pub mod local;
+pub mod yandex_import;
+pub mod lyrics_words;
+pub mod offline;
+pub mod transcribe;
 pub mod playlist_import;
 pub mod yt;
 
@@ -123,11 +130,14 @@ pub fn run() {
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
+        .plugin(tauri_plugin_dialog::init())
         .manage(YtMusicLoginState::default())
         .manage(SoundCloudLoginState::default())
         .manage(YtStreamProxy::default())
         .manage(YtStore::default())
         .manage(Backend::new())
+        .manage(discord::DiscordPresence::default())
+        .manage(transcribe::WhisperWorker::default())
         .setup(|app| {
             purge_retired_spotify_storage(app.handle());
             let app_handle = app.handle().clone();
@@ -184,6 +194,25 @@ pub fn run() {
             yt_playlist_artwork,
             yt_clear_cache,
             fetch_external_playlist,
+            discord::discord_set_presence,
+            lastfm::lastfm_login,
+            lastfm::lastfm_status,
+            lastfm::lastfm_logout,
+            lastfm::lastfm_now_playing,
+            lastfm::lastfm_scrobble,
+            local::local_scan,
+            local::local_base_url,
+            lyrics_words::lyrics_word_synced,
+            yt::lyrics_ytm::ytm_lyrics,
+            offline::offline_download,
+            offline::offline_remove,
+            offline::offline_list,
+            transcribe::whisper_models,
+            transcribe::whisper_download,
+            transcribe::whisper_cancel_download,
+            transcribe::whisper_delete,
+            transcribe::whisper_transcribe,
+            transcribe::whisper_cancel,
             backend_rpc
         ])
         .run(tauri::generate_context!())

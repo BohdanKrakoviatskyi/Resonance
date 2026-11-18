@@ -19,6 +19,13 @@
     "allow-yt-proxy-commands",
     "allow-finish-splash",
     "allow-restart-app",
-    "allow-backend-rpc"
+    "allow-backend-rpc",
+    "allow-discord-presence",
+    "allow-lastfm",
+    "allow-local-library",
+    "allow-word-lyrics",
+    "allow-offline",
+    "allow-whisper",
+    "dialog:allow-open"
   ]
 }

@@ -1,6 +1,8 @@
 import type { LyricLine, Track } from '../types';
 import { findYouTubeFallbackCandidate, youtubeFallbackQueries } from './youtube-match';
-import { findLyricsCandidate, lyricsSearchQueries, toSeconds, type LyricsCandidate } from './lyrics-match';
+import { lyricsSearchQueries, speedVariant, stripTrackNoise, toSeconds, type LyricsCandidate } from './lyrics-match';
+import { findLyricsMatch, pickBest } from './lyrics-identify';
+import { fromWordLines, parseEnhancedWords } from './lyric-words';
 import { rpc } from './backend';
 import { upscaleYtmArtwork } from './ytmusic-library';
 
@@ -25,7 +27,9 @@ async function getJson(url: string): Promise<Json> {
   return response.json();
 }
 
-type SoundCloudTrackLike = Pick<SoundCloudTrackCard, 'id' | 'trackUrn' | 'title' | 'permalinkUrl' | 'artworkUrl' | 'duration' | 'user'> | Pick<SoundCloudSearchTrack, 'id' | 'urn' | 'title' | 'permalinkUrl' | 'artworkUrl' | 'duration' | 'user'>;
+type SoundCloudTrackLike =
+  | Pick<SoundCloudTrackCard, 'id' | 'trackUrn' | 'title' | 'permalinkUrl' | 'artworkUrl' | 'duration' | 'user' | 'publisherArtist'>
+  | Pick<SoundCloudSearchTrack, 'id' | 'urn' | 'title' | 'permalinkUrl' | 'artworkUrl' | 'duration' | 'user' | 'publisherArtist'>;
 
 export function mapSoundCloudTrack(track: SoundCloudTrackLike): Track {
   const duration = track.duration / 1000;
@@ -35,6 +39,7 @@ export function mapSoundCloudTrack(track: SoundCloudTrackLike): Track {
     cover: track.artworkUrl || undefined, thumb: track.artworkUrl || undefined,
     src: track.permalinkUrl || '', duration, fullDuration: duration || undefined,
     nativeId, source: 'soundcloud',
+    ...(track.publisherArtist?.trim() ? { metaArtist: track.publisherArtist.trim() } : {}),
   };
 }
 
@@ -219,10 +224,90 @@ export function parseLrc(s: string): LyricLine[] {
   for (const line of s.split('\n')) {
     const stamps = [...line.matchAll(/\[(\d+):(\d+(?:\.\d+)?)\]/g)];
     if (!stamps.length) continue;
-    const text = line.replace(/\[[^\]]*\]/g, '').trim();
-    for (const m of stamps) out.push({ t: +m[1] * 60 + +m[2], text });
+    const body = line.replace(/\[[^\]]*\]/g, '');
+    // Enhanced LRC carries <mm:ss.xx> word tags; repeated stamps share one text, so only the first gets words.
+    const enhanced = parseEnhancedWords(body);
+    stamps.forEach((m, i) => {
+      const entry: LyricLine = { t: +m[1] * 60 + +m[2], text: enhanced.text };
+      if (enhanced.words && i === 0) entry.words = enhanced.words;
+      out.push(entry);
+    });
   }
   return out.sort((a, b) => a.t - b.t);
+}
+
+/** Stretches synced timestamps for slowed / sped-up copies (scale = playing length / original length). */
+export function scaleLyrics(d: LyricsData | null, scale: number): LyricsData | null {
+  if (!d?.synced || Math.abs(scale - 1) < 0.005) return d;
+  return {
+    ...d,
+    synced: d.synced.map((l) => ({
+      ...l,
+      t: l.t * scale,
+      ...(l.words ? { words: l.words.map((w) => ({ ...w, t: w.t * scale, d: w.d * scale })) } : {}),
+    })),
+  };
+}
+
+/**
+ * Lyrics from YouTube Music (LyricFind / Musixmatch licensed, timed when available).
+ * YouTube tracks use their own video id; anything else is first identified in the YouTube Music
+ * catalogue by fuzzy title/artist/duration matching, including slowed / sped-up re-uploads whose
+ * timestamps are stretched by the duration ratio.
+ */
+async function fetchYtmLyrics(t: Track): Promise<LyricsData | null> {
+  if (!('__TAURI_INTERNALS__' in window)) return null;
+  const { invoke } = await import('@tauri-apps/api/core');
+  type Res = { synced: { startMs: number; text: string }[]; plain: string[]; source: string };
+  const toData = (r: Res | null, timeScale: number): LyricsData | null => {
+    if (!r) return null;
+    if (r.synced.filter((l) => l.text).length >= 3) {
+      return { synced: withGaps(r.synced.map((l) => ({ t: (l.startMs / 1000) * timeScale, text: l.text }))) };
+    }
+    const plain = r.plain.map((s) => s.trim()).filter(Boolean);
+    return plain.length >= 3 ? { plain } : null;
+  };
+  const speed = speedVariant(t.title);
+  const ownId = t.nativeId ?? (t.id.startsWith('yt:') ? t.id.slice(3) : '');
+  if ((t.source === 'youtube' || t.id.startsWith('yt:')) && /^[\w-]{11}$/.test(ownId) && !speed) {
+    const own = toData(await invoke<Res>('ytm_lyrics', { videoId: ownId }).catch(() => null), 1);
+    if (own) return own;
+  }
+  const queries = lyricsSearchQueries(t);
+  const wantSec = toSeconds(t.fullDuration ?? t.duration);
+  const searches = queries.slice(0, 2).map((q) => searchYtDlpTracks(`${q.artist} ${q.title}`).catch(() => [] as YouTubeTrack[]));
+  const found = (await Promise.all(searches)).flat().filter((c, i, all) => all.findIndex((x) => x.nativeId === c.nativeId) === i);
+  const best = pickBest(
+    queries,
+    found.map((c) => ({ title: c.title, artist: c.artist, duration: c.durationMs / 1000, id: c.nativeId })),
+    wantSec,
+    speed,
+  );
+  if (!best || best.candidate.id === ownId) return null;
+  return toData(await invoke<Res>('ytm_lyrics', { videoId: best.candidate.id }).catch(() => null), best.match.timeScale);
+}
+
+/** Word-timed lyrics from the backend (NetEase YRC), or null when no trustworthy match exists. */
+async function fetchWordLyrics(t: Track): Promise<{ wordLevel: boolean; lines: LyricLine[] } | null> {
+  if (!('__TAURI_INTERNALS__' in window)) return null;
+  const { invoke } = await import('@tauri-apps/api/core');
+  const durationMs = Math.round(toSeconds(t.fullDuration ?? t.duration) * 1000);
+  // Line lyrics wait for this, so keep it short; a slow lookup just means line timing.
+  const timeout = new Promise<null>((r) => setTimeout(() => r(null), 3500));
+  const res = await Promise.race([
+    invoke<{ wordLevel: boolean; lines: { startMs: number; words: { startMs: number; durMs: number; text: string }[] }[] }>('lyrics_word_synced', {
+      title: stripTrackNoise(t.title) || t.title,
+      artist: (t.metaArtist || t.artist).replace(/\s+-\s+Topic$/i, ''),
+      durationMs,
+      speed: speedVariant(t.title),
+    }).catch(() => null),
+    timeout,
+  ]);
+  const mapped = res ? fromWordLines(res.lines) : [];
+  if (mapped.length < 4) return null;
+  // Line-only results carry one "word" per line; drop it so they render like normal synced lyrics.
+  const lines = res!.wordLevel ? mapped : mapped.map(({ words: _w, ...l }) => l);
+  return { wordLevel: res!.wordLevel, lines: withGaps(lines) };
 }
 
 /** Inserts "• • •" breathing lines for intros and long instrumental breaks. */
@@ -390,13 +475,40 @@ export async function getLyrics(t: Track, forceRefresh = false): Promise<LyricsD
     const overriddenData = lyricsDataFromRecord(override);
     if (overriddenData) return overriddenData;
   }
-  if (forceRefresh) lyricsCache.delete(t.id);
+  if (forceRefresh) {
+    lyricsCache.delete(t.id);
+    persistedLyrics.remove(t.id);
+  }
   let p = lyricsCache.get(t.id);
   if (!p) {
-    p = (t.source === 'soundcloud' ? fetchSoundCloudLyrics(t) : fetchLyrics(t))
-      .catch(() => null)
+    const stored = persistedLyrics.get(t.id);
+    if (stored) {
+      p = Promise.resolve(stored);
+      lyricsCache.set(t.id, p);
+      evictLyricsCache();
+      return p;
+    }
+  }
+  if (!p) {
+    const lineLevel = (t.source === 'soundcloud' ? fetchSoundCloudLyrics(t) : fetchLyrics(t)).catch(() => null);
+    const wordLevel = fetchWordLyrics(t).catch(() => null);
+    const ytm = Promise.race([fetchYtmLyrics(t).catch(() => null), new Promise<null>((r) => setTimeout(() => r(null), 6000))]);
+    // All run in parallel. Priority: karaoke (NetEase YRC) > LRCLIB synced > YouTube Music synced >
+    // NetEase line synced > YouTube Music plain > LRCLIB plain.
+    p = Promise.all([lineLevel, wordLevel, ytm])
+      .then(([lines, ne, ym]): LyricsData | null => {
+        if (ne?.wordLevel) return { ...(lines ?? {}), synced: ne.lines, plain: undefined };
+        if (lines?.synced?.length) return lines;
+        if (ym?.synced?.length) return { ...ym, matchedTitle: lines?.matchedTitle, matchedArtist: lines?.matchedArtist };
+        if (ne?.lines.length) return { ...(lines ?? {}), synced: ne.lines, plain: undefined, instrumental: undefined };
+        if (ym?.plain?.length) return ym;
+        return lines;
+      })
       .then((value) => {
         if (!value) lyricsCache.delete(t.id);
+        // Only timed lyrics are final. Plain text may be the result of a synced source timing out,
+        // so it is kept for this session only and looked up again after a restart.
+        else if (value.synced?.length) persistedLyrics.put(t.id, value);
         return value;
       });
     lyricsCache.set(t.id, p);
@@ -404,6 +516,75 @@ export async function getLyrics(t: Track, forceRefresh = false): Promise<LyricsD
   }
   return p;
 }
+
+/**
+ * Found lyrics survive restarts so a track is looked up once, not on every play.
+ * localStorage, LRU-capped and expiring, so stale or wrong results eventually refresh.
+ */
+const persistedLyrics = (() => {
+  // v2: v1 could hold plain-text results that hid timed lyrics found later.
+  const KEY = 'resonance.lyrics_cache.v2';
+  try {
+    localStorage.removeItem('resonance.lyrics_cache.v1');
+  } catch {
+    /* ignore */
+  }
+  const MAX = 400;
+  const TTL = 30 * 86400_000;
+  type Entry = { at: number; d: LyricsData };
+  let map: Record<string, Entry> | null = null;
+  const load = () => {
+    if (map) return map;
+    try {
+      map = JSON.parse(localStorage.getItem(KEY) || '{}') as Record<string, Entry>;
+    } catch {
+      map = {};
+    }
+    return map;
+  };
+  let saveTimer = 0;
+  const save = () => {
+    clearTimeout(saveTimer);
+    saveTimer = window.setTimeout(() => {
+      const m = load();
+      const ids = Object.keys(m);
+      if (ids.length > MAX) for (const id of ids.sort((a, b) => m[a].at - m[b].at).slice(0, ids.length - MAX)) delete m[id];
+      try {
+        localStorage.setItem(KEY, JSON.stringify(m));
+      } catch {
+        // Quota: drop the older half and retry once.
+        for (const id of Object.keys(m).sort((a, b) => m[a].at - m[b].at).slice(0, Math.ceil(ids.length / 2))) delete m[id];
+        try {
+          localStorage.setItem(KEY, JSON.stringify(m));
+        } catch {
+          /* give up; in-memory cache still works */
+        }
+      }
+    }, 800);
+  };
+  return {
+    get(id: string): LyricsData | null {
+      const e = load()[id];
+      if (!e) return null;
+      if (Date.now() - e.at > TTL) {
+        delete load()[id];
+        save();
+        return null;
+      }
+      return e.d;
+    },
+    put(id: string, d: LyricsData) {
+      load()[id] = { at: Date.now(), d };
+      save();
+    },
+    remove(id: string) {
+      if (load()[id]) {
+        delete load()[id];
+        save();
+      }
+    },
+  };
+})();
 
 async function fetchSoundCloudLyrics(track: Track): Promise<LyricsData | null> {
   const match = track.nativeId?.match(/(\d+)$/);
@@ -413,7 +594,7 @@ async function fetchSoundCloudLyrics(track: Track): Promise<LyricsData | null> {
   const result = await soundCloudTrackLyrics({
     trackId,
     title: track.title,
-    artist: track.artist,
+    artist: track.metaArtist || track.artist,
     durationMs: Math.round(durationSec * 1000),
   });
   if (result.isSynced && result.lines.length) {
@@ -427,15 +608,28 @@ async function fetchSoundCloudLyrics(track: Track): Promise<LyricsData | null> {
 
 async function fetchLyrics(t: Track): Promise<LyricsData | null> {
   const durationSec = toSeconds(t.fullDuration ?? t.duration);
-  const tolerance = t.source === 'youtube' ? 8 : 4;
   const queries = lyricsSearchQueries(t);
-  let rec: LyricsCandidate | null = null;
-  for (const query of queries) {
-    const params = new URLSearchParams({ track_name: query.title, artist_name: query.artist });
-    const results = await getJson(`https://lrclib.net/api/search?${params}`);
-    rec = findLyricsCandidate(Array.isArray(results) ? results : [], query, durationSec, tolerance);
-    if (rec) break;
+  const speed = speedVariant(t.title);
+  const search = async (params: Record<string, string>): Promise<LyricsCandidate[]> => {
+    const results = await getJson(`https://lrclib.net/api/search?${new URLSearchParams(params)}`).catch(() => null);
+    return Array.isArray(results) ? (results as LyricsCandidate[]) : [];
+  };
+  // Fuzzy-scored across every query variant instead of first-strict-hit.
+  let pool = (await Promise.all(queries.slice(0, 3).map((q) => search({ track_name: q.title, artist_name: q.artist })))).flat();
+  let match = findLyricsMatch(pool, queries, durationSec, speed);
+  if (!match && queries[0]) {
+    // The artist may be a nickname: search by title alone and let scoring sort it out.
+    pool = await search({ q: queries[0].title });
+    match = findLyricsMatch(pool, queries, durationSec, speed);
   }
-  if (!rec) return null;
-  return lyricsDataFromRecord(rec);
+  if (!match) return null;
+  return scaleLyrics(lyricsDataFromRecord(match.candidate), match.timeScale);
 }
+
+/** Individual lyrics sources, for diagnostics (which source found what for a track). */
+export const lyricsSources = {
+  lrclib: (t: Track) => fetchLyrics(t),
+  soundcloud: (t: Track) => fetchSoundCloudLyrics(t),
+  netease: (t: Track) => fetchWordLyrics(t),
+  ytm: (t: Track) => fetchYtmLyrics(t),
+};

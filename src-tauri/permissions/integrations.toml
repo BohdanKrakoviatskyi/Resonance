@@ -1,0 +1,29 @@
+[[permission]]
+identifier = "allow-discord-presence"
+description = "Update or clear the Discord Rich Presence activity."
+commands.allow = ["discord_set_presence"]
+
+[[permission]]
+identifier = "allow-lastfm"
+description = "Log in to Last.fm and send now-playing updates and scrobbles."
+commands.allow = ["lastfm_login", "lastfm_status", "lastfm_logout", "lastfm_now_playing", "lastfm_scrobble"]
+
+[[permission]]
+identifier = "allow-word-lyrics"
+description = "Look up word-timed (karaoke) lyrics for the current track."
+commands.allow = ["lyrics_word_synced", "ytm_lyrics"]
+
+[[permission]]
+identifier = "allow-whisper"
+description = "Download/delete speech-recognition models and transcribe the current track's audio locally."
+commands.allow = ["whisper_models", "whisper_download", "whisper_cancel_download", "whisper_delete", "whisper_transcribe", "whisper_cancel"]
+
+[[permission]]
+identifier = "allow-offline"
+description = "Download tracks for offline playback and manage those downloads."
+commands.allow = ["offline_download", "offline_remove", "offline_list"]
+
+[[permission]]
+identifier = "allow-local-library"
+description = "Scan user-chosen music folders and get the local relay address for playback."
+commands.allow = ["local_scan", "local_base_url"]

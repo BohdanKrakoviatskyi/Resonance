@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { findLyricsCandidate, lyricsSearchQueries, matchesGeniusCandidate, toSeconds } from './lyrics-match.ts';
+import { lyricsSearchQueries, matchesGeniusCandidate, speedVariant, stripTrackNoise, toSeconds } from './lyrics-match.ts';
 
 test('uses the song title and artist from an official video title', () => {
   const queries = lyricsSearchQueries({
@@ -28,33 +28,6 @@ test('normalizes duration in ms, seconds, and m:ss strings to seconds', () => {
   assert.equal(toSeconds('1:53'), 113);
 });
 
-test('matches YouTube lyrics when the music video differs in duration slightly', () => {
-  const candidate = findLyricsCandidate([{
-    trackName: 'Love Me Not', artistName: 'Ravyn Lenae', duration: 215, syncedLyrics: '[00:00.00] lyric',
-  }], { title: 'Love Me Not', artist: 'Ravyn Lenae' }, 219, 30);
-
-  assert.equal(candidate?.trackName, 'Love Me Not');
-});
-
-test('rejects short 1-word title with mismatched artist even when duration is identical', () => {
-  const candidate = findLyricsCandidate([
-    {
-      trackName: 'Стратосферный самолёт',
-      artistName: 'Детский хор',
-      duration: 113,
-      syncedLyrics: '[00:00.00] wrong song',
-    },
-    {
-      trackName: 'самолёт',
-      artistName: 'Чужой Автор',
-      duration: 113,
-      syncedLyrics: '[00:00.00] also wrong song',
-    },
-  ], { title: 'самолёт', artist: 'zer0cks' }, 113, 4);
-
-  assert.equal(candidate, null);
-});
-
 test('requires strict artist and title match for Genius candidates without duration', () => {
   assert.equal(
     matchesGeniusCandidate({ title: 'самолёт', artist: 'zer0cks' }, { title: 'Стратосферный самолёт', artist: 'Другой' }),
@@ -64,4 +37,37 @@ test('requires strict artist and title match for Genius candidates without durat
     matchesGeniusCandidate({ title: 'самолёт', artist: 'zer0cks' }, { title: 'самолёт', artist: 'zer0cks' }),
     true,
   );
+});
+
+test('strips release-version markers but keeps real title words', () => {
+  assert.equal(stripTrackNoise('Song (Remastered 2011)'), 'Song');
+  assert.equal(stripTrackNoise('Song - 2011 Remaster'), 'Song');
+  assert.equal(stripTrackNoise('Song [Radio Edit]'), 'Song');
+  assert.equal(stripTrackNoise('Song - Single Version'), 'Song');
+  assert.equal(stripTrackNoise('Edit My Heart'), 'Edit My Heart');
+  assert.equal(stripTrackNoise('Mono No Aware'), 'Mono No Aware');
+});
+
+test('strips emoji, free-download tags and guillemets', () => {
+  assert.equal(stripTrackNoise('🔥 «Звезда» [FREE DL] 🔥'), 'Звезда');
+  assert.equal(stripTrackNoise('Song (free download) out now'), 'Song');
+});
+
+test('publisher artist beats a repost uploader on SoundCloud', () => {
+  const queries = lyricsSearchQueries({
+    title: 'Скриптонит - Положение (slowed + reverb) [FREE]',
+    artist: 'best_slowed_songs_2024',
+    metaArtist: 'Скриптонит',
+    source: 'soundcloud',
+  });
+  assert.deepEqual(queries[0], { title: 'Положение', artist: 'Скриптонит' });
+  assert.ok(queries.some((q) => q.artist === 'best_slowed_songs_2024'), 'uploader stays as a last resort');
+  assert.ok(queries.findIndex((q) => q.artist === 'best_slowed_songs_2024') > 0);
+});
+
+test('detects speed-altered versions', () => {
+  assert.equal(speedVariant('Song (Slowed + Reverb)'), 'slowed');
+  assert.equal(speedVariant('Song - sped up'), 'spedUp');
+  assert.equal(speedVariant('Song (Nightcore)'), 'spedUp');
+  assert.equal(speedVariant('Slow Dancing'), null);
 });

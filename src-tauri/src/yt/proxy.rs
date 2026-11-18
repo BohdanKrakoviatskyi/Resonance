@@ -609,9 +609,19 @@ pub async fn resolve_yt_stream_url(
     } else {
         None
     };
-    let (_, cache_hit, resolve_ms, attempts) = state
-        .get_or_resolve_stream(&video_id, false, is_priority, epoch)
-        .await?;
+    // A fully cached (or downloaded) file plays straight from disk: no network, works offline.
+    let (cache_hit, resolve_ms, attempts) = if state.audio_cache.lookup_complete(video_id.trim()).is_some() {
+        (
+            true,
+            0,
+            vec![YtResolveAttemptTiming { method: "disk cache".to_string(), outcome: "hit".to_string(), duration_ms: 0 }],
+        )
+    } else {
+        let (_, hit, ms, att) = state
+            .get_or_resolve_stream(&video_id, false, is_priority, epoch)
+            .await?;
+        (hit, ms, att)
+    };
     let trimmed = video_id.trim();
     let mut q = vec![format!("t={}", state.token)];
     if let Some(id) = request_id {

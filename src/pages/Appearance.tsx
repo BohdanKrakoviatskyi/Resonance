@@ -8,6 +8,7 @@ import { buildScheme, VARIANTS, type Role } from '../lib/color';
 import { appearance, DEFAULTS, processImage, setBgImage, type Appearance as A, type GlassMode } from '../state/appearance';
 import { endLiveColorPreview, markThemeDragging, previewLiveColor, recordThemeRerender, theme } from '../state/theme';
 import { go, snack } from '../state/ui';
+import { addSnippet, CSS_SNIPPETS, customCss } from '../state/custom-css';
 
 const set = (p: Partial<A>) => appearance.set(p);
 const previewBgColor = (c: string) => previewLiveColor({ bgColor: c });
@@ -524,6 +525,57 @@ function GlassOption({ kind, on }: { kind: GlassMode; on: boolean }) {
 
 const SHOW: Role[] = ['primary', 'primaryContainer', 'secondary', 'secondaryContainer', 'tertiary', 'tertiaryContainer', 'surfaceContainerHigh', 'onSurface'];
 
+function CustomCssCard() {
+  const enabled = useStore(customCss, (s) => s.enabled);
+  const css = useStore(customCss, (s) => s.css);
+  return (
+    <Card icon="format_paint" title={t('customCss')} sub={t('customCssDesc')} i={8}>
+      <Segmented
+        value={enabled ? 'on' : 'off'}
+        onChange={(v) => customCss.set({ enabled: v === 'on' })}
+        options={[
+          { value: 'on', label: t('enabled'), icon: 'check' },
+          { value: 'off', label: t('disabled') },
+        ]}
+      />
+      <textarea
+        value={css}
+        spellCheck={false}
+        placeholder={'.lyrics[data-v=imm] { --lfs: 56px; }'}
+        aria-label={t('customCss')}
+        onChange={(e) => customCss.set({ css: e.target.value })}
+        onKeyDown={(e) => {
+          // Tab inserts two spaces instead of leaving the editor.
+          if (e.key !== 'Tab' || e.shiftKey) return;
+          e.preventDefault();
+          const el = e.currentTarget;
+          const { selectionStart: s, selectionEnd: en, value } = el;
+          customCss.set({ css: value.slice(0, s) + '  ' + value.slice(en) });
+          requestAnimationFrame(() => el.setSelectionRange(s + 2, s + 2));
+        }}
+        className={cx(
+          'mt-4 block h-56 w-full resize-y rounded-2xl bg-on-surface/8 p-4 font-mono text-[13px] leading-relaxed outline-0 transition-colors placeholder:text-on-surface-variant/50 focus:bg-on-surface/12',
+          !enabled && 'opacity-50',
+        )}
+      />
+      <div className="mt-3 flex flex-wrap items-center gap-2">
+        <span className="text-xs font-semibold text-on-surface-variant">{t('customCssSnippets')}</span>
+        {CSS_SNIPPETS.map((s) => (
+          <button
+            key={s.id}
+            type="button"
+            data-ripple
+            className="sl rounded-full bg-on-surface/8 px-3 py-1.5 text-xs font-semibold transition hover:bg-on-surface/14"
+            onClick={() => addSnippet(s.id)}
+          >
+            {t(`cssSnippet_${s.id}` as Key)}
+          </button>
+        ))}
+      </div>
+    </Card>
+  );
+}
+
 export default function Appearance() {
   const a = useStore(appearance, (s) => s);
   const source = useStore(theme, (s) => s.source);
@@ -801,6 +853,7 @@ export default function Appearance() {
               ]}
             />
           </Card>
+          <CustomCssCard />
         </div>
 
         <div className="anim-in flex justify-center py-4" style={{ '--i': 8 } as Vars}>

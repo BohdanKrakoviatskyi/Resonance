@@ -2,6 +2,7 @@ pub mod audio_cache;
 pub mod clients;
 pub mod http_relay;
 pub mod identity;
+pub mod lyrics_ytm;
 pub mod music_api;
 pub mod music_parse;
 pub mod player_js;

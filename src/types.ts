@@ -1,9 +1,20 @@
-export type Source = 'soundcloud' | 'youtube';
+export type Source = 'soundcloud' | 'youtube' | 'local';
+
+export interface LyricWord {
+  /** Start, seconds. */
+  t: number;
+  /** Duration, seconds. */
+  d: number;
+  /** Includes its trailing space, so joining words yields the line. */
+  text: string;
+}
 
 export interface LyricLine {
   t: number;
   text: string;
   gap?: boolean;
+  /** Word timing for karaoke highlighting, when the source provides it. */
+  words?: LyricWord[];
 }
 
 export interface Track {
@@ -20,6 +31,8 @@ export interface Track {
   preview?: boolean;
   playback?: 'direct';
   source: Source;
+  /** Real performer from provider metadata (SoundCloud publisher_metadata), when the uploader differs. */
+  metaArtist?: string;
   lyrics?: LyricLine[];
 }
 
@@ -32,6 +45,10 @@ export interface Playlist {
   created: number;
   artworkUrl?: string;
   section?: PlaylistSection;
+  /** Link the playlist was imported from; enables "Update from source". */
+  sourceUrl?: string;
+  sourceMode?: 'playlist' | 'sc_likes';
+  syncedAt?: number;
 }
 
 export interface SoundCloudPlaylist {
