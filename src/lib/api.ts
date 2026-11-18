@@ -1,6 +1,7 @@
 import type { LyricLine, Track } from '../types';
 import { findYouTubeFallbackCandidate, youtubeFallbackQueries } from './youtube-match';
-import { findLyricsCandidate, lyricsSearchQueries, stripTrackNoise, toSeconds, type LyricsCandidate } from './lyrics-match';
+import { findLyricsCandidate, lyricsSearchQueries, speedVariant, stripTrackNoise, toSeconds, type LyricsCandidate } from './lyrics-match';
+import { pickBest } from './lyrics-identify';
 import { fromWordLines, parseEnhancedWords } from './lyric-words';
 import { rpc } from './backend';
 import { upscaleYtmArtwork } from './ytmusic-library';
@@ -235,6 +236,44 @@ export function parseLrc(s: string): LyricLine[] {
   return out.sort((a, b) => a.t - b.t);
 }
 
+/**
+ * Lyrics from YouTube Music (LyricFind / Musixmatch licensed, timed when available).
+ * YouTube tracks use their own video id; anything else is first identified in the YouTube Music
+ * catalogue by fuzzy title/artist/duration matching, including slowed / sped-up re-uploads whose
+ * timestamps are stretched by the duration ratio.
+ */
+async function fetchYtmLyrics(t: Track): Promise<LyricsData | null> {
+  if (!('__TAURI_INTERNALS__' in window)) return null;
+  const { invoke } = await import('@tauri-apps/api/core');
+  type Res = { synced: { startMs: number; text: string }[]; plain: string[]; source: string };
+  const toData = (r: Res | null, timeScale: number): LyricsData | null => {
+    if (!r) return null;
+    if (r.synced.filter((l) => l.text).length >= 3) {
+      return { synced: withGaps(r.synced.map((l) => ({ t: (l.startMs / 1000) * timeScale, text: l.text }))) };
+    }
+    const plain = r.plain.map((s) => s.trim()).filter(Boolean);
+    return plain.length >= 3 ? { plain } : null;
+  };
+  const speed = speedVariant(t.title);
+  const ownId = t.nativeId ?? (t.id.startsWith('yt:') ? t.id.slice(3) : '');
+  if ((t.source === 'youtube' || t.id.startsWith('yt:')) && /^[\w-]{11}$/.test(ownId) && !speed) {
+    const own = toData(await invoke<Res>('ytm_lyrics', { videoId: ownId }).catch(() => null), 1);
+    if (own) return own;
+  }
+  const queries = lyricsSearchQueries(t);
+  const wantSec = toSeconds(t.fullDuration ?? t.duration);
+  const searches = queries.slice(0, 2).map((q) => searchYtDlpTracks(`${q.artist} ${q.title}`).catch(() => [] as YouTubeTrack[]));
+  const found = (await Promise.all(searches)).flat().filter((c, i, all) => all.findIndex((x) => x.nativeId === c.nativeId) === i);
+  const best = pickBest(
+    queries,
+    found.map((c) => ({ title: c.title, artist: c.artist, duration: c.durationMs / 1000, id: c.nativeId })),
+    wantSec,
+    speed,
+  );
+  if (!best || best.candidate.id === ownId) return null;
+  return toData(await invoke<Res>('ytm_lyrics', { videoId: best.candidate.id }).catch(() => null), best.match.timeScale);
+}
+
 /** Word-timed lyrics from the backend (NetEase YRC), or null when no trustworthy match exists. */
 async function fetchWordLyrics(t: Track): Promise<{ wordLevel: boolean; lines: LyricLine[] } | null> {
   if (!('__TAURI_INTERNALS__' in window)) return null;
@@ -427,12 +466,16 @@ export async function getLyrics(t: Track, forceRefresh = false): Promise<LyricsD
   if (!p) {
     const lineLevel = (t.source === 'soundcloud' ? fetchSoundCloudLyrics(t) : fetchLyrics(t)).catch(() => null);
     const wordLevel = fetchWordLyrics(t).catch(() => null);
-    // Both run in parallel; karaoke timing wins when a strict match exists, otherwise line timing.
-    p = Promise.all([lineLevel, wordLevel])
-      .then(([lines, ne]): LyricsData | null => {
-        // Karaoke timing always wins; NetEase line lyrics fill in only when nothing synced was found.
+    const ytm = Promise.race([fetchYtmLyrics(t).catch(() => null), new Promise<null>((r) => setTimeout(() => r(null), 6000))]);
+    // All run in parallel. Priority: karaoke (NetEase YRC) > LRCLIB synced > YouTube Music synced >
+    // NetEase line synced > YouTube Music plain > LRCLIB plain.
+    p = Promise.all([lineLevel, wordLevel, ytm])
+      .then(([lines, ne, ym]): LyricsData | null => {
         if (ne?.wordLevel) return { ...(lines ?? {}), synced: ne.lines, plain: undefined };
-        if (ne && !lines?.synced?.length) return { ...(lines ?? {}), synced: ne.lines, plain: undefined, instrumental: undefined };
+        if (lines?.synced?.length) return lines;
+        if (ym?.synced?.length) return { ...ym, matchedTitle: lines?.matchedTitle, matchedArtist: lines?.matchedArtist };
+        if (ne?.lines.length) return { ...(lines ?? {}), synced: ne.lines, plain: undefined, instrumental: undefined };
+        if (ym?.plain?.length) return ym;
         return lines;
       })
       .then((value) => {

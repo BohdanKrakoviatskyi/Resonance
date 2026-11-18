@@ -11,7 +11,7 @@ commands.allow = ["lastfm_login", "lastfm_status", "lastfm_logout", "lastfm_now_
 [[permission]]
 identifier = "allow-word-lyrics"
 description = "Look up word-timed (karaoke) lyrics for the current track."
-commands.allow = ["lyrics_word_synced"]
+commands.allow = ["lyrics_word_synced", "ytm_lyrics"]
 
 [[permission]]
 identifier = "allow-offline"
