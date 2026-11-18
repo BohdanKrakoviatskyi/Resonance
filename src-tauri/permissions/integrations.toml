@@ -9,6 +9,11 @@ description = "Log in to Last.fm and send now-playing updates and scrobbles."
 commands.allow = ["lastfm_login", "lastfm_status", "lastfm_logout", "lastfm_now_playing", "lastfm_scrobble"]
 
 [[permission]]
+identifier = "allow-word-lyrics"
+description = "Look up word-timed (karaoke) lyrics for the current track."
+commands.allow = ["lyrics_word_synced"]
+
+[[permission]]
 identifier = "allow-local-library"
 description = "Scan user-chosen music folders and get the local relay address for playback."
 commands.allow = ["local_scan", "local_base_url"]

@@ -4,6 +4,7 @@ pub mod discord;
 pub mod lastfm;
 pub mod local;
 pub mod yandex_import;
+pub mod lyrics_words;
 pub mod playlist_import;
 pub mod yt;
 
@@ -198,6 +199,7 @@ pub fn run() {
             lastfm::lastfm_scrobble,
             local::local_scan,
             local::local_base_url,
+            lyrics_words::lyrics_word_synced,
             backend_rpc
         ])
         .run(tauri::generate_context!())

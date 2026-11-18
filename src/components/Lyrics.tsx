@@ -14,6 +14,7 @@ import {
 } from '../lib/api';
 import { stripTrackNoise } from '../lib/lyrics-match';
 import { parseLrcFile } from '../lib/lrc-file';
+import { wordProgress } from '../lib/lyric-words';
 import { LYRICS_OFFSET_STEP, nudgeLyricsOffset, setLyricsOffset, useLyricsOffset } from '../state/lyrics-offset';
 import { onFrame, player, seek, toggle } from '../state/player';
 import type { LyricLine, Track } from '../types';
@@ -88,6 +89,8 @@ function SyncedLyrics({
   const [h, setH] = useState(0);
   const idle = useRef(0);
   const lpRef = useRef({ i: -1, p: -1 });
+  const wordEls = useRef<{ i: number; els: HTMLElement[]; last: number[] }>({ i: -1, els: [], last: [] });
+  const wp = useRef<number[]>([]);
   const touchY = useRef(0);
   const leadGap = variant === 'panel' && !!lines[0]?.gap;
   const firstText = leadGap ? Math.max(1, lines.findIndex((l) => !l.gap)) : 0;
@@ -102,7 +105,22 @@ function SyncedLyrics({
         activeRef.current = i;
         setActive(i);
       }
-      if (i >= 0) {
+      if (i >= 0 && lines[i].words) {
+        // Karaoke: fill each word by its own timing.
+        const el = refs.current[i];
+        if (el) {
+          if (wordEls.current.i !== i) wordEls.current = { i, els: Array.from(el.querySelectorAll<HTMLElement>('.lyric-word')), last: [] };
+          const { els, last } = wordEls.current;
+          wordProgress(lines[i].words!, time, wp.current);
+          for (let k = 0; k < els.length; k++) {
+            const p = wp.current[k] ?? 0;
+            if (Math.abs(p - (last[k] ?? -1)) >= 0.004) {
+              last[k] = p;
+              els[k].style.setProperty('--wp', p.toFixed(3));
+            }
+          }
+        }
+      } else if (i >= 0) {
         const L = lines[i];
         const end = Math.min(lines[i + 1]?.t ?? L.t + 6, L.t + (L.gap ? 60 : 7));
         // Пишем каждый кадр rAF (на 120 Гц — 120 раз/с) для максимальной плавности заливки;
@@ -193,6 +211,14 @@ function SyncedLyrics({
                   <i />
                   <i />
                   <i />
+                </span>
+              ) : l.words ? (
+                <span className="lyric-text" data-words="">
+                  {l.words.map((w, k) => (
+                    <span key={k} className="lyric-word">
+                      {w.text}
+                    </span>
+                  ))}
                 </span>
               ) : (
                 <span className="lyric-text">{l.text}</span>

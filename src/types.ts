@@ -1,9 +1,20 @@
 export type Source = 'soundcloud' | 'youtube' | 'local';
 
+export interface LyricWord {
+  /** Start, seconds. */
+  t: number;
+  /** Duration, seconds. */
+  d: number;
+  /** Includes its trailing space, so joining words yields the line. */
+  text: string;
+}
+
 export interface LyricLine {
   t: number;
   text: string;
   gap?: boolean;
+  /** Word timing for karaoke highlighting, when the source provides it. */
+  words?: LyricWord[];
 }
 
 export interface Track {
