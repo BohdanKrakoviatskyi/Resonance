@@ -233,22 +233,25 @@ export function parseLrc(s: string): LyricLine[] {
 }
 
 /** Word-timed lyrics from the backend (NetEase YRC), or null when no trustworthy match exists. */
-async function fetchWordLyrics(t: Track): Promise<LyricLine[] | null> {
+async function fetchWordLyrics(t: Track): Promise<{ wordLevel: boolean; lines: LyricLine[] } | null> {
   if (!('__TAURI_INTERNALS__' in window)) return null;
   const { invoke } = await import('@tauri-apps/api/core');
   const durationMs = Math.round(toSeconds(t.fullDuration ?? t.duration) * 1000);
   // Line lyrics wait for this, so keep it short; a slow lookup just means line timing.
   const timeout = new Promise<null>((r) => setTimeout(() => r(null), 3500));
-  const lines = await Promise.race([
-    invoke<{ startMs: number; words: { startMs: number; durMs: number; text: string }[] }[]>('lyrics_word_synced', {
+  const res = await Promise.race([
+    invoke<{ wordLevel: boolean; lines: { startMs: number; words: { startMs: number; durMs: number; text: string }[] }[] }>('lyrics_word_synced', {
       title: stripTrackNoise(t.title) || t.title,
       artist: t.artist.replace(/\s+-\s+Topic$/i, ''),
       durationMs,
     }).catch(() => null),
     timeout,
   ]);
-  const mapped = lines ? fromWordLines(lines) : [];
-  return mapped.length >= 4 ? withGaps(mapped) : null;
+  const mapped = res ? fromWordLines(res.lines) : [];
+  if (mapped.length < 4) return null;
+  // Line-only results carry one "word" per line; drop it so they render like normal synced lyrics.
+  const lines = res!.wordLevel ? mapped : mapped.map(({ words: _w, ...l }) => l);
+  return { wordLevel: res!.wordLevel, lines: withGaps(lines) };
 }
 
 /** Inserts "• • •" breathing lines for intros and long instrumental breaks. */
@@ -423,7 +426,12 @@ export async function getLyrics(t: Track, forceRefresh = false): Promise<LyricsD
     const wordLevel = fetchWordLyrics(t).catch(() => null);
     // Both run in parallel; karaoke timing wins when a strict match exists, otherwise line timing.
     p = Promise.all([lineLevel, wordLevel])
-      .then(([lines, words]): LyricsData | null => (words ? { ...(lines ?? {}), synced: words, plain: undefined } : lines))
+      .then(([lines, ne]): LyricsData | null => {
+        // Karaoke timing always wins; NetEase line lyrics fill in only when nothing synced was found.
+        if (ne?.wordLevel) return { ...(lines ?? {}), synced: ne.lines, plain: undefined };
+        if (ne && !lines?.synced?.length) return { ...(lines ?? {}), synced: ne.lines, plain: undefined, instrumental: undefined };
+        return lines;
+      })
       .then((value) => {
         if (!value) lyricsCache.delete(t.id);
         return value;

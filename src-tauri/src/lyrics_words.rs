@@ -122,17 +122,64 @@ async fn get(http: &reqwest::Client, url: &str, query: &[(&str, String)]) -> Res
         .map_err(|e| e.to_string())
 }
 
-/// Returns word-timed lines, or an empty list when no trustworthy match exists.
+/// Plain LRC (`[mm:ss.xx]text`) → one "word" per line spanning until the next line.
+pub fn parse_lrc_lines(src: &str) -> Vec<WordLine> {
+    let mut stamped: Vec<(i64, String)> = Vec::new();
+    for raw in src.lines() {
+        let mut rest = raw.trim();
+        let mut times = Vec::new();
+        while let Some(stripped) = rest.strip_prefix('[') {
+            let Some(end) = stripped.find(']') else { break };
+            let tag = &stripped[..end];
+            let ms = tag.split_once(':').and_then(|(m, s)| Some(m.parse::<i64>().ok()? * 60_000 + (s.parse::<f64>().ok()? * 1000.0) as i64));
+            match ms {
+                Some(ms) => times.push(ms),
+                None => break,
+            }
+            rest = &stripped[end + 1..];
+        }
+        let text = rest.trim();
+        if text.is_empty() || is_credit_line(text) {
+            continue;
+        }
+        for t in times {
+            stamped.push((t, text.to_string()));
+        }
+    }
+    stamped.sort_by_key(|(t, _)| *t);
+    let mut out = Vec::new();
+    for (i, (t, text)) in stamped.iter().enumerate() {
+        let next = stamped.get(i + 1).map_or(t + 4000, |(n, _)| *n);
+        out.push(WordLine { start_ms: *t, words: vec![Word { start_ms: *t, dur_ms: (next - t).clamp(1, 8000), text: text.clone() }] });
+    }
+    out
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NeteaseLyrics {
+    /// true: real per-word timing; false: line timing only (each line is a single "word").
+    pub word_level: bool,
+    pub lines: Vec<WordLine>,
+}
+
+/// Word-timed lines when available, otherwise NetEase's line-synced lyrics; empty when no trustworthy match.
 #[tauri::command]
-pub async fn lyrics_word_synced(title: String, artist: String, duration_ms: i64) -> Result<Vec<WordLine>, String> {
+pub async fn lyrics_word_synced(title: String, artist: String, duration_ms: i64) -> Result<NeteaseLyrics, String> {
     let http = reqwest::Client::new();
     let q = format!("{artist} {title}");
     let found = get(&http, SEARCH, &[("s", q), ("type", "1".into()), ("limit", "10".into())]).await?;
     let songs = found.pointer("/result/songs").and_then(Value::as_array).cloned().unwrap_or_default();
-    let Some(id) = pick_song(&songs, &title, &artist, duration_ms) else { return Ok(Vec::new()) };
+    let Some(id) = pick_song(&songs, &title, &artist, duration_ms) else {
+        return Ok(NeteaseLyrics { word_level: false, lines: Vec::new() });
+    };
     let lyr = get(&http, LYRIC, &[("id", id.to_string()), ("lv", "1".into()), ("yv", "1".into()), ("tv", "-1".into())]).await?;
-    let yrc = lyr.pointer("/yrc/lyric").and_then(Value::as_str).unwrap_or_default();
-    Ok(parse_yrc(yrc))
+    let words = parse_yrc(lyr.pointer("/yrc/lyric").and_then(Value::as_str).unwrap_or_default());
+    if !words.is_empty() {
+        return Ok(NeteaseLyrics { word_level: true, lines: words });
+    }
+    let lines = parse_lrc_lines(lyr.pointer("/lrc/lyric").and_then(Value::as_str).unwrap_or_default());
+    Ok(NeteaseLyrics { word_level: false, lines })
 }
 
 #[cfg(test)]
@@ -160,10 +207,21 @@ mod tests {
     #[test]
     #[ignore]
     fn live_netease_lookup() {
-        let lines = tauri::async_runtime::block_on(lyrics_word_synced("One More Time".into(), "Daft Punk".into(), 320_000)).unwrap();
+        let res = tauri::async_runtime::block_on(lyrics_word_synced("One More Time".into(), "Daft Punk".into(), 320_000)).unwrap();
+        assert!(res.word_level);
+        let lines = res.lines;
         assert!(lines.len() > 10, "got {} lines", lines.len());
         assert!(lines.iter().all(|l| !l.words.is_empty()));
         println!("first: {:?}", lines[0]);
+    }
+
+    #[test]
+    fn parses_plain_lrc_fallback() {
+        let l = parse_lrc_lines("[00:00.00] 作词 : X\n[00:10.50]Hello\n[00:12.00][00:20.00]Again\n[bad]skip");
+        assert_eq!(l.len(), 3);
+        assert_eq!(l[0].start_ms, 10_500);
+        assert_eq!(l[0].words[0].dur_ms, 1_500);
+        assert_eq!(l[2].words[0].text, "Again");
     }
 
     #[test]
