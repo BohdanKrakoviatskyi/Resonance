@@ -170,6 +170,31 @@ class ResonanceMobilePlugin(private val activity: Activity) : Plugin(activity) {
     }
 
     @Command
+    fun setAudioConfig(invoke: Invoke) {
+        val args = invoke.getArgs()
+        val normEnabled = args.optBoolean("normalizationEnabled", false)
+        val normTarget = args.optString("normalizationTarget", "normal")
+        val xfadeEnabled = args.optBoolean("crossfadeEnabled", false)
+        val xfadeDurationMs = args.optLong("crossfadeDurationMs", 4_000L)
+        val xfadeCurve = args.optString("crossfadeCurve", "equalPower")
+        ResonanceAudioController.runOnMain {
+            try {
+                ResonanceAudioController.setAudioConfig(
+                    activity.applicationContext,
+                    normEnabled,
+                    normTarget,
+                    xfadeEnabled,
+                    xfadeDurationMs,
+                    xfadeCurve
+                )
+                invoke.resolve(JSObject())
+            } catch (ex: Exception) {
+                invoke.reject("Failed to apply audio config: ${ex.message}", ex)
+            }
+        }
+    }
+
+    @Command
     fun setRepeatShuffle(invoke: Invoke) {
         val args = invoke.getArgs()
         val repeatMode = args.optString("repeatMode", "off")
@@ -187,6 +212,14 @@ class ResonanceMobilePlugin(private val activity: Activity) : Plugin(activity) {
                 invoke.reject("Failed to update repeat/shuffle: ${ex.message}", ex)
             }
         }
+    }
+
+    @Command
+    fun clearAuthCookies(invoke: Invoke) {
+        val args = invoke.getArgs()
+        val provider = args.optString("provider", "")
+        AuthWebViewDialog.clearCookiesForProvider(provider)
+        invoke.resolve(JSObject())
     }
 
     @Command

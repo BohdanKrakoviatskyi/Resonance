@@ -380,7 +380,7 @@ function evictLyricsCache() {
   }
 }
 
-export async function getLyrics(t: Track, forceRefresh = false): Promise<LyricsData | null> {
+export async function getLyrics(t: Track, forceRefresh = false, _signal?: AbortSignal): Promise<LyricsData | null> {
   if (t.lyrics) return { synced: t.lyrics };
   if (!loadLyricsOverrides()[t.id]) {
     await ensureLyricsOverridesRestored();

@@ -24,6 +24,7 @@ commands.allow = [
   "frontend_log",
   "start_ytmusic_login",
   "start_soundcloud_login",
+  "mobile_clear_auth_cookies",
   "mobile_audio_set_queue",
   "mobile_audio_play",
   "mobile_audio_pause",
@@ -33,6 +34,7 @@ commands.allow = [
   "mobile_audio_prev",
   "mobile_audio_get_state",
   "mobile_audio_set_eq",
+  "mobile_audio_set_config",
   "mobile_audio_set_repeat_shuffle",
   "mobile_cache_get_limit",
   "mobile_cache_set_limit"

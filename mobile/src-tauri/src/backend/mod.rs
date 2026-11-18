@@ -83,13 +83,51 @@ impl Backend {
     /// never holds the state lock while writers (settings/auth/history) wait behind it.
     async fn sc(&self) -> Sc {
         let state = self.inner.state.read().await;
+        let mut client_id = state.settings.client_id.clone();
+        if client_id.trim().is_empty() {
+            if let Ok(cached) = self.inner.public_client_id.lock() {
+                if !cached.trim().is_empty() {
+                    client_id = cached.trim().to_string();
+                }
+            }
+        }
         Sc {
             http: self.inner.http.clone(),
             api_base: self.inner.api_base.clone(),
             token: state.auth.token.clone(),
-            client_id: state.settings.client_id.clone(),
+            client_id,
             user_id: state.auth.profile.id,
         }
+    }
+
+    /// Ensures a valid SoundCloud `client_id` is persisted: saves `candidate` if valid,
+    /// otherwise scrapes SoundCloud's public web bundle once and saves it.
+    pub async fn ensure_client_id(&self, candidate: &str) -> Result<String, String> {
+        let trimmed = candidate.trim();
+        if valid_client_id(trimmed) {
+            let updated = self
+                .settings_update(SettingsPatch {
+                    client_id: Some(trimmed.to_string()),
+                    ..Default::default()
+                })
+                .await?;
+            return Ok(updated.client_id);
+        }
+        let existing = self.inner.state.read().await.settings.client_id.trim().to_string();
+        if !existing.is_empty() {
+            return Ok(existing);
+        }
+        let sc = self.sc().await;
+        let scraped = self.ensure_public_client_id(&sc).await.map_err(s)?;
+        if valid_client_id(&scraped) {
+            let _ = self
+                .settings_update(SettingsPatch {
+                    client_id: Some(scraped.clone()),
+                    ..Default::default()
+                })
+                .await;
+        }
+        Ok(scraped)
     }
 
     /// Resolves a SoundCloud URN (`soundcloud:tracks:123` or `123`) directly for the local mobile audio proxy.
@@ -323,6 +361,9 @@ impl Backend {
         let token = token.trim().to_string();
         if token.is_empty() {
             return Err("вставьте access token SoundCloud".into());
+        }
+        if self.inner.state.read().await.settings.client_id.trim().is_empty() {
+            let _ = self.ensure_client_id("").await;
         }
         // Network first, lock only for the save: a slow SoundCloud response must not block other writes.
         let user = self.sc().await.fetch_profile(&token).await.map_err(s)?;

@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
-import { Button, IconButton } from '../components/ui';
+import { Icon } from '../components/Icon';
+import { Button, IconButton, type Vars } from '../components/ui';
 import { pick, t, useLang } from '../lib/i18n';
 import {
   soundCloudAuthLogin,
@@ -20,9 +21,11 @@ import {
   loadYtMusicLibrary,
 } from '../state/library';
 import { go } from '../state/ui';
+import soundcloudLogo from '../assets/soundcloud.svg';
+import youtubeMusicLogo from '../assets/youtube-music.svg';
 
 interface ScCaptureDto {
-  clientId: string;
+  clientId?: string;
   token: string;
   datadome?: string;
 }
@@ -112,10 +115,23 @@ export default function Providers() {
     setScMsg(t('scSignInWindowMsg'));
     try {
       const captured = await invoke<ScCaptureDto>('start_soundcloud_login');
-      if (captured.clientId) {
-        await soundCloudSetClientId(captured.clientId);
+      if (captured.clientId && captured.clientId.trim().length >= 8) {
+        await soundCloudSetClientId(captured.clientId.trim()).catch(() => {});
       }
-      await soundCloudAuthLogin(captured.token);
+      if (captured.datadome) {
+        try {
+          localStorage.setItem('resonance.sc.datadome', captured.datadome);
+        } catch {
+          /* ignore */
+        }
+      }
+      try {
+        await soundCloudAuthLogin(captured.token);
+      } catch (loginErr) {
+        // If an expired pre-existing WebView cookie was captured, clear it so the user gets a clean sign-in
+        await invoke('mobile_clear_auth_cookies', { provider: 'soundcloud' }).catch(() => {});
+        throw loginErr;
+      }
       await loadSoundCloudLibrary(true);
       await refreshStatuses();
       setScMsg(t('scConnectedMsg'));
@@ -151,129 +167,49 @@ export default function Providers() {
   };
 
   return (
-    <div className="flex flex-col gap-4 px-4 pb-8 pt-3">
-      <header className="flex items-center gap-2.5">
-        <IconButton icon="arrow_back" label={t('back')} variant="tonal" size="sm" tip={false} onClick={() => go({ name: 'settings' })} />
-        <h1 className="headline text-2xl font-extrabold">{t('providers')}</h1>
+    <div className="flex flex-col gap-3.5 px-4 pb-10 pt-3">
+      <header className="anim-in mb-1">
+        <div className="mb-2 flex items-center gap-2">
+          <IconButton icon="arrow_back" label={t('back')} variant="tonal" size="sm" tip={false} onClick={() => go({ name: 'settings' })} />
+          <span className="text-xs font-semibold text-on-surface-variant">{t('settings')}</span>
+        </div>
+        <h1 className="display text-[clamp(28px,7.5vw,40px)]">{t('providers')}</h1>
+        <p className="mt-1 text-sm text-on-surface-variant">{t('providersSub')}</p>
       </header>
 
-      {/* YouTube Music Card */}
-      <section className="rounded-3xl bg-sc-low p-4">
-        <div className="flex items-start justify-between gap-2">
-          <div>
-            <h2 className="headline text-lg font-extrabold">YouTube Music</h2>
-            <p className="mt-0.5 text-xs text-on-surface-variant">{t('ytDescription')}</p>
-          </div>
-          <span className="inline-flex items-center gap-1.5 rounded-full bg-sc-high px-3 py-1 text-xs font-bold">
-            <span className={`h-2 w-2 rounded-full ${ytStatus?.connected ? 'bg-primary' : 'bg-on-surface-variant'}`} />
-            {ytStatus?.connected ? t('providerStatusConnected') : ytStatus ? t('providerStatusNotConnected') : t('providerStatusChecking')}
-          </span>
-        </div>
-
-        {ytStatus?.account && (
-          <p className="mt-2 text-xs">
-            {t('providerAccount')}: <span className="font-bold">{ytStatus.account}</span>
-          </p>
-        )}
-
-        <div className="mt-3.5 flex flex-wrap gap-2">
-          <Button variant="filled" disabled={busyProvider !== null} onClick={() => void handleYtWebLogin()}>
-            {busyProvider === 'yt' ? t('ytWaitingBtn') : t('ytLoginBtn')}
-          </Button>
-          {ytStatus?.connected && (
-            <>
-              <Button
-                variant="tonal"
-                disabled={busyProvider !== null}
-                onClick={async () => {
-                  setBusyProvider('yt');
-                  try {
-                    await loadYtMusicLibrary(true);
-                    setYtMsg(t('ytRefreshedMsg'));
-                  } catch (e) {
-                    setYtErr(errStr(e));
-                  } finally {
-                    setBusyProvider(null);
-                  }
-                }}
-              >
-                {t('providerRefresh')}
-              </Button>
-              <Button
-                variant="outlined"
-                disabled={busyProvider !== null}
-                onClick={async () => {
-                  setBusyProvider('yt');
-                  try {
-                    await ytMusicAuthLogout();
-                    clearYtMusicLibrary();
-                    await refreshStatuses();
-                    setYtMsg(t('providerDisconnectedMsg'));
-                  } finally {
-                    setBusyProvider(null);
-                  }
-                }}
-              >
-                {t('providerDisconnect')}
-              </Button>
-            </>
-          )}
-        </div>
-
-        <button
-          type="button"
-          onClick={() => setShowYtManual((v) => !v)}
-          className="mt-3 text-xs font-semibold text-primary"
-        >
-          {pick('Вставить Cookie вручную (резервный вход)', 'Paste Cookie header manually (fallback)')}
-        </button>
-
-        {showYtManual && (
-          <div className="mt-2.5 flex flex-col gap-2">
-            <textarea
-              rows={3}
-              value={ytCookieInput}
-              onChange={(e) => setYtCookieInput(e.target.value)}
-              placeholder="__Secure-3PAPISID=...; SAPISID=...;"
-              className="w-full rounded-2xl bg-sc-highest p-3 text-xs outline-none"
-            />
-            <Button variant="tonal" disabled={!ytCookieInput.trim() || busyProvider !== null} onClick={() => void handleYtManualSave()}>
-              {t('save')}
-            </Button>
-          </div>
-        )}
-
-        {ytMsg && <p className="mt-2.5 text-xs font-semibold text-primary">{ytMsg}</p>}
-        {ytErr && <p className="mt-2.5 text-xs font-semibold text-error">{ytErr}</p>}
-      </section>
-
       {/* SoundCloud Card */}
-      <section className="rounded-3xl bg-sc-low p-4">
-        <div className="flex items-start justify-between gap-2">
-          <div>
-            <h2 className="headline text-lg font-extrabold">SoundCloud</h2>
-            <p className="mt-0.5 text-xs text-on-surface-variant">{t('scDescription')}</p>
+      <section className="card anim-in !p-4" style={{ '--i': 1 } as Vars}>
+        <div className="flex items-start justify-between gap-3">
+          <div className="flex items-center gap-3">
+            <span className="grid h-11 w-11 shrink-0 place-items-center rounded-[15px] bg-sc-high">
+              <img src={soundcloudLogo} alt="" className="h-6 w-6 object-contain" />
+            </span>
+            <div>
+              <h2 className="headline text-lg font-extrabold">SoundCloud</h2>
+              <p className="mt-0.5 text-xs text-on-surface-variant">{t('scDescription')}</p>
+            </div>
           </div>
-          <span className="inline-flex items-center gap-1.5 rounded-full bg-sc-high px-3 py-1 text-xs font-bold">
+          <span className="inline-flex shrink-0 items-center gap-1.5 rounded-full bg-sc-high px-3 py-1 text-xs font-bold">
             <span className={`h-2 w-2 rounded-full ${scStatus?.connected ? 'bg-primary' : 'bg-on-surface-variant'}`} />
             {scStatus?.connected ? t('providerStatusConnected') : scStatus ? t('providerStatusNotConnected') : t('providerStatusChecking')}
           </span>
         </div>
 
         {scStatus?.account && (
-          <p className="mt-2 text-xs">
-            {t('providerAccount')}: <span className="font-bold">{scStatus.account}</span>
+          <p className="mt-2.5 rounded-xl bg-sc-low/60 px-3 py-2 text-xs">
+            {t('providerAccount')}: <span className="font-bold text-on-surface">{scStatus.account}</span>
           </p>
         )}
 
         <div className="mt-3.5 flex flex-wrap gap-2">
-          <Button variant="filled" disabled={busyProvider !== null} onClick={() => void handleScWebLogin()}>
+          <Button variant="filled" icon="login" disabled={busyProvider !== null} onClick={() => void handleScWebLogin()}>
             {busyProvider === 'sc' ? t('scWaitingBtn') : t('scLoginBtn')}
           </Button>
           {scStatus?.connected && (
             <>
               <Button
                 variant="tonal"
+                icon="refresh"
                 disabled={busyProvider !== null}
                 onClick={async () => {
                   setBusyProvider('sc');
@@ -297,6 +233,7 @@ export default function Providers() {
                   setBusyProvider('sc');
                   try {
                     await soundCloudAuthLogout();
+                    await invoke('mobile_clear_auth_cookies', { provider: 'soundcloud' }).catch(() => {});
                     clearSoundCloudLibrary();
                     await refreshStatuses();
                     setScMsg(t('providerDisconnectedMsg'));
@@ -314,9 +251,10 @@ export default function Providers() {
         <button
           type="button"
           onClick={() => setShowScManual((v) => !v)}
-          className="mt-3 text-xs font-semibold text-primary"
+          className="mt-3 inline-flex items-center gap-1 text-xs font-semibold text-primary"
         >
-          {pick('Ввести OAuth токен вручную', 'Enter OAuth token manually')}
+          <Icon name="expand_more" size={16} className={showScManual ? 'rotate-180' : ''} />
+          <span>{pick('Вставить OAuth токен вручную (резервный вход)', 'Paste OAuth token manually (fallback)')}</span>
         </button>
 
         {showScManual && (
@@ -325,15 +263,15 @@ export default function Providers() {
               type="text"
               value={scTokenInput}
               onChange={(e) => setScTokenInput(e.target.value)}
-              placeholder="SoundCloud OAuth token (2-xxxxxx-...)"
-              className="h-11 w-full rounded-2xl bg-sc-highest px-3.5 text-xs outline-none"
+              placeholder="2-301948-... (oauth_token)"
+              className="w-full rounded-2xl bg-sc-highest p-3 text-xs outline-none"
             />
             <input
               type="text"
               value={scClientIdInput}
               onChange={(e) => setScClientIdInput(e.target.value)}
-              placeholder={pick('Client ID (необязательно)', 'Client ID (optional)')}
-              className="h-11 w-full rounded-2xl bg-sc-highest px-3.5 text-xs outline-none"
+              placeholder="client_id (необязательно / optional)"
+              className="w-full rounded-2xl bg-sc-highest p-3 text-xs outline-none"
             />
             <Button variant="tonal" disabled={!scTokenInput.trim() || busyProvider !== null} onClick={() => void handleScManualSave()}>
               {t('save')}
@@ -343,6 +281,104 @@ export default function Providers() {
 
         {scMsg && <p className="mt-2.5 text-xs font-semibold text-primary">{scMsg}</p>}
         {scErr && <p className="mt-2.5 text-xs font-semibold text-error">{scErr}</p>}
+      </section>
+
+      {/* YouTube Music Card */}
+      <section className="card anim-in !p-4" style={{ '--i': 2 } as Vars}>
+        <div className="flex items-start justify-between gap-3">
+          <div className="flex items-center gap-3">
+            <span className="grid h-11 w-11 shrink-0 place-items-center rounded-[15px] bg-sc-high">
+              <img src={youtubeMusicLogo} alt="" className="h-6 w-6 object-contain" />
+            </span>
+            <div>
+              <h2 className="headline text-lg font-extrabold">YouTube Music</h2>
+              <p className="mt-0.5 text-xs text-on-surface-variant">{t('ytDescription')}</p>
+            </div>
+          </div>
+          <span className="inline-flex shrink-0 items-center gap-1.5 rounded-full bg-sc-high px-3 py-1 text-xs font-bold">
+            <span className={`h-2 w-2 rounded-full ${ytStatus?.connected ? 'bg-primary' : 'bg-on-surface-variant'}`} />
+            {ytStatus?.connected ? t('providerStatusConnected') : ytStatus ? t('providerStatusNotConnected') : t('providerStatusChecking')}
+          </span>
+        </div>
+
+        {ytStatus?.account && (
+          <p className="mt-2.5 rounded-xl bg-sc-low/60 px-3 py-2 text-xs">
+            {t('providerAccount')}: <span className="font-bold text-on-surface">{ytStatus.account}</span>
+          </p>
+        )}
+
+        <div className="mt-3.5 flex flex-wrap gap-2">
+          <Button variant="filled" icon="login" disabled={busyProvider !== null} onClick={() => void handleYtWebLogin()}>
+            {busyProvider === 'yt' ? t('ytWaitingBtn') : t('ytLoginBtn')}
+          </Button>
+          {ytStatus?.connected && (
+            <>
+              <Button
+                variant="tonal"
+                icon="refresh"
+                disabled={busyProvider !== null}
+                onClick={async () => {
+                  setBusyProvider('yt');
+                  try {
+                    await loadYtMusicLibrary(true);
+                    setYtMsg(t('ytRefreshedMsg'));
+                  } catch (e) {
+                    setYtErr(errStr(e));
+                  } finally {
+                    setBusyProvider(null);
+                  }
+                }}
+              >
+                {t('providerRefresh')}
+              </Button>
+              <Button
+                variant="outlined"
+                disabled={busyProvider !== null}
+                onClick={async () => {
+                  setBusyProvider('yt');
+                  try {
+                    await ytMusicAuthLogout();
+                    await invoke('mobile_clear_auth_cookies', { provider: 'ytmusic' }).catch(() => {});
+                    clearYtMusicLibrary();
+                    await refreshStatuses();
+                    setYtMsg(t('providerDisconnectedMsg'));
+                  } finally {
+                    setBusyProvider(null);
+                  }
+                }}
+              >
+                {t('providerDisconnect')}
+              </Button>
+            </>
+          )}
+        </div>
+
+        <button
+          type="button"
+          onClick={() => setShowYtManual((v) => !v)}
+          className="mt-3 inline-flex items-center gap-1 text-xs font-semibold text-primary"
+        >
+          <Icon name="expand_more" size={16} className={showYtManual ? 'rotate-180' : ''} />
+          <span>{pick('Вставить Cookie вручную (резервный вход)', 'Paste Cookie header manually (fallback)')}</span>
+        </button>
+
+        {showYtManual && (
+          <div className="mt-2.5 flex flex-col gap-2">
+            <textarea
+              rows={3}
+              value={ytCookieInput}
+              onChange={(e) => setYtCookieInput(e.target.value)}
+              placeholder="__Secure-3PAPISID=...; SAPISID=...;"
+              className="w-full rounded-2xl bg-sc-highest p-3 text-xs outline-none"
+            />
+            <Button variant="tonal" disabled={!ytCookieInput.trim() || busyProvider !== null} onClick={() => void handleYtManualSave()}>
+              {t('save')}
+            </Button>
+          </div>
+        )}
+
+        {ytMsg && <p className="mt-2.5 text-xs font-semibold text-primary">{ytMsg}</p>}
+        {ytErr && <p className="mt-2.5 text-xs font-semibold text-error">{ytErr}</p>}
       </section>
     </div>
   );

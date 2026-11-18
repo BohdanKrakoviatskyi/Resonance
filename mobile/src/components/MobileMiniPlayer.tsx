@@ -1,69 +1,118 @@
+import { useEffect, useRef } from 'react';
 import { Icon } from './Icon';
 import { IconButton } from './ui';
 import { Cover } from './Cover';
-import { SourcePill } from './TrackList';
-import { useStore } from '../lib/util';
-import { next, player, toggle, useCurrentTrack } from '../state/player';
+import { LikeButton, SourcePill } from './TrackList';
+import { clamp, cx, useStore } from '../lib/util';
+import { t } from '../lib/i18n';
+import { next, onFrame, player, prev, toggle, useCurrentTrack } from '../state/player';
 import { ui } from '../state/ui';
 
 export function MobileMiniPlayer() {
   const track = useCurrentTrack();
   const playing = useStore(player, (s) => s.playing);
   const loading = useStore(player, (s) => s.loading);
-  const pos = useStore(player, (s) => s.pos);
-  const duration = useStore(player, (s) => s.duration);
+  const barRef = useRef<HTMLDivElement>(null);
+  const swipeRef = useRef<{ x: number; y: number } | null>(null);
+
+  useEffect(() => {
+    return onFrame((pos, totalDur) => {
+      if (!barRef.current) return;
+      const f = totalDur > 0 ? clamp(pos / totalDur, 0, 1) : 0;
+      barRef.current.style.transform = `scaleX(${f.toFixed(4)})`;
+    });
+  }, []);
 
   if (!track) return null;
 
-  const progress = duration > 0 ? Math.min(1, Math.max(0, pos / duration)) : 0;
+  const active = playing || loading;
 
   return (
     <div
       role="button"
       tabIndex={0}
       onClick={() => ui.set({ nowPlayingOpen: true })}
-      onKeyDown={(e) => (e.key === 'Enter' || e.key === ' ') && (e.preventDefault(), ui.set({ nowPlayingOpen: true }))}
-      className="mobile-mini panel relative mx-2.5 mb-1.5 flex items-center gap-3 overflow-hidden rounded-2xl px-3 py-2 shadow-xl"
+      onKeyDown={(e) =>
+        (e.key === 'Enter' || e.key === ' ') && (e.preventDefault(), ui.set({ nowPlayingOpen: true }))
+      }
+      onTouchStart={(e) => {
+        const touch = e.touches[0];
+        swipeRef.current = { x: touch.clientX, y: touch.clientY };
+      }}
+      onTouchEnd={(e) => {
+        if (!swipeRef.current) return;
+        const touch = e.changedTouches[0];
+        const dx = touch.clientX - swipeRef.current.x;
+        const dy = touch.clientY - swipeRef.current.y;
+        swipeRef.current = null;
+        if (Math.abs(dx) > 54 && Math.abs(dx) > Math.abs(dy) * 1.4) {
+          e.stopPropagation();
+          if (dx < 0) void next();
+          else void prev();
+        }
+      }}
+      className="mobile-mini panel pointer-events-auto relative flex items-center gap-3 px-2.5 py-2"
     >
-      <div className="pointer-events-none absolute inset-x-0 top-0 h-[2.5px] bg-on-surface/10">
-        <div
-          className="h-full origin-left bg-primary transition-transform duration-300"
-          style={{ transform: `scaleX(${progress})` }}
-        />
+      <div className="relative h-12 w-12 shrink-0 overflow-hidden rounded-[15px] shadow-md">
+        <Cover src={track.thumb || track.cover} className="h-full w-full rounded-[15px]" />
+        {playing && !loading && (
+          <span className="pointer-events-none absolute bottom-1 right-1 grid h-5 w-5 place-items-center rounded-full bg-black/55 backdrop-blur-sm">
+            <span className="eq on !h-2.5 !w-3">
+              <i />
+              <i />
+              <i />
+            </span>
+          </span>
+        )}
       </div>
 
-      <Cover src={track.thumb || track.cover} className="h-11 w-11 shrink-0 rounded-xl" />
-
       <div className="min-w-0 flex-1">
-        <div className="truncate text-[14px] font-bold leading-tight">{track.title}</div>
-        <div className="mt-0.5 flex min-w-0 items-center gap-1.5 text-[12px] text-on-surface-variant">
+        <div className="truncate text-[14px] font-extrabold leading-tight">{track.title}</div>
+        <div className="mt-0.5 flex min-w-0 items-center gap-1.5 text-xs text-on-surface-variant">
           <SourcePill track={track} />
           <span className="truncate">{track.artist}</span>
         </div>
       </div>
 
-      <button
-        type="button"
-        aria-label={playing ? 'Pause' : 'Play'}
-        onClick={(e) => {
-          e.stopPropagation();
-          toggle();
-        }}
-        className="sl grid h-10 w-10 shrink-0 place-items-center rounded-full bg-primary text-on-primary"
-      >
-        <Icon name={loading ? 'graphic_eq' : playing ? 'pause' : 'play_arrow'} fill size={22} />
-      </button>
+      <div className="flex shrink-0 items-center gap-0.5" onClick={(e) => e.stopPropagation()}>
+        <LikeButton id={track.id} />
+        <button
+          type="button"
+          data-ripple
+          data-playing={active}
+          aria-label={active ? t('pause') : t('play')}
+          onClick={toggle}
+          className={cx(
+            'play-btn sl !h-10 !w-10',
+            active ? '!rounded-[13px]' : '!rounded-full',
+          )}
+        >
+          <Icon name="play_arrow" fill className="pi-play !text-[22px]" />
+          <Icon name="pause" fill className="pi-pause !text-[22px]" />
+          {loading && (
+            <svg className="play-spin" viewBox="0 0 66 66" aria-hidden="true">
+              <circle cx="33" cy="33" r="31" />
+            </svg>
+          )}
+        </button>
+        <IconButton
+          icon="skip_next"
+          label={t('next')}
+          size="sm"
+          fill
+          tip={false}
+          onClick={() => void next()}
+        />
+      </div>
 
-      <IconButton
-        icon="skip_next"
-        label="Next"
-        size="sm"
-        tip={false}
-        onClick={(e) => {
-          e.stopPropagation();
-          void next();
-        }}
-      />
+      {/* Hairline 60/120Hz progress along bottom edge */}
+      <div className="pointer-events-none absolute inset-x-4 bottom-0 h-[2.5px] overflow-hidden rounded-full bg-on-surface/10">
+        <div
+          ref={barRef}
+          className="h-full w-full origin-left bg-primary will-change-transform"
+          style={{ transform: 'scaleX(0)' }}
+        />
+      </div>
     </div>
   );
 }

@@ -85,11 +85,19 @@ impl<R: Runtime> ResonanceMobile<R> {
         Ok(())
     }
 
+    pub async fn set_audio_config(&self, _req: SetAudioConfigRequest) -> Result<(), String> {
+        Ok(())
+    }
+
     pub async fn set_repeat_shuffle(&self, req: SetRepeatShuffleRequest) -> Result<MobileAudioState, String> {
         let mut st = self.state.lock().map_err(|e| e.to_string())?;
         st.repeat_mode = req.repeat_mode;
         st.shuffle_enabled = req.shuffle_enabled;
         Ok(st.clone())
+    }
+
+    pub async fn clear_auth_cookies(&self, _req: ClearAuthCookiesRequest) -> Result<(), String> {
+        Ok(())
     }
 
     pub async fn start_ytmusic_login(&self) -> Result<YtAuthCaptureResult, String> {

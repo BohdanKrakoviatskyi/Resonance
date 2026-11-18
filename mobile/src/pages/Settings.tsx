@@ -1,90 +1,125 @@
 import { Icon, type IconName } from '../components/Icon';
+import { Segmented, type Vars } from '../components/ui';
 import { pick, t, useLang } from '../lib/i18n';
 import { useStore } from '../lib/util';
+import { appearance } from '../state/appearance';
 import { library } from '../state/library';
-import { go, openDialog } from '../state/ui';
+import { go, openDialog, type Route } from '../state/ui';
 
-function SettingsTile({
-  icon,
-  title,
-  sub,
-  badge,
-  onClick,
-}: {
+type SettingItem = {
+  route: Route;
   icon: IconName;
   title: string;
-  sub: string;
+  subtitle: string;
   badge?: string;
-  onClick: () => void;
-}) {
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      className="sl flex w-full items-center gap-3.5 rounded-3xl bg-sc-low p-4 text-left"
-    >
-      <div className="grid h-12 w-12 shrink-0 place-items-center rounded-2xl bg-primary-container text-on-primary-container">
-        <Icon name={icon} />
-      </div>
-      <div className="min-w-0 flex-1">
-        <div className="text-base font-extrabold">{title}</div>
-        <div className="mt-0.5 line-clamp-2 text-xs text-on-surface-variant">{sub}</div>
-      </div>
-      {badge && (
-        <span className="shrink-0 rounded-full bg-sc-highest px-2.5 py-1 text-[11px] font-bold text-primary">
-          {badge}
-        </span>
-      )}
-      <Icon name="chevron_right" className="text-on-surface-variant" />
-    </button>
-  );
-}
+};
 
 export default function Settings() {
-  useLang();
+  const lang = useLang();
   const ytAuth = useStore(library, (s) => s.ytmusicAuthorized);
   const scCount = useStore(library, (s) => s.soundcloudLiked.length + s.soundcloudPlaylists.length);
   const connectedCount = (ytAuth ? 1 : 0) + (scCount > 0 ? 1 : 0);
 
+  const items: SettingItem[] = [
+    {
+      route: { name: 'appearance' },
+      icon: 'palette',
+      title: t('appearance'),
+      subtitle: t('appearanceSub'),
+    },
+    {
+      route: { name: 'audio' },
+      icon: 'graphic_eq',
+      title: t('audioSettings'),
+      subtitle: t('audioSettingsSub'),
+    },
+    {
+      route: { name: 'providers' },
+      icon: 'music_note',
+      title: t('providers'),
+      subtitle: t('providersSub'),
+      badge: connectedCount > 0 ? `${connectedCount}/2` : undefined,
+    },
+  ];
+
   return (
-    <div className="flex flex-col gap-3.5 px-4 pb-8 pt-3">
-      <header className="mb-1">
-        <h1 className="display text-3xl">{t('settings')}</h1>
-        <p className="mt-1 text-sm text-on-surface-variant">{t('settingsSub')}</p>
+    <div className="flex flex-col gap-3.5 px-4 pb-10 pt-3">
+      <header className="anim-in mb-1.5 mt-1">
+        <h1 className="display text-[clamp(30px,8vw,42px)]">{t('settings')}</h1>
+        <p className="mt-1.5 text-sm text-on-surface-variant">{t('settingsSub')}</p>
       </header>
 
-      <SettingsTile
-        icon="cloud_done"
-        title={t('providers')}
-        sub={t('providersSub')}
-        badge={connectedCount > 0 ? `${connectedCount}/2` : undefined}
-        onClick={() => go({ name: 'providers' })}
-      />
+      {items.map((item, i) => (
+        <button
+          key={item.route.name}
+          type="button"
+          data-ripple
+          className="card sl anim-in flex w-full items-center gap-3.5 !p-4 text-left"
+          style={{ '--i': i + 1 } as Vars}
+          onClick={() => go(item.route)}
+        >
+          <span className="grid h-12 w-12 shrink-0 place-items-center rounded-[16px] bg-secondary-container text-on-secondary-container">
+            <Icon name={item.icon} fill size={24} />
+          </span>
+          <div className="min-w-0 flex-1">
+            <div className="flex items-center gap-2">
+              <span className="headline text-[17px] leading-tight">{item.title}</span>
+              {item.badge && (
+                <span className="rounded-full bg-primary/18 px-2 py-0.5 text-[11px] font-bold text-primary">
+                  {item.badge}
+                </span>
+              )}
+            </div>
+            <div className="mt-0.5 line-clamp-2 text-xs text-on-surface-variant">{item.subtitle}</div>
+          </div>
+          <Icon name="chevron_right" className="text-on-surface-variant" />
+        </button>
+      ))}
 
-      <SettingsTile
-        icon="equalizer"
-        title={t('audioSettings')}
-        sub={pick('5-полосный эквалайзер и лимит кэша музыки', '5-band equalizer and audio cache limit')}
-        onClick={() => go({ name: 'audio' })}
-      />
+      <section className="card anim-in !p-4" style={{ '--i': items.length + 1 } as Vars}>
+        <div className="mb-3.5 flex items-center gap-3">
+          <span className="grid h-11 w-11 shrink-0 place-items-center rounded-[15px] bg-secondary-container text-on-secondary-container">
+            <Icon name="translate" fill size={22} />
+          </span>
+          <div className="min-w-0">
+            <h2 className="headline text-[17px] leading-tight">{t('language')}</h2>
+            <p className="text-xs text-on-surface-variant">
+              {pick('Язык интерфейса приложения', 'Application interface language')}
+            </p>
+          </div>
+        </div>
+        <Segmented
+          value={lang}
+          onChange={(v) => appearance.set({ lang: v })}
+          options={[
+            { value: 'ru', label: 'Русский' },
+            { value: 'en', label: 'English' },
+          ]}
+        />
+      </section>
 
-      <SettingsTile
-        icon="palette"
-        title={t('appearance')}
-        sub={t('appearanceSub')}
-        onClick={() => go({ name: 'appearance' })}
-      />
+      <div className="anim-in mt-1 flex flex-wrap items-center justify-between gap-3 rounded-[24px] bg-sc-low/70 p-4" style={{ '--i': items.length + 2 } as Vars}>
+        <div className="min-w-0 flex-1">
+          <div className="text-sm font-bold text-on-surface">{t('clearCacheApp')}</div>
+          <div className="mt-0.5 text-xs text-on-surface-variant">
+            {pick('Освободить место от скачанных треков и обложек', 'Free space used by cached audio streams and artwork')}
+          </div>
+        </div>
+        <button
+          type="button"
+          data-ripple
+          className="sl inline-flex shrink-0 items-center gap-2 rounded-full bg-sc-high px-4 py-2.5 text-xs font-bold text-on-surface ring-1 ring-outline-variant/40"
+          onClick={() => openDialog({ kind: 'clear-cache' })}
+        >
+          <Icon name="history" fill size={18} />
+          <span>{t('clearCacheBtn')}</span>
+        </button>
+      </div>
 
-      <SettingsTile
-        icon="delete"
-        title={t('clearCacheApp')}
-        sub={pick('Удалить скачанные аудиофайлы и кэш обложек', 'Free space used by cached audio streams and artwork')}
-        onClick={() => openDialog({ kind: 'clear-cache' })}
-      />
-
-      <div className="mt-3 rounded-3xl bg-sc-low p-4 text-center text-xs text-on-surface-variant">
-        <div className="font-bold text-on-surface">Resonance Mobile v0.1.0</div>
-        <div className="mt-0.5">Native Media3 ExoPlayer · Rust InnerTube &amp; QuickJS</div>
+      <div className="anim-in mt-1 px-2 text-center text-xs text-on-surface-variant/80" style={{ '--i': items.length + 3 } as Vars}>
+        <span className="font-bold text-on-surface">Resonance Mobile v0.1.1</span>
+        {' · '}
+        <span>Media3 / AVPlayer Dual-Deck DSP</span>
       </div>
     </div>
   );

@@ -46,9 +46,25 @@ pub struct SetEqRequest {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct SetAudioConfigRequest {
+    pub normalization_enabled: bool,
+    pub normalization_target: String,
+    pub crossfade_enabled: bool,
+    pub crossfade_duration_ms: u64,
+    pub crossfade_curve: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct SetRepeatShuffleRequest {
     pub repeat_mode: String,
     pub shuffle_enabled: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ClearAuthCookiesRequest {
+    pub provider: String,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -82,6 +98,7 @@ fn default_auth_user() -> String {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ScAuthCaptureResult {
+    #[serde(default)]
     pub client_id: String,
     pub token: String,
     #[serde(default)]

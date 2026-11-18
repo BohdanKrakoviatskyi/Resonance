@@ -93,7 +93,7 @@ function Layer({ spec, metallic, isTop, onDone, live, epoch }: { spec: BgSpec; m
   const still = useStillFrame(spec.image ?? '', animated && !live);
   // Keep playing until the still frame is ready, so the switch never shows an empty background.
   const imageSrc = animated && !live && still ? still : spec.image;
-  const useLiveVars = isTop && spec.key === 'mesh:color';
+  const useLiveVars = isTop && spec.kind === 'mesh';
   const style: CSSProperties = { background: useLiveVars ? `var(--bg-base, ${spec.base})` : spec.base };
   return (
     <div className="bg-layer" style={style} onAnimationEnd={(e) => e.target === e.currentTarget && onDone()}>

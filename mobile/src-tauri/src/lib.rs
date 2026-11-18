@@ -6,8 +6,9 @@ pub mod yt;
 use std::collections::HashMap;
 use tauri::{AppHandle, Manager};
 use tauri_plugin_resonance_mobile::{
-    MobileAudioState, ResonanceMobileExt, ScAuthCaptureResult, SeekRequest, SetEqRequest,
-    SetQueueRequest, SetRepeatShuffleRequest, SkipToRequest,
+    ClearAuthCookiesRequest, MobileAudioState, ResonanceMobileExt, ScAuthCaptureResult,
+    SeekRequest, SetAudioConfigRequest, SetEqRequest, SetQueueRequest, SetRepeatShuffleRequest,
+    SkipToRequest,
 };
 
 use backend::{Backend, backend_rpc};
@@ -51,8 +52,22 @@ async fn start_ytmusic_login(
 }
 
 #[tauri::command]
-async fn start_soundcloud_login(app: AppHandle) -> Result<ScAuthCaptureResult, String> {
-    app.resonance_mobile().start_soundcloud_login().await
+async fn start_soundcloud_login(
+    app: AppHandle,
+    backend: tauri::State<'_, Backend>,
+) -> Result<ScAuthCaptureResult, String> {
+    let mut captured = app.resonance_mobile().start_soundcloud_login().await?;
+    if let Ok(resolved_cid) = backend.ensure_client_id(&captured.client_id).await {
+        captured.client_id = resolved_cid;
+    }
+    Ok(captured)
+}
+
+#[tauri::command]
+async fn mobile_clear_auth_cookies(app: AppHandle, provider: String) -> Result<(), String> {
+    app.resonance_mobile()
+        .clear_auth_cookies(ClearAuthCookiesRequest { provider })
+        .await
 }
 
 #[tauri::command]
@@ -119,6 +134,26 @@ async fn mobile_audio_set_eq(
 }
 
 #[tauri::command]
+async fn mobile_audio_set_config(
+    app: AppHandle,
+    normalization_enabled: bool,
+    normalization_target: String,
+    crossfade_enabled: bool,
+    crossfade_duration_ms: u64,
+    crossfade_curve: String,
+) -> Result<(), String> {
+    app.resonance_mobile()
+        .set_audio_config(SetAudioConfigRequest {
+            normalization_enabled,
+            normalization_target,
+            crossfade_enabled,
+            crossfade_duration_ms,
+            crossfade_curve,
+        })
+        .await
+}
+
+#[tauri::command]
 async fn mobile_audio_set_repeat_shuffle(
     app: AppHandle,
     repeat_mode: String,
@@ -167,12 +202,16 @@ pub fn run() {
             proxy.attach_backend(backend.clone());
             let yt_store = YtStore::new();
 
+            let backend_warm = backend.clone();
             app.manage(backend);
             app.manage(proxy.clone());
             app.manage(yt_store);
 
             tauri::async_runtime::spawn(async move {
                 let _ = proxy.ensure_server_port().await;
+            });
+            tauri::async_runtime::spawn(async move {
+                let _ = backend_warm.ensure_client_id("").await;
             });
             Ok(())
         })
@@ -197,6 +236,7 @@ pub fn run() {
             fetch_external_playlist,
             start_ytmusic_login,
             start_soundcloud_login,
+            mobile_clear_auth_cookies,
             mobile_audio_set_queue,
             mobile_audio_play,
             mobile_audio_pause,
@@ -206,6 +246,7 @@ pub fn run() {
             mobile_audio_prev,
             mobile_audio_get_state,
             mobile_audio_set_eq,
+            mobile_audio_set_config,
             mobile_audio_set_repeat_shuffle,
             mobile_cache_get_limit,
             mobile_cache_set_limit
