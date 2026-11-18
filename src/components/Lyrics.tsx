@@ -17,8 +17,7 @@ import { parseLrcFile } from '../lib/lrc-file';
 import { wordProgress } from '../lib/lyric-words';
 import { LYRICS_OFFSET_STEP, nudgeLyricsOffset, setLyricsOffset, useLyricsOffset } from '../state/lyrics-offset';
 import { currentTrack, onFrame, player, seek, toggle } from '../state/player';
-import { transcribeTrack, whisper } from '../state/whisper';
-import { go } from '../state/ui';
+import { downloadWhisperModel, transcribeTrack, whisper } from '../state/whisper';
 import { useStore } from '../lib/util';
 import type { LyricLine, Track } from '../types';
 
@@ -702,6 +701,31 @@ function RecognizeLyrics({ track }: { track: Track }) {
   const busy = useStore(whisper, (s) => s.activeTrack === track.id);
   const ready = useStore(whisper, (s) => s.models.some((m) => m.id === s.model && m.installed));
   const error = useStore(whisper, (s) => s.error);
+  const dl = useStore(whisper, (s) => s.downloading);
+  const smallMb = useStore(whisper, (s) => s.models.find((m) => m.id === 'small')?.sizeMb ?? 190);
+  if (dl) {
+    const pct = dl.total ? Math.round((dl.received / dl.total) * 100) : 0;
+    return (
+      <span className="mt-1 flex items-center gap-2 text-sm tabular-nums text-on-surface-variant">
+        <Loader size={18} />
+        {t('whisperDownloadingModel', { pct })}
+      </span>
+    );
+  }
+  if (!ready) {
+    // One click from "no lyrics" to a working recognizer: fetch the recommended model right here.
+    return (
+      <button
+        type="button"
+        data-ripple
+        className="sl mt-1 inline-flex items-center gap-2 rounded-full bg-primary/16 px-4 py-2 text-sm font-semibold text-primary transition hover:bg-primary/24"
+        onClick={() => void downloadWhisperModel('small')}
+      >
+        <Icon name="download" size={18} />
+        {t('whisperGetModel', { mb: smallMb })}
+      </button>
+    );
+  }
   if (busy) {
     return (
       <span className="mt-1 flex items-center gap-2 text-sm text-on-surface-variant">
@@ -716,10 +740,10 @@ function RecognizeLyrics({ track }: { track: Track }) {
         type="button"
         data-ripple
         className="sl inline-flex items-center gap-2 rounded-full bg-primary/16 px-4 py-2 text-sm font-semibold text-primary transition hover:bg-primary/24"
-        onClick={() => (ready ? void transcribeTrack(track) : go({ name: 'audio' }))}
+        onClick={() => void transcribeTrack(track)}
       >
         <Icon name="auto_awesome" size={18} />
-        {ready ? t('whisperRecognize') : t('whisperSetup')}
+        {t('whisperRecognize')}
       </button>
       {error && <span className="max-w-[260px] text-center text-xs text-error">{error}</span>}
     </div>

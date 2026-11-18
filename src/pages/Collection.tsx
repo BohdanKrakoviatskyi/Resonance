@@ -23,6 +23,33 @@ import { importStore, syncImportedPlaylist } from '../state/import';
 import { LOCAL_PLAYLIST_ID, rescanLocal } from '../state/local-library';
 import { canDownload, downloadTracks, offline, offlineId } from '../state/offline';
 import { getTrack as getLibTrack } from '../state/library';
+import { recognizeMissing, stopRecognizeMissing, whisper } from '../state/whisper';
+
+/** Recognizes lyrics for every track in the list that no source has, in the background. */
+function RecognizeAllButton({ ids }: { ids: string[] }) {
+  const ready = useStore(whisper, (s) => s.models.some((m) => m.id === s.model && m.installed));
+  const batch = useStore(whisper, (s) => s.batch);
+  if (!ready || !ids.length) return null;
+  if (batch) {
+    return (
+      <IconButton
+        icon="close"
+        size="lg"
+        selected
+        label={t('whisperBatchProgress', { checked: batch.checked, total: batch.total, found: batch.recognized })}
+        onClick={stopRecognizeMissing}
+      />
+    );
+  }
+  return (
+    <IconButton
+      icon="auto_awesome"
+      size="lg"
+      label={t('whisperBatchStart')}
+      onClick={() => void recognizeMissing(ids.map((id) => getLibTrack(id)).filter((tr): tr is NonNullable<typeof tr> => !!tr))}
+    />
+  );
+}
 
 /** Downloads every YouTube track in the list; shows progress while the queue runs. */
 function DownloadAllButton({ ids }: { ids: string[] }) {
@@ -469,6 +496,7 @@ export default function Collection({ kind, id }: { kind: 'favorites' | 'playlist
               {t('shuffle')}
             </Button>
             <DownloadAllButton ids={visibleIds} />
+            <RecognizeAllButton ids={visibleIds} />
             {kind === 'playlist' && !isProviderPlaylist && (
               <>
                 {localPlaylist?.sourceUrl && (

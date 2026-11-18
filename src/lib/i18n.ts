@@ -379,7 +379,13 @@ const S = {
   copied: ['Скопировано', 'Copied'],
   whisperRunning: ['Распознаю текст…', 'Recognizing lyrics…'],
   whisperRecognize: ['Распознать текст', 'Recognize lyrics'],
-  whisperSetup: ['Распознать текст: настроить', 'Recognize lyrics: set up'],
+  whisperGetModel: ['Включить распознавание текста ({mb} МБ)', 'Enable lyrics recognition ({mb} MB)'],
+  whisperDownloadingModel: ['Скачиваю модель… {pct}%', 'Downloading model… {pct}%'],
+  whisperBatchStart: ['Распознать тексты для всех треков без текста', 'Recognize lyrics for every track without them'],
+  whisperBatchProgress: [
+    'Распознавание: проверено {checked} из {total}, найдено {found}. Нажмите, чтобы остановить',
+    'Recognizing: checked {checked} of {total}, found {found}. Click to stop',
+  ],
   whisperTitle: ['Распознавание текста (Whisper)', 'Lyrics recognition (Whisper)'],
   whisperDesc: [
     'Если текста нет ни в одном сервисе, его можно распознать из самой песни прямо на компьютере. Модель скачивается отдельно.',
