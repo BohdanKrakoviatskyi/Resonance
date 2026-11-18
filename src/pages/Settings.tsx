@@ -36,6 +36,12 @@ export default function Settings() {
       subtitle: t('providersSub'),
     },
     {
+      route: { name: 'integrations' },
+      icon: 'link',
+      title: t('integrations'),
+      subtitle: t('integrationsSub'),
+    },
+    {
       route: { name: 'shortcuts' },
       icon: 'keyboard',
       title: t('shortcuts'),
