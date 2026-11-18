@@ -138,7 +138,10 @@ impl Sc {
     }
 
     async fn fetch_profile_from(&self, base: &str, token: &str) -> BResult<Profile> {
-        let url = format!("{}/me", base.trim_end_matches('/'));
+        let mut url = Url::parse(&format!("{}/me", base.trim_end_matches('/'))).map_err(|e| BErr::msg(e.to_string()))?;
+        if base == WEB_API_BASE && !self.client_id.trim().is_empty() {
+            set_query(&mut url, "client_id", &self.client_id);
+        }
         let request = web_headers(self.http.get(url), token, base == WEB_API_BASE);
         let response = request
             .send()
@@ -174,6 +177,12 @@ impl Sc {
         'bases: for base in self.api_bases() {
             let base_url = Url::parse(&base).ok();
             let mut page_url = format!("{}/users/{user_id}/likes?limit=200&linked_partitioning=true", base.trim_end_matches('/'));
+            if base == WEB_API_BASE && !self.client_id.trim().is_empty() {
+                if let Ok(mut u) = Url::parse(&page_url) {
+                    set_query(&mut u, "client_id", &self.client_id);
+                    page_url = u.to_string();
+                }
+            }
             let mut seen_pages = HashSet::new();
             let mut likes: Vec<Value> = Vec::new();
             let mut page_count = 0;
@@ -235,6 +244,14 @@ impl Sc {
                     likes.extend(items.iter().cloned());
                 }
                 page_url = vs(&payload, "next_href");
+                if base == WEB_API_BASE && !page_url.is_empty() && !self.client_id.trim().is_empty() {
+                    if let Ok(mut u) = Url::parse(&page_url) {
+                        if !u.query_pairs().any(|(k, _)| k == "client_id") {
+                            set_query(&mut u, "client_id", &self.client_id);
+                            page_url = u.to_string();
+                        }
+                    }
+                }
             }
             let mut result = Vec::with_capacity(likes.len());
             let mut seen = HashSet::new();

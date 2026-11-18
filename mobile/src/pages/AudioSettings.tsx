@@ -1,15 +1,19 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useState, type ReactNode } from 'react';
 import { invoke, isTauri } from '@tauri-apps/api/core';
-import { Button, IconButton, Slider } from '../components/ui';
+import { Icon, type IconName } from '../components/Icon';
+import { Button, IconButton, Segmented, Slider, type Vars } from '../components/ui';
+import { EqPanel } from '../components/EqSheet';
 import { cx, useStore } from '../lib/util';
 import { pick, t, useLang } from '../lib/i18n';
 import {
-  EQ_BANDS,
   player,
-  setEqBandGain,
-  setEqEnabled,
-  setEqPreset,
-  type EqPreset,
+  setCrossfadeCurve,
+  setCrossfadeDuration,
+  setCrossfadeEnabled,
+  setNormalizationEnabled,
+  setNormalizationTarget,
+  type CrossfadeCurve,
+  type LoudnessTarget,
 } from '../state/player';
 import { go, openDialog } from '../state/ui';
 
@@ -21,20 +25,42 @@ const CACHE_OPTIONS = [
   { label: '2 GB', bytes: 2 * 1024 * 1024 * 1024 },
 ];
 
-const PRESETS: { id: EqPreset; label: string }[] = [
-  { id: 'flat', label: 'Flat' },
-  { id: 'bassBoost', label: 'Bass Boost' },
-  { id: 'vocal', label: 'Vocal' },
-  { id: 'rock', label: 'Rock' },
-  { id: 'electronic', label: 'Electronic' },
-  { id: 'custom', label: 'Custom' },
-];
+function Card({ icon, title, sub, children, i }: { icon: IconName; title: string; sub?: string; children: ReactNode; i: number }) {
+  return (
+    <section className="card anim-in !p-4" style={{ '--i': i } as Vars}>
+      <div className="mb-3.5 flex items-center gap-3">
+        <span className="grid h-10 w-10 shrink-0 place-items-center rounded-[14px] bg-secondary-container text-on-secondary-container">
+          <Icon name={icon} fill size={22} />
+        </span>
+        <div className="min-w-0">
+          <h2 className="headline text-[17px] leading-tight">{title}</h2>
+          {sub && <p className="mt-0.5 text-xs text-on-surface-variant">{sub}</p>}
+        </div>
+      </div>
+      {children}
+    </section>
+  );
+}
+
+function Row({ label, value, children }: { label: string; value?: string; children: ReactNode }) {
+  return (
+    <div className="mt-3.5">
+      <div className="mb-1 flex justify-between text-xs font-semibold">
+        <span>{label}</span>
+        {value && <span className="tabular-nums text-on-surface-variant">{value}</span>}
+      </div>
+      {children}
+    </div>
+  );
+}
 
 export default function AudioSettings() {
   useLang();
-  const eqEnabled = useStore(player, (s) => s.eqEnabled);
-  const eqPreset = useStore(player, (s) => s.eqPreset);
-  const eqGains = useStore(player, (s) => s.eqGains);
+  const normOn = useStore(player, (s) => s.normalizationEnabled);
+  const normTarget = useStore(player, (s) => s.normalizationTarget);
+  const cfOn = useStore(player, (s) => s.crossfadeEnabled);
+  const cfDur = useStore(player, (s) => s.crossfadeDuration);
+  const cfCurve = useStore(player, (s) => s.crossfadeCurve);
   const [cacheLimit, setCacheLimit] = useState<number>(512 * 1024 * 1024);
 
   useEffect(() => {
@@ -51,93 +77,111 @@ export default function AudioSettings() {
     }
   };
 
+  const curveDesc =
+    cfCurve === 'linear'
+      ? t('curveLinearDesc')
+      : cfCurve === 'sCurve'
+        ? t('curveSCurveDesc')
+        : t('curveEqualPowerDesc');
+
   return (
-    <div className="flex flex-col gap-4 px-4 pb-8 pt-3">
-      <header className="flex items-center gap-2.5">
-        <IconButton icon="arrow_back" label={t('back')} variant="tonal" size="sm" tip={false} onClick={() => go({ name: 'settings' })} />
-        <h1 className="headline text-2xl font-extrabold">{t('audioSettings')}</h1>
+    <div className="flex flex-col gap-3.5 px-4 pb-10 pt-3">
+      <header className="anim-in mb-1">
+        <div className="mb-2 flex items-center gap-2">
+          <IconButton icon="arrow_back" label={t('back')} variant="tonal" size="sm" tip={false} onClick={() => go({ name: 'settings' })} />
+          <span className="text-xs font-semibold text-on-surface-variant">{t('settings')}</span>
+        </div>
+        <h1 className="display text-[clamp(28px,7.5vw,40px)]">{t('audioSettings')}</h1>
+        <p className="mt-1 text-sm text-on-surface-variant">{t('audioSettingsSub')}</p>
       </header>
 
-      <section className="rounded-3xl bg-sc-low p-4">
-        <div className="mb-3 flex items-center justify-between">
-          <div>
-            <h2 className="headline text-base font-extrabold">{t('equalizer')}</h2>
-            <p className="text-xs text-on-surface-variant">
-              {pick('Аппаратный 5-полосный эквалайзер с защитным лимитером', 'Hardware 5-band equalizer with brickwall limiter')}
-            </p>
+      <Card icon="graphic_eq" title={t('audioNormalization')} sub={t('audioNormalizationDesc')} i={1}>
+        <Segmented
+          value={normOn ? 'on' : 'off'}
+          onChange={(v) => setNormalizationEnabled(v === 'on')}
+          options={[
+            { value: 'on', label: t('enabled'), icon: 'check' },
+            { value: 'off', label: t('disabled') },
+          ]}
+        />
+        <div className={cx('mt-3.5 transition-opacity duration-200', !normOn && 'pointer-events-none opacity-45')}>
+          <div className="mb-2 text-xs font-semibold">{t('targetLoudness')}</div>
+          <Segmented
+            size="sm"
+            value={normTarget}
+            onChange={(v: LoudnessTarget) => setNormalizationTarget(v)}
+            options={[
+              { value: 'quiet', label: t('loudnessQuiet'), icon: 'volume_down' },
+              { value: 'normal', label: t('loudnessNormal'), icon: 'volume_up' },
+              { value: 'loud', label: t('loudnessLoud'), icon: 'bolt' },
+            ]}
+          />
+        </div>
+      </Card>
+
+      <Card icon="tune" title={t('crossfade')} sub={t('crossfadeDesc')} i={2}>
+        <Segmented
+          value={cfOn ? 'on' : 'off'}
+          onChange={(v) => setCrossfadeEnabled(v === 'on')}
+          options={[
+            { value: 'on', label: t('enabled'), icon: 'auto_awesome' },
+            { value: 'off', label: t('disabled') },
+          ]}
+        />
+
+        <div className={cx('transition-opacity duration-200', !cfOn && 'pointer-events-none opacity-45')}>
+          <Row label={t('crossfadeDurationLabel')} value={`${cfDur} ${t('secUnit')}`}>
+            <Slider
+              value={cfDur}
+              min={1}
+              max={12}
+              step={0.5}
+              onChange={setCrossfadeDuration}
+              label={t('crossfadeDurationLabel')}
+              disabled={!cfOn}
+            />
+          </Row>
+
+          <div className="mt-4">
+            <div className="mb-2 text-xs font-semibold">{t('crossfadeCurveLabel')}</div>
+            <Segmented
+              size="sm"
+              value={cfCurve}
+              onChange={(v: CrossfadeCurve) => setCrossfadeCurve(v)}
+              options={[
+                { value: 'linear', label: t('curveLinear') },
+                { value: 'equalPower', label: t('curveEqualPower') },
+                { value: 'sCurve', label: t('curveSCurve') },
+              ]}
+            />
+            <p className="mt-2.5 rounded-xl bg-sc-low/60 px-3 py-2 text-xs text-on-surface-variant">{curveDesc}</p>
           </div>
-          <button
-            type="button"
-            onClick={() => setEqEnabled(!eqEnabled)}
-            className={cx(
-              'rounded-full px-3.5 py-1.5 text-xs font-bold',
-              eqEnabled ? 'bg-primary text-on-primary' : 'bg-sc-high text-on-surface-variant',
-            )}
-          >
-            {eqEnabled ? t('enabled') : t('disabled')}
-          </button>
         </div>
+      </Card>
 
-        <div className="mb-4 flex flex-wrap gap-2">
-          {PRESETS.map((p) => (
-            <button
-              key={p.id}
-              type="button"
-              onClick={() => setEqPreset(p.id)}
-              className={cx(
-                'rounded-full px-3 py-1.5 text-xs font-semibold',
-                eqPreset === p.id ? 'bg-primary text-on-primary' : 'bg-sc text-on-surface-variant',
-              )}
-            >
-              {p.label}
-            </button>
-          ))}
-        </div>
+      <div className="anim-in" style={{ '--i': 3 } as Vars}>
+        <EqPanel />
+      </div>
 
-        <div className="flex flex-col gap-3">
-          {EQ_BANDS.map((band, idx) => {
-            const val = eqGains[idx] ?? 0;
-            return (
-              <div key={band.freq} className="flex items-center gap-3">
-                <span className="w-12 text-xs font-bold text-on-surface-variant">{band.label}</span>
-                <Slider
-                  value={val}
-                  min={-12}
-                  max={12}
-                  step={0.5}
-                  label={band.label}
-                  onChange={(v) => setEqBandGain(idx, v)}
-                  className="flex-1"
-                />
-                <span className="w-14 text-right text-xs font-bold tabular-nums text-primary">
-                  {val > 0 ? `+${val.toFixed(1)}` : val.toFixed(1)} dB
-                </span>
-              </div>
-            );
-          })}
-        </div>
-      </section>
-
-      <section className="rounded-3xl bg-sc-low p-4">
-        <h2 className="headline text-base font-extrabold">
-          {pick('Офлайн-кэш аудиопотоков', 'Audio Stream Disk Cache')}
-        </h2>
-        <p className="mt-0.5 text-xs text-on-surface-variant">
-          {pick(
-            'Прослушанные треки сохраняются в кэш приложения и запускаются мгновенно без расхода трафика.',
-            'Played tracks are cached automatically for instant zero-network replay.',
-          )}
-        </p>
-
-        <div className="mt-3 flex flex-wrap gap-2">
+      <Card
+        icon="cloud_done"
+        title={pick('Офлайн-кэш аудиопотоков', 'Audio stream disk cache')}
+        sub={pick(
+          'Прослушанные треки сохраняются в кэш приложения и запускаются мгновенно без расхода трафика',
+          'Played tracks are cached automatically for instant zero-network replay',
+        )}
+        i={4}
+      >
+        <div className="flex flex-wrap gap-2">
           {CACHE_OPTIONS.map((opt) => (
             <button
               key={opt.bytes}
               type="button"
+              data-ripple
               onClick={() => void updateCacheLimit(opt.bytes)}
               className={cx(
-                'rounded-full px-3.5 py-1.5 text-xs font-bold',
-                cacheLimit === opt.bytes ? 'bg-primary text-on-primary' : 'bg-sc text-on-surface-variant',
+                'sl rounded-full px-3.5 py-2 text-xs font-bold transition-colors',
+                cacheLimit === opt.bytes ? 'bg-primary text-on-primary shadow-sm' : 'bg-sc text-on-surface-variant',
               )}
             >
               {opt.label}
@@ -150,7 +194,7 @@ export default function AudioSettings() {
             {t('clearCacheBtn')}
           </Button>
         </div>
-      </section>
+      </Card>
     </div>
   );
 }

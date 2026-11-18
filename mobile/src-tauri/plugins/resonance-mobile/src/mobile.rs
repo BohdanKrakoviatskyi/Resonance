@@ -91,6 +91,14 @@ impl<R: Runtime> ResonanceMobile<R> {
             .map_err(|e| e.to_string())
     }
 
+    pub async fn set_audio_config(&self, req: SetAudioConfigRequest) -> Result<(), String> {
+        self.0
+            .run_mobile_plugin_async::<serde_json::Value>("setAudioConfig", req)
+            .await
+            .map(|_| ())
+            .map_err(|e| e.to_string())
+    }
+
     pub async fn set_repeat_shuffle(
         &self,
         req: SetRepeatShuffleRequest,
@@ -98,6 +106,14 @@ impl<R: Runtime> ResonanceMobile<R> {
         self.0
             .run_mobile_plugin_async("setRepeatShuffle", req)
             .await
+            .map_err(|e| e.to_string())
+    }
+
+    pub async fn clear_auth_cookies(&self, req: ClearAuthCookiesRequest) -> Result<(), String> {
+        self.0
+            .run_mobile_plugin_async::<serde_json::Value>("clearAuthCookies", req)
+            .await
+            .map(|_| ())
             .map_err(|e| e.to_string())
     }
 

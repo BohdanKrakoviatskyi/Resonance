@@ -11,13 +11,15 @@ import type { Track } from '../types';
 export type Repeat = 'off' | 'all' | 'one';
 export type PlayerPlaybackState = 'idle' | 'loading' | 'playing' | 'paused' | 'error';
 export type EqPreset = 'flat' | 'bassBoost' | 'vocal' | 'rock' | 'electronic' | 'custom';
+export type LoudnessTarget = 'quiet' | 'normal' | 'loud';
+export type CrossfadeCurve = 'linear' | 'equalPower' | 'sCurve';
 
 export const EQ_BANDS = [
-  { freq: 60, label: '60Hz' },
-  { freq: 230, label: '230Hz' },
-  { freq: 910, label: '910Hz' },
-  { freq: 3600, label: '3.6kHz' },
-  { freq: 14000, label: '14kHz' },
+  { freq: 60, label: '60Hz', type: 'lowshelf' },
+  { freq: 230, label: '230Hz', type: 'peaking' },
+  { freq: 910, label: '910Hz', type: 'peaking' },
+  { freq: 3600, label: '3.6kHz', type: 'peaking' },
+  { freq: 14000, label: '14kHz', type: 'highshelf' },
 ] as const;
 
 export const EQ_PRESETS: Record<Exclude<EqPreset, 'custom'>, readonly [number, number, number, number, number]> = {
@@ -70,6 +72,11 @@ export const player = createStore({
   eqEnabled: false,
   eqPreset: 'flat' as EqPreset,
   eqGains: [0, 0, 0, 0, 0] as number[],
+  normalizationEnabled: false,
+  normalizationTarget: 'normal' as LoudnessTarget,
+  crossfadeEnabled: false,
+  crossfadeDuration: 4,
+  crossfadeCurve: 'equalPower' as CrossfadeCurve,
   errorMsg: '',
 });
 
@@ -81,6 +88,11 @@ persist('resonance.mobile.player.v1', player, (s) => ({
   eqEnabled: s.eqEnabled,
   eqPreset: s.eqPreset,
   eqGains: s.eqGains,
+  normalizationEnabled: s.normalizationEnabled,
+  normalizationTarget: s.normalizationTarget,
+  crossfadeEnabled: s.crossfadeEnabled,
+  crossfadeDuration: s.crossfadeDuration,
+  crossfadeCurve: s.crossfadeCurve,
 }));
 
 const isNativeMobileRuntime = (): boolean =>
@@ -92,6 +104,90 @@ let radioBusyForId: string | null = null;
 let lastRecordedTrackId: string | null = null;
 let lastShownError: string | null = null;
 let fallbackAudio: HTMLAudioElement | null = null;
+
+/* ---------- Smooth 60/120Hz Playback Clock Interpolation ---------- */
+
+type FrameCallback = (visualTime: number, duration: number, realTime: number) => void;
+const frameListeners = new Set<FrameCallback>();
+let frameRafId = 0;
+let clockAnchorSec = 0;
+let clockAnchorPerf = typeof performance !== 'undefined' ? performance.now() : 0;
+let clockAdvancing = false;
+
+function syncClockAnchor(posSec: number, advancing: boolean) {
+  clockAnchorSec = Math.max(0, posSec);
+  clockAnchorPerf = performance.now();
+  clockAdvancing = advancing;
+  ensureFrameLoop();
+}
+
+export function getLivePosition(): number {
+  const st = player.get();
+  if (fallbackAudio && !isNativeMobileRuntime()) {
+    return fallbackAudio.currentTime || st.pos;
+  }
+  if (!clockAdvancing) return clockAnchorSec;
+  const elapsed = Math.max(0, (performance.now() - clockAnchorPerf) / 1000);
+  const raw = clockAnchorSec + elapsed;
+  return st.duration > 0 ? Math.min(st.duration, raw) : raw;
+}
+
+export function dur(): number {
+  const st = player.get();
+  if (st.duration > 0) return st.duration;
+  return currentTrack()?.duration ?? 0;
+}
+
+function runFrameLoop() {
+  frameRafId = 0;
+  if (frameListeners.size === 0 || (typeof document !== 'undefined' && document.hidden)) {
+    return;
+  }
+  const nowPos = getLivePosition();
+  const totalDur = dur();
+  frameListeners.forEach((cb) => {
+    try {
+      cb(nowPos, totalDur, nowPos);
+    } catch {
+      /* ignore listener errors */
+    }
+  });
+  if (frameListeners.size > 0 && (clockAdvancing || player.get().playing)) {
+    frameRafId = requestAnimationFrame(runFrameLoop);
+  }
+}
+
+function ensureFrameLoop() {
+  if (frameRafId || frameListeners.size === 0) return;
+  if (typeof document !== 'undefined' && document.hidden) return;
+  frameRafId = requestAnimationFrame(runFrameLoop);
+}
+
+/**
+ * Subscribes a high-frequency (60/120Hz rAF) UI animation callback (Lyrics karaoke fill, wavy Seek bar).
+ * Automatically idles at 0% CPU when paused or hidden.
+ */
+export function onFrame(cb: FrameCallback): () => void {
+  frameListeners.add(cb);
+  const p = getLivePosition();
+  cb(p, dur(), p);
+  ensureFrameLoop();
+  return () => {
+    frameListeners.delete(cb);
+    if (frameListeners.size === 0 && frameRafId) {
+      cancelAnimationFrame(frameRafId);
+      frameRafId = 0;
+    }
+  };
+}
+
+if (typeof document !== 'undefined') {
+  document.addEventListener('visibilitychange', () => {
+    if (!document.hidden) ensureFrameLoop();
+  });
+}
+
+/* ---------- Native Proxy & Queue Helpers ---------- */
 
 async function ensureProxyInfo(): Promise<LocalProxyInfo | null> {
   if (cachedProxy) return cachedProxy;
@@ -159,6 +255,10 @@ function applyNativeState(dto: NativeAudioStateDto) {
   const activeTrack = nextIdx >= 0 ? getTrack(cur.queue[nextIdx]) : undefined;
   const durSec = dto.durationMs > 0 ? dto.durationMs / 1000 : activeTrack?.duration ?? cur.duration;
   const posSec = dto.positionMs / 1000;
+  const advancing = dto.playing && !dto.buffering;
+
+  syncClockAnchor(posSec, advancing);
+
   const playbackState: PlayerPlaybackState = dto.error
     ? 'error'
     : dto.buffering
@@ -189,7 +289,7 @@ function applyNativeState(dto: NativeAudioStateDto) {
   if (activeTrack && activeTrack.id !== lastRecordedTrackId) {
     lastRecordedTrackId = activeTrack.id;
     pushRecent(activeTrack.id);
-    maybeExtendRadioQueue(activeTrack);
+    void maybeExtendRadioQueue(activeTrack);
   }
 }
 
@@ -236,20 +336,48 @@ async function maybeExtendRadioQueue(seed: Track) {
 }
 
 /* ---------- Browser fallback audio for desktop Vite preview ---------- */
+
+function applyBrowserFallbackVolume() {
+  if (!fallbackAudio) return;
+  const { normalizationEnabled, normalizationTarget, muted, volume } = player.get();
+  if (muted) {
+    fallbackAudio.volume = 0;
+    return;
+  }
+  const normScale = !normalizationEnabled
+    ? 1
+    : normalizationTarget === 'quiet'
+      ? 0.65
+      : normalizationTarget === 'loud'
+        ? 1
+        : 0.88;
+  fallbackAudio.volume = clamp(volume * normScale, 0, 1);
+}
+
 async function playBrowserFallback(tr: Track, autoPlay: boolean) {
   if (!fallbackAudio) {
     fallbackAudio = new Audio();
     fallbackAudio.addEventListener('timeupdate', () => {
       if (!fallbackAudio) return;
+      const pos = fallbackAudio.currentTime || 0;
+      syncClockAnchor(pos, !fallbackAudio.paused);
       player.set({
-        pos: fallbackAudio.currentTime || 0,
+        pos,
         duration: Number.isFinite(fallbackAudio.duration) && fallbackAudio.duration > 0 ? fallbackAudio.duration : tr.duration,
       });
     });
-    fallbackAudio.addEventListener('playing', () => player.set({ playing: true, loading: false, state: 'playing' }));
-    fallbackAudio.addEventListener('pause', () => player.set({ playing: false, loading: false, state: 'paused' }));
+    fallbackAudio.addEventListener('playing', () => {
+      syncClockAnchor(fallbackAudio?.currentTime || 0, true);
+      player.set({ playing: true, loading: false, state: 'playing' });
+    });
+    fallbackAudio.addEventListener('pause', () => {
+      syncClockAnchor(fallbackAudio?.currentTime || 0, false);
+      player.set({ playing: false, loading: false, state: 'paused' });
+    });
     fallbackAudio.addEventListener('ended', () => void next());
   }
+  applyBrowserFallbackVolume();
+  syncClockAnchor(0, false);
   player.set({ loading: true, state: 'loading', duration: tr.duration, pos: 0 });
   try {
     let url = tr.src;
@@ -323,6 +451,7 @@ export async function playQueue(tracksOrIds: (Track | string)[], startIndex = 0,
   }
 
   const targetTrack = getTrack(activeQueue[activeIndex]);
+  syncClockAnchor(0, false);
   player.set({
     queue: activeQueue,
     index: activeIndex,
@@ -427,6 +556,7 @@ export async function skipToIndex(index: number) {
   const cur = player.get();
   if (index < 0 || index >= cur.queue.length) return;
   const tr = getTrack(cur.queue[index]);
+  syncClockAnchor(0, false);
   player.set({ index, pos: 0, duration: tr?.duration ?? 0, loading: true });
   if (isNativeMobileRuntime()) {
     const dto = await invoke<NativeAudioStateDto>('mobile_audio_skip_to', { index, autoPlay: true });
@@ -435,6 +565,8 @@ export async function skipToIndex(index: number) {
     await playBrowserFallback(tr, true);
   }
 }
+
+export const jumpTo = skipToIndex;
 
 export async function play() {
   const cur = player.get();
@@ -456,6 +588,7 @@ export async function pause() {
     applyNativeState(dto);
   } else {
     fallbackAudio?.pause();
+    syncClockAnchor(fallbackAudio?.currentTime || player.get().pos, false);
     player.set({ playing: false, state: 'paused' });
   }
 }
@@ -467,6 +600,7 @@ export function toggle() {
 
 export async function seek(seconds: number) {
   const clamped = Math.max(0, seconds);
+  syncClockAnchor(clamped, player.get().playing && !player.get().loading);
   player.set({ pos: clamped });
   if (isNativeMobileRuntime()) {
     const dto = await invoke<NativeAudioStateDto>('mobile_audio_seek', {
@@ -479,7 +613,7 @@ export async function seek(seconds: number) {
 }
 
 export function seekBy(deltaSec: number) {
-  void seek(player.get().pos + deltaSec);
+  void seek(getLivePosition() + deltaSec);
 }
 
 export async function next() {
@@ -548,12 +682,33 @@ export async function cycleRepeat() {
   }
 }
 
+/* ---------- Equalizer, Normalization & Crossfade Sync ---------- */
+
 async function syncEqToNative() {
   if (!isTauri()) return;
   const { eqEnabled, eqGains } = player.get();
   await invoke('mobile_audio_set_eq', {
     enabled: eqEnabled,
     gainsDb: eqGains,
+  }).catch(() => {});
+}
+
+async function syncAudioConfigToNative() {
+  applyBrowserFallbackVolume();
+  if (!isTauri()) return;
+  const {
+    normalizationEnabled,
+    normalizationTarget,
+    crossfadeEnabled,
+    crossfadeDuration,
+    crossfadeCurve,
+  } = player.get();
+  await invoke('mobile_audio_set_config', {
+    normalizationEnabled,
+    normalizationTarget,
+    crossfadeEnabled,
+    crossfadeDurationMs: Math.round(clamp(crossfadeDuration, 0, 12) * 1000),
+    crossfadeCurve,
   }).catch(() => {});
 }
 
@@ -569,7 +724,7 @@ export function setEqPreset(preset: EqPreset) {
     player.set({
       eqPreset: preset,
       eqGains: [...EQ_PRESETS[preset]],
-      eqEnabled: preset !== 'flat' ? true : player.get().eqEnabled,
+      eqEnabled: preset !== 'flat',
     });
   }
   void syncEqToNative();
@@ -580,6 +735,42 @@ export function setEqBandGain(bandIdx: number, db: number) {
   gains[bandIdx] = clamp(Math.round(db * 2) / 2, -12, 12);
   player.set({ eqPreset: 'custom', eqGains: gains, eqEnabled: true });
   void syncEqToNative();
+}
+
+export function setNormalizationEnabled(enabled: boolean) {
+  player.set({ normalizationEnabled: enabled });
+  void syncAudioConfigToNative();
+}
+
+export function setNormalizationTarget(target: LoudnessTarget) {
+  player.set({ normalizationTarget: target });
+  void syncAudioConfigToNative();
+}
+
+export function setCrossfadeEnabled(enabled: boolean) {
+  const cur = player.get();
+  player.set({
+    crossfadeEnabled: enabled,
+    crossfadeDuration: enabled && cur.crossfadeDuration <= 0 ? 4 : cur.crossfadeDuration,
+  });
+  void syncAudioConfigToNative();
+}
+
+export function setCrossfadeDuration(seconds: number) {
+  if (seconds <= 0) {
+    player.set({ crossfadeEnabled: false });
+  } else {
+    player.set({
+      crossfadeEnabled: true,
+      crossfadeDuration: clamp(Math.round(seconds * 2) / 2, 1, 12),
+    });
+  }
+  void syncAudioConfigToNative();
+}
+
+export function setCrossfadeCurve(curve: CrossfadeCurve) {
+  player.set({ crossfadeCurve: curve });
+  void syncAudioConfigToNative();
 }
 
 let pollTimer: number | null = null;
@@ -607,6 +798,7 @@ function startStatePolling() {
 export function initPlayer() {
   void ensureProxyInfo();
   void syncEqToNative();
+  void syncAudioConfigToNative();
   if (isNativeMobileRuntime()) {
     const st = player.get();
     void invoke('mobile_audio_set_repeat_shuffle', {

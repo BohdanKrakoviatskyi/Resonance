@@ -3,6 +3,7 @@ import { isTauri } from '@tauri-apps/api/core';
 import { onBackButtonPress } from '@tauri-apps/api/app';
 import { Background } from './components/Background';
 import { Icon, type IconName } from './components/Icon';
+import { type Vars } from './components/ui';
 import { MobileMiniPlayer } from './components/MobileMiniPlayer';
 import { NowPlayingSheet } from './components/NowPlayingSheet';
 import { EqSheet } from './components/EqSheet';
@@ -10,6 +11,7 @@ import { MobileOverlays } from './components/MobileOverlays';
 import { cx, useStore } from './lib/util';
 import { t, useLang } from './lib/i18n';
 import { loadSoundCloudLibrary, loadYtMusicLibrary } from './state/library';
+import { useCurrentTrack } from './state/player';
 import { consumeBackPress, go, routeKey, ui, type Route } from './state/ui';
 import Home from './pages/Home';
 import Search from './pages/Search';
@@ -78,9 +80,11 @@ function activeTabFor(route: Route): TabItem['id'] {
 export default function App() {
   useLang();
   const route = useStore(ui, (s) => s.route);
+  const hasTrack = Boolean(useCurrentTrack());
   const key = routeKey(route);
   const scrollerRef = useRef<HTMLDivElement>(null);
   const activeTab = activeTabFor(route);
+  const activeIdx = Math.max(0, TABS.findIndex((tab) => tab.id === activeTab));
 
   useEffect(() => {
     scrollerRef.current?.scrollTo({ top: 0 });
@@ -107,43 +111,56 @@ export default function App() {
   return (
     <>
       <Background />
-      <div className="fixed inset-0 flex flex-col overflow-hidden text-on-surface">
+      <div className="app-shell fixed inset-0 flex flex-col overflow-hidden text-on-surface">
         <main
           ref={scrollerRef}
-          className="min-h-0 flex-1 overflow-y-auto pt-[env(safe-area-inset-top,0px)]"
+          className={cx(
+            'min-h-0 flex-1 overflow-y-auto overscroll-contain pt-[env(safe-area-inset-top,0px)]',
+            hasTrack
+              ? 'pb-[calc(env(safe-area-inset-bottom,0px)+148px)]'
+              : 'pb-[calc(env(safe-area-inset-bottom,0px)+84px)]',
+          )}
         >
           <div key={key} className="page-enter">
             <ActivePage route={route} />
           </div>
         </main>
 
-        <div className="shrink-0">
+        {/* Floating Glass Bottom Chrome (MiniPlayer + Dock) */}
+        <div className="pointer-events-none fixed inset-x-0 bottom-0 z-20 flex flex-col gap-2 px-3 pb-[calc(env(safe-area-inset-bottom,0px)+8px)]">
           <MobileMiniPlayer />
+
           <nav
             aria-label="Primary"
-            className="flex items-center justify-around border-t border-outline-variant/25 bg-sc/90 px-2 pb-[calc(env(safe-area-inset-bottom,0px)+6px)] pt-1.5 backdrop-blur-xl"
+            className="mobile-dock panel pointer-events-auto relative grid grid-cols-4 items-center p-1.5"
+            style={{ '--dock-idx': activeIdx } as Vars}
           >
+            <span aria-hidden="true" className="mobile-dock-pill" />
+
             {TABS.map((tab) => {
               const selected = activeTab === tab.id;
               return (
                 <button
                   key={tab.id}
                   type="button"
+                  data-ripple
+                  aria-current={selected ? 'page' : undefined}
                   onClick={() => go({ name: tab.id })}
-                  className="flex min-w-[68px] flex-col items-center gap-0.5 py-1"
+                  className={cx(
+                    'mobile-dock-item sl relative z-10 flex flex-col items-center justify-center gap-0.5 rounded-[20px] py-1.5',
+                    selected ? 'text-on-secondary-container' : 'text-on-surface-variant',
+                  )}
                 >
+                  <Icon
+                    name={tab.icon}
+                    fill={selected}
+                    size={22}
+                    className={cx('transition-transform duration-300', selected && '-translate-y-[1px] scale-105')}
+                  />
                   <span
                     className={cx(
-                      'grid h-8 w-16 place-items-center rounded-full transition-colors duration-200',
-                      selected ? 'bg-secondary-container text-on-secondary-container' : 'text-on-surface-variant',
-                    )}
-                  >
-                    <Icon name={tab.icon} fill={selected} size={22} />
-                  </span>
-                  <span
-                    className={cx(
-                      'text-[11px] font-bold',
-                      selected ? 'text-on-surface' : 'text-on-surface-variant',
+                      'text-[10.5px] leading-tight tracking-tight transition-all duration-200',
+                      selected ? 'font-extrabold opacity-100' : 'font-semibold opacity-78',
                     )}
                   >
                     {t(tab.labelKey)}

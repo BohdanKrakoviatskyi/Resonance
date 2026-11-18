@@ -97,6 +97,7 @@ function applyGlass() {
   const a = appearance.get();
   const r = document.documentElement;
   r.dataset.glass = a.glass;
+  r.dataset.distort = a.glass === 'liquid' && a.refraction > 0 ? 'on' : 'off';
   r.style.setProperty('--glass-blur', `${Math.round((a.blur / 100) * 36)}px`);
   r.style.setProperty('--glass-alpha', `${a.opacity}%`);
   r.style.setProperty('--refract-k', (a.refraction / 100).toFixed(3));
@@ -470,11 +471,26 @@ export function endLiveColorPreview() {
   previewTransitionPaused = false;
   delete document.documentElement.dataset.themeDragging;
   document.documentElement.classList.remove('is-picking');
-  const motion = appearance.get().motion;
-  requestAnimationFrame(() => setColorTransition(motion === 'reduced' ? 0 : 750));
+  setColorTransition(0);
 }
 
-async function recompute() {
+let trackTransitionTimer = 0;
+let lastCommittedDark: boolean | null = null;
+
+function commitInstantFlip(run: () => void) {
+  const root = document.documentElement;
+  window.clearTimeout(trackTransitionTimer);
+  setColorTransition(0);
+  root.dataset.themeSwitching = 'true';
+  run();
+  requestAnimationFrame(() => {
+    requestAnimationFrame(() => {
+      delete root.dataset.themeSwitching;
+    });
+  });
+}
+
+async function recompute(fromTrackChange = false) {
   const a = appearance.get();
   const tr = currentTrack();
   const dark = a.theme === 'system' ? mq.matches : a.theme === 'dark';
@@ -519,8 +535,7 @@ async function recompute() {
   const roles = a.metallic ? buildMetallicRoles(accent, bgSrc, baseRoles, dark) : baseRoles;
 
   const dim = `rgb(${dark ? '0 0 0' : '255 255 255'} / ${a.bgDim / 100})`;
-  // Notice: `bg.key` intentionally does NOT include `a.metallic`, so toggling Metallic mode
-  // never unmounts/recreates the background DOM layer or restarts `@keyframes fade`!
+  // Keep mesh bg.key stable across dark/light flips so Background never mounts a duplicate blur(68px) layer!
   let bg: BgSpec;
   if (a.bgMode === 'image' && a.bgImage) {
     bg = { key: 'img' + imgKey, kind: 'image', image: a.bgImage, base: roles.surface, colors: [], blur: a.bgBlur, dim };
@@ -534,12 +549,23 @@ async function recompute() {
       return hct(h.hue, Math.min(h.chroma * 1.15, 72), dark ? clamp(h.tone, 26, 46) - i * 3 : clamp(h.tone, 70, 88));
     });
     while (colors.length < 4) colors.push(colors[colors.length - 1]);
-    bg = { key: 'mesh:' + (tr?.id ?? base), kind: 'mesh', base, colors, blur: 0, dim: 'transparent' };
+    bg = { key: 'mesh:dyn:' + (tr?.id ?? 'idle'), kind: 'mesh', base, colors, blur: 0, dim: 'transparent' };
   } else {
     const m = meshFromSource(bgSrc, dark, a.bgMode === 'color');
-    bg = { key: a.bgMode === 'color' ? 'mesh:color' : 'mesh:' + m.base, kind: 'mesh', ...m, blur: 0, dim: 'transparent' };
+    bg = { key: a.bgMode === 'color' ? 'mesh:color' : 'mesh:idle', kind: 'mesh', ...m, blur: 0, dim: 'transparent' };
   }
-  commit(roles, dark, accent, bg);
+
+  const darkFlipped = lastCommittedDark !== null && lastCommittedDark !== dark;
+  lastCommittedDark = dark;
+
+  if (darkFlipped || !fromTrackChange || a.motion === 'reduced') {
+    commitInstantFlip(() => commit(roles, dark, accent, bg));
+  } else {
+    window.clearTimeout(trackTransitionTimer);
+    setColorTransition(420);
+    commit(roles, dark, accent, bg);
+    trackTransitionTimer = window.setTimeout(() => setColorTransition(0), 460);
+  }
 }
 
 export function initTheme() {
@@ -552,14 +578,15 @@ export function initTheme() {
 
   // Synchronous first paint with a provisional scheme, then refine asynchronously.
   const dark0 = a0.theme === 'system' ? mq.matches : a0.theme === 'dark';
+  lastCommittedDark = dark0;
   const src0 = argbFromHex(a0.accentColor);
   const bg0 = a0.bgMode === 'color' ? argbFromHex(a0.bgColor) : src0;
   const m0 = meshFromSource(bg0, dark0, a0.bgMode === 'color');
   const baseRoles0 = schemeHex(buildScheme(src0, bg0, dark0, a0.metallic ? 'mono' : a0.variant));
   const roles0 = a0.metallic ? buildMetallicRoles(src0, bg0, baseRoles0, dark0) : baseRoles0;
-  commit(roles0, dark0, src0, { key: a0.bgMode === 'color' ? 'mesh:color' : 'boot', kind: 'mesh', ...m0, blur: 0, dim: 'transparent' });
-  recompute();
-  requestAnimationFrame(() => requestAnimationFrame(() => setColorTransition(a0.motion === 'reduced' ? 0 : 750)));
+  setColorTransition(0);
+  commit(roles0, dark0, src0, { key: a0.bgMode === 'color' ? 'mesh:color' : 'mesh:idle', kind: 'mesh', ...m0, blur: 0, dim: 'transparent' });
+  void recompute(false);
 
   let prev = a0;
   appearance.subscribe(() => {
@@ -568,19 +595,19 @@ export function initTheme() {
     if (a.metallic !== prev.metallic) applyMetallicAttr();
     if (a.motion !== prev.motion) {
       applyMotion(a.motion);
-      setColorTransition(a.motion === 'reduced' ? 0 : 750);
+      if (a.motion === 'reduced') setColorTransition(0);
     }
     if (a.lang !== prev.lang) applyLang();
     prev = a;
-    recompute();
+    void recompute(false);
   });
   let prevId = currentTrack()?.id;
   player.subscribe(() => {
     const id = currentTrack()?.id;
     if (id !== prevId) {
       prevId = id;
-      recompute();
+      void recompute(true);
     }
   });
-  mq.addEventListener('change', () => recompute());
+  mq.addEventListener('change', () => void recompute(false));
 }

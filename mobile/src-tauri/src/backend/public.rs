@@ -117,7 +117,7 @@ impl Sc {
 
 impl Backend {
     /// The configured client id, else one scraped (once) from the public web app's bundles.
-    async fn ensure_public_client_id(&self, sc: &Sc) -> BResult<String> {
+    pub(super) async fn ensure_public_client_id(&self, sc: &Sc) -> BResult<String> {
         let configured = sc.client_id.trim().to_string();
         if !configured.is_empty() {
             return Ok(configured);

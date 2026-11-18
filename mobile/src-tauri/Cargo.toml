@@ -1,6 +1,6 @@
 [package]
 name = "resonance-mobile"
-version = "0.1.0"
+version = "0.1.1"
 description = "Resonance Mobile Player for Android and iOS"
 authors = ["Resonance"]
 license = "MIT"

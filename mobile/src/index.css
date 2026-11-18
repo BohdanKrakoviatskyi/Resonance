@@ -1341,6 +1341,98 @@ html[data-motion=reduced] *, html[data-motion=reduced] *::before, html[data-moti
 }
 
 
-/* ---------- Resonance Mobile Utilities ---------- */
+/* ---------- Resonance Mobile Utilities & Chrome ---------- */
 .no-scrollbar::-webkit-scrollbar { display: none; }
 .no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
+
+/* Instantaneous Dark <-> Light theme flip with zero per-frame blur/color cascade lag */
+html[data-theme-switching="true"],
+html[data-theme-switching="true"] *,
+html[data-theme-switching="true"] *::before,
+html[data-theme-switching="true"] *::after {
+  transition: none !important;
+}
+
+/* Floating Glass MiniPlayer & Dock */
+.mobile-mini {
+  border-radius: 22px;
+  --tint: var(--md-surface-container-high);
+  --boost: 24%;
+  box-shadow: 0 14px 36px -14px rgb(0 0 0 / .52) !important;
+  transition: transform var(--sp-fast-d) var(--sp-fast), border-radius var(--sp-fast-d) var(--sp-fast);
+}
+.mobile-mini:active {
+  transform: scale(.985);
+}
+
+.mobile-dock {
+  border-radius: 26px;
+  --tint: var(--md-surface-container-high);
+  --boost: 28%;
+  box-shadow: 0 18px 42px -14px rgb(0 0 0 / .56) !important;
+}
+
+.mobile-dock-pill {
+  position: absolute;
+  top: 6px;
+  bottom: 6px;
+  left: 6px;
+  width: calc((100% - 12px) / 4);
+  border-radius: 20px;
+  background: var(--md-secondary-container);
+  box-shadow: inset 0 1px 0 rgb(255 255 255 / .12);
+  transform: translate3d(calc(var(--dock-idx, 0) * 100%), 0, 0);
+  transition: transform var(--sp-def-d) var(--sp-def), background-color .25s;
+  pointer-events: none;
+  z-index: 1;
+}
+
+html[data-metallic=true] .mobile-dock-pill {
+  box-shadow:
+    inset 0 1px 0 color-mix(in oklab, var(--metal-neon, #ffffff) calc(var(--metal-neon-k, 0) * 45%), rgb(255 255 255 / .28)),
+    0 4px 16px -6px color-mix(in oklab, var(--metal-neon, #ffffff) calc(var(--metal-neon-k, 0) * 55%), transparent);
+}
+
+.mobile-dock-item {
+  transition: color .24s var(--ease-emph), transform var(--sp-fast-d) var(--sp-fast);
+}
+.mobile-dock-item:active {
+  transform: scale(.93);
+}
+
+/* Fullscreen Now Playing Sheet & Ambient Artwork Aura */
+.np-sheet {
+  opacity: 0;
+  transform: translate3d(0, 6%, 0) scale(.975);
+  transition:
+    opacity .28s var(--ease-emph),
+    transform var(--sp-def-d) var(--sp-def);
+  will-change: transform, opacity;
+}
+.np-sheet[data-open="true"] {
+  opacity: 1;
+  transform: translate3d(0, 0, 0) scale(1);
+}
+
+.np-aura-enter {
+  animation: fade .65s var(--ease-emph) backwards;
+}
+.np-aura-drift-1 {
+  transform: scale(1.28) translate3d(0, 0, 0);
+  will-change: transform;
+  animation: np-aura-float-1 24s ease-in-out infinite alternate;
+}
+.np-aura-drift-2 {
+  transform: scale(1.15) translate3d(0, 0, 0);
+  will-change: transform;
+  animation: np-aura-float-2 29s ease-in-out infinite alternate;
+}
+
+@keyframes np-aura-float-1 {
+  0% { transform: scale(1.26) translate3d(-3%, -2%, 0); }
+  100% { transform: scale(1.36) translate3d(3%, 3%, 0); }
+}
+@keyframes np-aura-float-2 {
+  0% { transform: scale(1.1) translate3d(4%, 3%, 0); }
+  100% { transform: scale(1.25) translate3d(-6%, -5%, 0); }
+}

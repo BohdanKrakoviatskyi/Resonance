@@ -24,9 +24,12 @@ import android.webkit.WebViewClient
 import android.widget.LinearLayout
 import android.widget.ProgressBar
 import android.widget.TextView
+import androidx.webkit.WebViewCompat
+import androidx.webkit.WebViewFeature
 import app.tauri.plugin.Invoke
 import app.tauri.plugin.JSObject
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicReference
 
 object AuthWebViewDialog {
     private val mainHandler = Handler(Looper.getMainLooper())
@@ -35,40 +38,68 @@ object AuthWebViewDialog {
         (function() {
           if (window.__RESONANCE_SC_HOOKED__) return;
           window.__RESONANCE_SC_HOOKED__ = true;
+          var seenCid = '';
           function check(rawUrl, authHeader) {
             try {
               var u = new URL(rawUrl, location.href);
-              if (u.hostname !== 'api-v2.soundcloud.com') return;
+              if (u.hostname !== 'api-v2.soundcloud.com' && u.hostname !== 'api.soundcloud.com') return;
               var cid = u.searchParams.get('client_id') || '';
+              if (cid) {
+                seenCid = cid;
+                if (window.ResonanceAuthBridge && window.ResonanceAuthBridge.onClientIdSeen) {
+                  window.ResonanceAuthBridge.onClientIdSeen(cid);
+                }
+              }
               var m = String(authHeader || '').match(/^(?:OAuth|Bearer)\s+(.+)$/i);
-              var tok = m ? m[1] : '';
-              if (cid && tok && window.ResonanceAuthBridge) {
-                window.ResonanceAuthBridge.onSoundCloudCaptured(cid, tok);
+              var tok = m ? m[1].trim() : '';
+              if (tok && window.ResonanceAuthBridge) {
+                window.ResonanceAuthBridge.onSoundCloudCaptured(cid || seenCid, tok);
+              }
+            } catch (_) {}
+          }
+          function checkCookies() {
+            try {
+              var parts = String(document.cookie || '').split(';');
+              for (var i = 0; i < parts.length; i++) {
+                var kv = parts[i].trim().split('=');
+                if (kv.length >= 2 && kv[0].trim() === 'oauth_token') {
+                  var raw = decodeURIComponent(kv.slice(1).join('=').trim());
+                  if (raw && raw.length >= 10 && window.ResonanceAuthBridge) {
+                    window.ResonanceAuthBridge.onSoundCloudCaptured(seenCid, raw);
+                    return;
+                  }
+                }
               }
             } catch (_) {}
           }
           var origFetch = window.fetch;
-          window.fetch = function(input, init) {
-            try {
-              var rawUrl = input instanceof Request ? input.url : String(input);
-              var h = new Headers(input instanceof Request ? input.headers : undefined);
-              if (init && init.headers) new Headers(init.headers).forEach(function(v, k) { h.set(k, v); });
-              check(rawUrl, h.get('Authorization'));
-            } catch (_) {}
-            return origFetch.apply(this, arguments);
-          };
+          if (typeof origFetch === 'function') {
+            window.fetch = function(input, init) {
+              try {
+                var rawUrl = input instanceof Request ? input.url : String(input);
+                var h = new Headers(input instanceof Request ? input.headers : undefined);
+                if (init && init.headers) new Headers(init.headers).forEach(function(v, k) { h.set(k, v); });
+                check(rawUrl, h.get('Authorization'));
+              } catch (_) {}
+              return origFetch.apply(this, arguments);
+            };
+          }
           var origOpen = XMLHttpRequest.prototype.open;
           var origSet = XMLHttpRequest.prototype.setRequestHeader;
           XMLHttpRequest.prototype.open = function(method, url) {
             this.__resUrl = url;
+            this.__resHeaders = {};
             return origOpen.apply(this, arguments);
           };
           XMLHttpRequest.prototype.setRequestHeader = function(name, value) {
-            if (String(name).toLowerCase() === 'authorization') {
-              check(this.__resUrl, value);
-            }
+            try {
+              if (String(name).toLowerCase() === 'authorization') {
+                check(this.__resUrl, value);
+              }
+            } catch (_) {}
             return origSet.apply(this, arguments);
           };
+          setInterval(checkCookies, 700);
         })();
     """
 
@@ -88,6 +119,35 @@ object AuthWebViewDialog {
             value.toFloat(),
             activity.resources.displayMetrics
         ).toInt()
+    }
+
+    fun clearCookiesForProvider(provider: String) {
+        mainHandler.post {
+            val cm = CookieManager.getInstance()
+            when (provider.lowercase()) {
+                "soundcloud" -> {
+                    val urls = listOf(
+                        "https://soundcloud.com",
+                        "https://m.soundcloud.com",
+                        "https://secure.soundcloud.com",
+                        "https://api-v2.soundcloud.com"
+                    )
+                    for (u in urls) {
+                        cm.setCookie(u, "oauth_token=; Path=/; Max-Age=0")
+                        cm.setCookie(u, "oauth_token=; Domain=.soundcloud.com; Path=/; Max-Age=0")
+                    }
+                    cm.flush()
+                }
+                "ytmusic" -> {
+                    val names = listOf("__Secure-3PAPISID", "SAPISID", "APISID", "SID", "HSID", "SSID")
+                    for (name in names) {
+                        cm.setCookie("https://music.youtube.com", "$name=; Domain=.youtube.com; Path=/; Max-Age=0")
+                        cm.setCookie("https://www.youtube.com", "$name=; Domain=.youtube.com; Path=/; Max-Age=0")
+                    }
+                    cm.flush()
+                }
+            }
+        }
     }
 
     @SuppressLint("SetJavaScriptEnabled")
@@ -160,6 +220,15 @@ object AuthWebViewDialog {
             }
 
             webView.webViewClient = object : WebViewClient() {
+                override fun shouldOverrideUrlLoading(view: WebView?, request: WebResourceRequest?): Boolean {
+                    val u = request?.url ?: return false
+                    val scheme = u.scheme?.lowercase().orEmpty()
+                    if (scheme != "http" && scheme != "https") {
+                        return true
+                    }
+                    return false
+                }
+
                 override fun onPageFinished(view: WebView?, url: String?) {
                     super.onPageFinished(view, url)
                     val host = url?.let { runCatching { Uri.parse(it).host }.getOrNull() }.orEmpty()
@@ -187,7 +256,7 @@ object AuthWebViewDialog {
         }
     }
 
-    @SuppressLint("SetJavaScriptEnabled", "JavascriptInterface")
+    @SuppressLint("SetJavaScriptEnabled", "JavascriptInterface", "RequiresFeature")
     fun openSoundCloudLogin(activity: Activity, invoke: Invoke) {
         mainHandler.post {
             if (activity.isFinishing || activity.isDestroyed) {
@@ -195,6 +264,7 @@ object AuthWebViewDialog {
                 return@post
             }
             val settled = AtomicBoolean(false)
+            val lastSeenClientId = AtomicReference("")
             val dialog = Dialog(activity, android.R.style.Theme_DeviceDefault_NoActionBar)
             dialog.requestWindowFeature(Window.FEATURE_NO_TITLE)
 
@@ -210,15 +280,27 @@ object AuthWebViewDialog {
                 invoke.reject("SoundCloud sign-in cancelled")
             }
 
+            fun sanitizeToken(raw: String): String {
+                val decoded = runCatching { Uri.decode(raw) }.getOrDefault(raw)
+                return decoded
+                    .trim()
+                    .trim('"')
+                    .replace(Regex("^(?:OAuth|Bearer)\\s+", RegexOption.IGNORE_CASE), "")
+                    .trim()
+            }
+
             fun deliverCapture(clientId: String, token: String) {
-                val cleanId = clientId.trim()
-                val cleanTok = token.trim()
-                if (cleanId.isEmpty() || cleanTok.isEmpty()) return
+                val cleanTok = sanitizeToken(token)
+                if (cleanTok.length < 10) return
+                val cleanId = clientId.trim().ifEmpty { lastSeenClientId.get().trim() }
                 if (!settled.compareAndSet(false, true)) return
                 mainHandler.post {
                     val cm = CookieManager.getInstance()
                     cm.flush()
-                    val scCookies = cm.getCookie("https://soundcloud.com").orEmpty()
+                    val scCookies = mergeCookieStrings(
+                        cm.getCookie("https://soundcloud.com").orEmpty(),
+                        cm.getCookie("https://m.soundcloud.com").orEmpty()
+                    )
                     val datadome = extractCookieValue(scCookies, "datadome")
                     cleanupWebView(dialog, webView)
                     invoke.resolve(JSObject().apply {
@@ -229,6 +311,28 @@ object AuthWebViewDialog {
                         }
                     })
                 }
+            }
+
+            fun tryCaptureScCookies(): Boolean {
+                if (settled.get()) return true
+                val cm = CookieManager.getInstance()
+                val cookieSources = listOf(
+                    cm.getCookie("https://soundcloud.com").orEmpty(),
+                    cm.getCookie("https://m.soundcloud.com").orEmpty(),
+                    cm.getCookie("https://secure.soundcloud.com").orEmpty(),
+                    cm.getCookie("https://api-v2.soundcloud.com").orEmpty()
+                )
+                for (rawHeader in cookieSources) {
+                    val tok = extractCookieValue(rawHeader, "oauth_token")
+                    if (!tok.isNullOrBlank()) {
+                        val clean = sanitizeToken(tok)
+                        if (clean.length >= 10) {
+                            deliverCapture(lastSeenClientId.get(), clean)
+                            return true
+                        }
+                    }
+                }
+                return false
             }
 
             val root = buildModalLayout(activity, "Sign in to SoundCloud", progressBar, webView) {
@@ -250,10 +354,27 @@ object AuthWebViewDialog {
 
             webView.addJavascriptInterface(object {
                 @JavascriptInterface
+                fun onClientIdSeen(clientId: String) {
+                    val clean = clientId.trim()
+                    if (clean.isNotEmpty()) {
+                        lastSeenClientId.set(clean)
+                    }
+                }
+
+                @JavascriptInterface
                 fun onSoundCloudCaptured(clientId: String, token: String) {
+                    if (clientId.isNotBlank()) {
+                        lastSeenClientId.set(clientId.trim())
+                    }
                     deliverCapture(clientId, token)
                 }
             }, "ResonanceAuthBridge")
+
+            if (WebViewFeature.isFeatureSupported(WebViewFeature.DOCUMENT_START_SCRIPT)) {
+                runCatching {
+                    WebViewCompat.addDocumentStartJavaScript(webView, SC_INJECT_JS, setOf("*"))
+                }
+            }
 
             webView.webChromeClient = object : WebChromeClient() {
                 override fun onProgressChanged(view: WebView?, newProgress: Int) {
@@ -263,6 +384,19 @@ object AuthWebViewDialog {
             }
 
             webView.webViewClient = object : WebViewClient() {
+                override fun shouldOverrideUrlLoading(view: WebView?, request: WebResourceRequest?): Boolean {
+                    val u = request?.url ?: return false
+                    val scheme = u.scheme?.lowercase().orEmpty()
+                    if (scheme != "http" && scheme != "https") {
+                        // Mobile SoundCloud often triggers soundcloud:// or intent:// right after login
+                        if (!tryCaptureScCookies()) {
+                            view?.loadUrl("https://soundcloud.com/discover")
+                        }
+                        return true
+                    }
+                    return false
+                }
+
                 override fun onPageStarted(view: WebView?, url: String?, favicon: android.graphics.Bitmap?) {
                     super.onPageStarted(view, url, favicon)
                     view?.evaluateJavascript(SC_INJECT_JS, null)
@@ -271,19 +405,24 @@ object AuthWebViewDialog {
                 override fun onPageFinished(view: WebView?, url: String?) {
                     super.onPageFinished(view, url)
                     view?.evaluateJavascript(SC_INJECT_JS, null)
+                    tryCaptureScCookies()
                 }
 
                 override fun shouldInterceptRequest(view: WebView?, request: WebResourceRequest?): WebResourceResponse? {
                     if (request != null && !settled.get()) {
                         val u = request.url
-                        if (u != null && u.host.equals("api-v2.soundcloud.com", ignoreCase = true)) {
-                            val clientId = u.getQueryParameter("client_id").orEmpty()
+                        val host = u?.host?.lowercase().orEmpty()
+                        if (host == "api-v2.soundcloud.com" || host == "api.soundcloud.com") {
+                            val clientId = u?.getQueryParameter("client_id").orEmpty().trim()
+                            if (clientId.isNotEmpty()) {
+                                lastSeenClientId.set(clientId)
+                            }
                             val authHeader = request.requestHeaders?.entries
                                 ?.firstOrNull { it.key.equals("Authorization", ignoreCase = true) }
                                 ?.value.orEmpty()
                             val match = Regex("^(?:OAuth|Bearer)\\s+(.+)$", RegexOption.IGNORE_CASE).find(authHeader.trim())
                             val token = match?.groupValues?.getOrNull(1).orEmpty()
-                            if (clientId.isNotEmpty() && token.isNotEmpty()) {
+                            if (token.isNotEmpty()) {
                                 deliverCapture(clientId, token)
                             }
                         }
@@ -292,9 +431,18 @@ object AuthWebViewDialog {
                 }
             }
 
+            val pollTask = object : Runnable {
+                override fun run() {
+                    if (settled.get()) return
+                    if (tryCaptureScCookies()) return
+                    mainHandler.postDelayed(this, 600L)
+                }
+            }
+
             dialog.show()
             dialog.window?.setLayout(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT)
             webView.loadUrl("https://soundcloud.com/signin")
+            mainHandler.postDelayed(pollTask, 900L)
         }
     }
 
