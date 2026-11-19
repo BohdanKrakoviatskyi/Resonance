@@ -1,5 +1,6 @@
 import type { LyricLine, Track } from '../types';
 import { findYouTubeFallbackCandidate, youtubeFallbackQueries } from './youtube-match';
+import { youtubeRadioId } from './recommendations';
 import { lyricsSearchQueries, speedVariant, stripTrackNoise, toSeconds, type LyricsCandidate } from './lyrics-match';
 import { findLyricsMatch, pickBest } from './lyrics-identify';
 import { fromWordLines, parseEnhancedWords } from './lyric-words';
@@ -103,32 +104,21 @@ const RECOMMENDATION_MAX_MS = 15 * 60_000;
 const NON_SONG_TITLE = /\b(?:mix|reaction|reacts?|playlist|compilation|karaoke|hours?|full album)\b/i;
 
 export async function searchYouTubeRecommendations(track: Track, signal?: AbortSignal): Promise<Track[]> {
-  // Primary: YouTube Music radio (InnerTube /next) — style-matched queue, same source the
-  // YouTube Music app uses for "Start radio". Fallback: yt-dlp search "{artist} official audio".
-  const nativeId = track.nativeId ?? (track.id.startsWith('yt:') ? track.id.slice(3) : '');
-  if (nativeId && /^[\w-]{11}$/.test(nativeId)) {
-    try {
-      const radio = await ytRadioTracks(nativeId, signal);
-      const seen = new Set<string>();
-      const mapped = radio
-        .filter((item) => item.nativeId !== nativeId)
-        .filter((item) => !(item.durationMs > RECOMMENDATION_MAX_MS) && !NON_SONG_TITLE.test(item.title))
-        .filter((item) => (seen.has(item.nativeId) ? false : seen.add(item.nativeId)))
-        .map(mapYouTubeTrack);
-      if (mapped.length) return mapped;
-    } catch (err) {
-      if (signal?.aborted) throw err;
-      // fall through to search
-    }
+  // A recommendation must be based on the selected video, never a text search for its title.
+  const nativeId = youtubeRadioId(track);
+  if (!nativeId) return [];
+  try {
+    const radio = await ytRadioTracks(nativeId, signal);
+    const seen = new Set<string>();
+    return radio
+      .filter((item) => item.nativeId !== nativeId)
+      .filter((item) => !(item.durationMs > RECOMMENDATION_MAX_MS) && !NON_SONG_TITLE.test(item.title))
+      .filter((item) => (seen.has(item.nativeId) ? false : seen.add(item.nativeId)))
+      .map(mapYouTubeTrack);
+  } catch (err) {
+    if (signal?.aborted) throw err;
+    return [];
   }
-  const query = track.artist ? `${track.artist} official audio` : track.title;
-  const results = await searchYtDlpTracks(query, signal);
-  const seen = new Set<string>();
-  return results
-    .filter((item) => item.nativeId !== track.nativeId && `yt:${item.nativeId}` !== track.id)
-    .filter((item) => !(item.durationMs > RECOMMENDATION_MAX_MS) && !NON_SONG_TITLE.test(item.title))
-    .filter((item) => (seen.has(item.nativeId) ? false : seen.add(item.nativeId)))
-    .map(mapYouTubeTrack);
 }
 
 export { ytDlpTrackStream };

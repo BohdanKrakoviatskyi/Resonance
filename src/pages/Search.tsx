@@ -70,7 +70,7 @@ function Results({ title, r, i }: { title: string; r: ReturnType<typeof useRemot
           </Button>
         </div>
       ) : r.items ? (
-        <TrackList ids={all ? ids : ids.slice(0, 8)} />
+        <TrackList ids={all ? ids : ids.slice(0, 8)} radioOnPlay />
       ) : (
         <SkeletonRows />
       )}
@@ -113,7 +113,7 @@ export function SearchResults({ q, loading: externalLoading }: { q: string; load
       )}
       {local.length > 0 && (
         <Section title={t('inLibrary')} i={0}>
-          <TrackList ids={local} />
+          <TrackList ids={local} radioOnPlay />
         </Section>
       )}
       <Results title={t('soundcloudTracks')} r={remote} i={1} />
