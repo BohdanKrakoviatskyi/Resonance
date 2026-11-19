@@ -26,6 +26,7 @@
     "allow-word-lyrics",
     "allow-offline",
     "allow-whisper",
-    "dialog:allow-open"
+    "dialog:allow-open",
+    "opener:allow-default-urls"
   ]
 }

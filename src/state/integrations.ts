@@ -11,9 +11,6 @@ export const integrations = createStore({
   discordError: '' as string,
 
   lastfmEnabled: false,
-  /** From https://www.last.fm/api/account/create. */
-  lastfmApiKey: '',
-  lastfmSecret: '',
   /** Logged-in username; the session key itself stays in the OS keyring. Not persisted. */
   lastfmUser: null as string | null,
   /** Scrobbles waiting for network or login. */
@@ -25,8 +22,6 @@ export const integrations = createStore({
 persist('resonance.integrations.v1', integrations, (s) => ({
   discordEnabled: s.discordEnabled,
   lastfmEnabled: s.lastfmEnabled,
-  lastfmApiKey: s.lastfmApiKey,
-  lastfmSecret: s.lastfmSecret,
   lastfmQueue: s.lastfmQueue,
   lastfmScrobbled: s.lastfmScrobbled,
 }));
@@ -71,19 +66,14 @@ function syncDiscord() {
 
 /* ---------------- Last.fm ---------------- */
 
-const lastfmCreds = () => {
-  const s = integrations.get();
-  return { apiKey: s.lastfmApiKey.trim(), secret: s.lastfmSecret.trim() };
-};
 const lastfmReady = () => {
   const s = integrations.get();
-  return s.lastfmEnabled && !!s.lastfmUser && !!s.lastfmApiKey.trim() && !!s.lastfmSecret.trim();
+  return s.lastfmEnabled && !!s.lastfmUser;
 };
 
-export async function lastfmLogin(username: string, password: string) {
-  const { apiKey, secret } = lastfmCreds();
-  const name = await invoke<string>('lastfm_login', { apiKey, secret, username: username.trim(), password });
-  integrations.set({ lastfmUser: name, lastfmError: '' });
+export async function lastfmLogin() {
+  const name = await invoke<string>('lastfm_login');
+  integrations.set({ lastfmUser: name, lastfmEnabled: true, lastfmError: '' });
   void flushScrobbles();
 }
 
@@ -100,8 +90,7 @@ export async function flushScrobbles() {
   flushing = true;
   const batch = queue.slice(0, 50);
   try {
-    const { apiKey, secret } = lastfmCreds();
-    await invoke<number>('lastfm_scrobble', { apiKey, secret, items: batch });
+    await invoke<number>('lastfm_scrobble', { items: batch });
     integrations.set((s) => ({
       lastfmQueue: s.lastfmQueue.filter((q) => !batch.includes(q)),
       lastfmScrobbled: s.lastfmScrobbled + batch.length,
@@ -155,8 +144,7 @@ function tickLastfm() {
       lastT: t,
     };
     if (s.playing) {
-      const { apiKey, secret } = lastfmCreds();
-      invoke('lastfm_now_playing', { apiKey, secret, item: listen.item }).catch(() => {});
+      invoke('lastfm_now_playing', { item: listen.item }).catch(() => {});
     }
   }
   listen.lastT = t;
