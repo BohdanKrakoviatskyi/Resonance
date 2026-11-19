@@ -14,6 +14,7 @@ export type Route =
 
 export type Dialog =
   | { kind: 'create'; trackId?: string; initialTab?: 'scratch' | 'import' }
+  | { kind: 'listen-join' }
   | { kind: 'rename'; id: string }
   | { kind: 'delete'; id: string }
   | { kind: 'import-review' }

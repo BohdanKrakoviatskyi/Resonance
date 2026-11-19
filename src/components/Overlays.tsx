@@ -11,6 +11,8 @@ import { detectImportSource, importStore, startPlaylistImport } from '../state/i
 import { checkForUpdates, runAppUninstall, startInstallNewVersion, updater } from '../state/updater';
 import { clearAppCache } from '../state/cache';
 import { go, snack, ui, type Dialog, type Snack } from '../state/ui';
+import { joinSession } from '../state/listen-together';
+import { normalizeRoomCode } from '../lib/listen-sync';
 
 export function Drawer({ open, onClose, side, children }: { open: boolean; onClose: () => void; side: 'left' | 'right'; children: ReactNode }) {
   const { mounted, visible } = usePresence(open, 450);
@@ -39,6 +41,50 @@ export function Drawer({ open, onClose, side, children }: { open: boolean; onClo
 }
 
 const closeDialog = () => ui.set({ dialog: null });
+
+function ListenJoinDialog() {
+  const [code, setCode] = useState('');
+  const [error, setError] = useState('');
+
+  return (
+    <form
+      onSubmit={(e) => {
+        e.preventDefault();
+        const normalized = normalizeRoomCode(code);
+        if (!normalized) {
+          setError(t('listenBadCode'));
+          return;
+        }
+        closeDialog();
+        void joinSession(normalized);
+      }}
+    >
+      <h2 className="headline mb-5 text-2xl">{t('listenJoin')}</h2>
+      <label className="field">
+        <input
+          autoFocus
+          value={code}
+          onChange={(e) => {
+            setCode(e.target.value);
+            setError('');
+          }}
+          placeholder=" "
+          maxLength={9}
+          autoComplete="off"
+          spellCheck={false}
+          aria-invalid={!!error}
+          aria-describedby={error ? 'listen-join-error' : undefined}
+        />
+        <span>{t('listenJoinLabel')}</span>
+      </label>
+      {error && <p id="listen-join-error" className="mt-2 text-sm text-error" role="alert">{error}</p>}
+      <div className="mt-6 flex justify-end gap-2">
+        <Button variant="text" onClick={closeDialog}>{t('cancel')}</Button>
+        <Button type="submit" icon="group" disabled={!code.trim()}>{t('listenJoin')}</Button>
+      </div>
+    </form>
+  );
+}
 
 function NameDialog({ d }: { d: Extract<Dialog, { kind: 'create' | 'rename' }> }) {
   const existing = useStore(library, (s) => (d.kind === 'rename' ? s.playlists.find((p) => p.id === d.id)?.name ?? '' : ''));
@@ -469,6 +515,8 @@ function DialogHost() {
           <UninstallDialog />
         ) : last.kind === 'clear-cache' ? (
           <ClearCacheDialog />
+        ) : last.kind === 'listen-join' ? (
+          <ListenJoinDialog />
         ) : (
           <NameDialog key={JSON.stringify(last)} d={last} />
         )}

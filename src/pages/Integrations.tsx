@@ -5,8 +5,8 @@ import { cx, useStore } from '../lib/util';
 import { t } from '../lib/i18n';
 import { integrationOptions } from '../lib/integration-options';
 import { integrations, lastfmLogin, lastfmLogout } from '../state/integrations';
-import { go } from '../state/ui';
-import { acceptAnswer, joinSession, leaveSession, listen, startHosting } from '../state/listen-together';
+import { go, openDialog } from '../state/ui';
+import { leaveSession, listen, startHosting } from '../state/listen-together';
 
 export function SettingsCard({ icon, title, sub, children, i }: { icon: IconName; title: string; sub?: string; children: ReactNode; i: number }) {
   return (
@@ -96,21 +96,15 @@ export default function Integrations() {
   );
 }
 
-function CodeBox({ code }: { code: string }) {
+function RoomCode({ code }: { code: string }) {
   const [copied, setCopied] = useState(false);
   return (
-    <div className="flex items-stretch gap-2">
-      <textarea
-        readOnly
-        value={code}
-        aria-label={t('listenYourCode')}
-        onFocus={(e) => e.currentTarget.select()}
-        className="h-20 min-w-0 flex-1 resize-none rounded-2xl bg-on-surface/8 p-3 font-mono text-[11px] leading-snug outline-0"
-      />
+    <div className="flex items-center gap-3">
+      <code className="rounded-2xl bg-on-surface/8 px-4 py-3 font-mono text-xl font-bold tracking-[0.16em]">{code}</code>
       <button
         type="button"
         data-ripple
-        className="sl shrink-0 rounded-2xl bg-primary px-4 text-sm font-semibold text-on-primary"
+        className="sl rounded-2xl bg-primary px-4 py-3 text-sm font-semibold text-on-primary"
         onClick={() => {
           void navigator.clipboard.writeText(code).then(() => {
             setCopied(true);
@@ -129,59 +123,33 @@ function ListenTogetherCard() {
   const status = useStore(listen, (s) => s.status);
   const myCode = useStore(listen, (s) => s.myCode);
   const error = useStore(listen, (s) => s.error);
-  const [input, setInput] = useState('');
-  const pasteBox = (label: string, action: () => void, cta: string) => (
-    <div className="grid gap-2">
-      <label className="text-sm font-semibold" htmlFor="listen-paste">{label}</label>
-      <div className="flex items-stretch gap-2">
-        <textarea
-          id="listen-paste"
-          value={input}
-          spellCheck={false}
-          onChange={(e) => setInput(e.target.value)}
-          placeholder="RSN1.…"
-          className="h-20 min-w-0 flex-1 resize-none rounded-2xl bg-on-surface/8 p-3 font-mono text-[11px] leading-snug outline-0 focus:bg-on-surface/12"
-        />
-        <button
-          type="button"
-          data-ripple
-          disabled={!input.trim()}
-          className="sl shrink-0 rounded-2xl bg-primary px-4 text-sm font-semibold text-on-primary disabled:opacity-40"
-          onClick={() => (action(), setInput(''))}
-        >
-          {cta}
-        </button>
-      </div>
-    </div>
-  );
-
   return (
     <SettingsCard icon="group" title={t('listenTitle')} sub={t('listenDesc')} i={3}>
       {status === 'idle' && (
-        <div className="grid gap-4">
+        <div className="flex flex-wrap items-center gap-2">
           <button
             type="button"
             data-ripple
-            className="sl justify-self-start rounded-full bg-primary px-5 py-2.5 text-sm font-semibold text-on-primary"
+            className="sl rounded-full bg-primary px-5 py-2.5 text-sm font-semibold text-on-primary"
             onClick={() => void startHosting()}
           >
             {t('listenHost')}
           </button>
-          {pasteBox(t('listenJoinLabel'), () => void joinSession(input), t('listenJoin'))}
+          <button
+            type="button"
+            data-ripple
+            className="sl rounded-full bg-on-surface/8 px-5 py-2.5 text-sm font-semibold transition hover:bg-on-surface/14"
+            onClick={() => openDialog({ kind: 'listen-join' })}
+          >
+            {t('listenJoin')}
+          </button>
         </div>
       )}
       {status === 'preparing' && <p className="text-sm text-on-surface-variant">{t('listenPreparing')}</p>}
-      {status === 'awaitingAnswer' && (
-        <div className="grid gap-4">
-          <p className="text-sm text-on-surface-variant">{t('listenStep1Host')}</p>
-          <CodeBox code={myCode} />
-          {pasteBox(t('listenStep2Host'), () => void acceptAnswer(input), t('listenConnect'))}
-        </div>
-      )}
-      {status === 'awaitingHost' && (
+      {status === 'awaitingGuest' && (
         <div className="grid gap-3">
-          <p className="text-sm text-on-surface-variant">{t('listenStepGuest')}</p>
-          <CodeBox code={myCode} />
+          <p className="text-sm text-on-surface-variant">{t('listenHostCode')}</p>
+          <RoomCode code={myCode} />
         </div>
       )}
       {status === 'connected' && (
@@ -192,7 +160,7 @@ function ListenTogetherCard() {
       )}
       {status !== 'idle' && (
         <button type="button" className="mt-4 text-sm font-semibold text-error hover:underline" onClick={leaveSession}>
-          {t('listenLeave')}
+          {role === 'host' ? t('listenEnd') : t('listenLeave')}
         </button>
       )}
       {error && <p className="mt-3 text-xs text-error">{error}</p>}

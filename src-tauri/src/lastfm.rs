@@ -3,10 +3,14 @@
 use md5::{Digest, Md5};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+#[cfg(debug_assertions)]
+use std::path::Path;
 use tauri_plugin_opener::OpenerExt;
 
 const API: &str = "https://ws.audioscrobbler.com/2.0/";
+#[cfg(not(debug_assertions))]
 const KEYRING_SERVICE: &str = "com.resonance.lastfm";
+#[cfg(not(debug_assertions))]
 const KEYRING_ACCOUNT: &str = "session";
 const API_KEY: &str = match option_env!("LASTFM_API_KEY") {
     Some(key) => key,
@@ -94,19 +98,94 @@ async fn call(mut params: Vec<(String, String)>) -> Result<Value, String> {
     Ok(body)
 }
 
+#[cfg(not(debug_assertions))]
 fn entry() -> Result<keyring::Entry, String> {
     keyring::Entry::new(KEYRING_SERVICE, KEYRING_ACCOUNT).map_err(|e| e.to_string())
 }
 
-fn load_session() -> Option<LastfmSession> {
-    let raw = entry().ok()?.get_password().ok()?;
+// Development binaries change identity between builds, which makes macOS repeatedly prompt for Keychain access.
+#[cfg(debug_assertions)]
+fn session_path() -> std::path::PathBuf {
+    crate::yt::clients::user_app_support_dir().join("lastfm-session.json")
+}
+
+#[cfg(debug_assertions)]
+fn read_debug_session(path: &Path) -> Option<LastfmSession> {
+    let raw = std::fs::read_to_string(path).ok()?;
     serde_json::from_str(&raw).ok()
 }
 
+#[cfg(debug_assertions)]
+fn write_debug_session(path: &Path, session: &LastfmSession) -> std::io::Result<()> {
+    use std::io::Write;
+
+    let parent = path.parent().unwrap_or_else(|| Path::new("."));
+    std::fs::create_dir_all(parent)?;
+    let tmp = parent.join(format!(".lastfm-session-{}.tmp", uuid::Uuid::new_v4()));
+    let result = (|| {
+        let mut options = std::fs::OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        let mut file = options.open(&tmp)?;
+        file.write_all(&serde_json::to_vec(session).map_err(std::io::Error::other)?)?;
+        file.sync_all()?;
+        drop(file);
+        std::fs::rename(&tmp, path)
+    })();
+    if result.is_err() {
+        let _ = std::fs::remove_file(&tmp);
+    }
+    result
+}
+
+#[cfg(debug_assertions)]
+fn delete_debug_session(path: &Path) -> std::io::Result<()> {
+    match std::fs::remove_file(path) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        other => other,
+    }
+}
+
+fn load_session() -> Option<LastfmSession> {
+    #[cfg(debug_assertions)]
+    {
+        return read_debug_session(&session_path());
+    }
+    #[cfg(not(debug_assertions))]
+    {
+        let raw = entry().ok()?.get_password().ok()?;
+        serde_json::from_str(&raw).ok()
+    }
+}
+
+fn save_session(session: &LastfmSession) -> Result<(), String> {
+    #[cfg(debug_assertions)]
+    {
+        write_debug_session(&session_path(), session).map_err(|error| error.to_string())
+    }
+    #[cfg(not(debug_assertions))]
+    {
+        entry()?
+            .set_password(&serde_json::to_string(session).map_err(|e| e.to_string())?)
+            .map_err(|e| e.to_string())
+    }
+}
+
 fn clear_session() -> Result<(), String> {
-    match entry()?.delete_credential() {
-        Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
-        Err(e) => Err(e.to_string()),
+    #[cfg(debug_assertions)]
+    {
+        delete_debug_session(&session_path()).map_err(|error| error.to_string())
+    }
+    #[cfg(not(debug_assertions))]
+    {
+        match entry()?.delete_credential() {
+            Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
+            Err(e) => Err(e.to_string()),
+        }
     }
 }
 
@@ -175,9 +254,7 @@ pub async fn lastfm_login(app: tauri::AppHandle) -> Result<String, String> {
     loop {
         match fetch_authorized_session(token).await {
             Ok(session) => {
-                entry()?
-                    .set_password(&serde_json::to_string(&session).map_err(|e| e.to_string())?)
-                    .map_err(|e| e.to_string())?;
+                save_session(&session)?;
                 return Ok(session.name);
             }
             Err(error)
@@ -256,6 +333,31 @@ pub async fn lastfm_scrobble(items: Vec<ScrobbleItem>) -> Result<u32, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(debug_assertions)]
+    #[test]
+    fn development_sessions_use_owner_only_file_storage() {
+        let path =
+            std::env::temp_dir().join(format!("resonance-lastfm-{}.json", uuid::Uuid::new_v4()));
+        let session = LastfmSession {
+            name: "test-user".into(),
+            key: "test-key".into(),
+        };
+
+        write_debug_session(&path, &session).unwrap();
+        let loaded = read_debug_session(&path).unwrap();
+        assert_eq!(loaded.name, session.name);
+        assert_eq!(loaded.key, session.key);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+                0o600
+            );
+        }
+        std::fs::remove_file(path).unwrap();
+    }
 
     #[test]
     fn configured_credentials_match_non_empty_build_environment_values() {
