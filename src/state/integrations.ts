@@ -1,13 +1,12 @@
 import { invoke } from '@tauri-apps/api/core';
 import { createStore, persist } from '../lib/util';
 import { buildPresence, presenceKey, type PresenceInput } from '../lib/presence-plan';
+import { DISCORD_APPLICATION_ID } from '../lib/discord-config';
 import { cleanArtist, creditedDelta, dropStale, scrobbleThreshold, type ScrobbleItem } from '../lib/scrobble-plan';
 import { currentTrack, dur, player, realCurTime } from './player';
 
 export const integrations = createStore({
   discordEnabled: false,
-  /** Application ID from https://discord.com/developers/applications. */
-  discordClientId: '',
   /** Last error from the Discord bridge, for the settings page. Not persisted. */
   discordError: '' as string,
 
@@ -25,7 +24,6 @@ export const integrations = createStore({
 
 persist('resonance.integrations.v1', integrations, (s) => ({
   discordEnabled: s.discordEnabled,
-  discordClientId: s.discordClientId,
   lastfmEnabled: s.lastfmEnabled,
   lastfmApiKey: s.lastfmApiKey,
   lastfmSecret: s.lastfmSecret,
@@ -34,7 +32,6 @@ persist('resonance.integrations.v1', integrations, (s) => ({
 }));
 
 const inTauri = () => typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
-export const isValidDiscordId = (id: string) => /^\d{17,20}$/.test(id.trim());
 
 let lastKey = '';
 
@@ -45,14 +42,13 @@ function send(clientId: string, track: ReturnType<typeof buildPresence> | null) 
 }
 
 function syncDiscord() {
-  const { discordEnabled, discordClientId } = integrations.get();
-  const id = discordClientId.trim();
+  const { discordEnabled } = integrations.get();
   const track = currentTrack();
   const s = player.get();
-  if (!discordEnabled || !isValidDiscordId(id) || !track || s.state === 'idle' || s.state === 'error') {
+  if (!discordEnabled || !track || s.state === 'idle' || s.state === 'error') {
     if (lastKey !== 'clear') {
       lastKey = 'clear';
-      send(id, null);
+      send(DISCORD_APPLICATION_ID, null);
     }
     return;
   }
@@ -63,15 +59,14 @@ function syncDiscord() {
     artist: track.artist,
     album: track.album,
     cover: track.cover,
-    src: track.src,
     playing: s.playing,
     position: realCurTime(),
     duration: dur(),
   };
-  const key = `${id}|${presenceKey(input, now)}`;
+  const key = `${DISCORD_APPLICATION_ID}|${presenceKey(input, now)}`;
   if (key === lastKey) return;
   lastKey = key;
-  send(id, buildPresence(input, now));
+  send(DISCORD_APPLICATION_ID, buildPresence(input, now));
 }
 
 /* ---------------- Last.fm ---------------- */

@@ -3,7 +3,8 @@ import { Icon, type IconName } from '../components/Icon';
 import { IconButton, Segmented, type Vars } from '../components/ui';
 import { cx, useStore } from '../lib/util';
 import { t } from '../lib/i18n';
-import { integrations, isValidDiscordId, lastfmLogin, lastfmLogout } from '../state/integrations';
+import { integrationOptions } from '../lib/integration-options';
+import { integrations, lastfmLogin, lastfmLogout } from '../state/integrations';
 import { go } from '../state/ui';
 import { acceptAnswer, joinSession, leaveSession, listen, startHosting } from '../state/listen-together';
 
@@ -60,9 +61,7 @@ export function TextInput({
 
 export default function Integrations() {
   const discordEnabled = useStore(integrations, (s) => s.discordEnabled);
-  const discordClientId = useStore(integrations, (s) => s.discordClientId);
   const discordError = useStore(integrations, (s) => s.discordError);
-  const idInvalid = discordClientId.trim() !== '' && !isValidDiscordId(discordClientId);
 
   return (
     <div className="page max-w-[980px]">
@@ -80,27 +79,14 @@ export default function Integrations() {
           <Segmented
             value={discordEnabled ? 'on' : 'off'}
             onChange={(v) => integrations.set({ discordEnabled: v === 'on' })}
-            options={[
-              { value: 'on', label: t('enabled'), icon: 'check' },
-              { value: 'off', label: t('disabled') },
-            ]}
+            options={integrationOptions(discordEnabled, t('enabled'), t('disabled'))}
           />
-          <div className={cx('mt-5 transition-opacity duration-300', !discordEnabled && 'pointer-events-none opacity-40')}>
-            <TextInput
-              label={t('discordAppId')}
-              value={discordClientId}
-              placeholder="1234567890123456789"
-              invalid={idInvalid}
-              onChange={(v) => integrations.set({ discordClientId: v.replace(/\s/g, '') })}
-            />
-            <p className="mt-2.5 text-xs text-on-surface-variant">{t('discordAppIdHint')}</p>
-            {discordEnabled && discordError && (
-              <p className="mt-2 flex items-center gap-1.5 text-xs text-error">
-                <Icon name="error" size={16} />
-                {discordError}
-              </p>
-            )}
-          </div>
+          {discordEnabled && discordError && (
+            <p className="mt-3 flex items-center gap-1.5 text-xs text-error">
+              <Icon name="error" size={16} />
+              {discordError}
+            </p>
+          )}
         </SettingsCard>
 
         <LastfmCard />
@@ -246,10 +232,7 @@ function LastfmCard() {
       <Segmented
         value={enabled ? 'on' : 'off'}
         onChange={(v) => integrations.set({ lastfmEnabled: v === 'on' })}
-        options={[
-          { value: 'on', label: t('enabled'), icon: 'check' },
-          { value: 'off', label: t('disabled') },
-        ]}
+        options={integrationOptions(enabled, t('enabled'), t('disabled'))}
       />
       <div className={cx('mt-5 grid gap-4 transition-opacity duration-300', !enabled && 'pointer-events-none opacity-40')}>
         {user ? (
