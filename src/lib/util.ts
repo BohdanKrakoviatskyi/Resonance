@@ -85,12 +85,21 @@ export async function flushFrontendStateBackup(): Promise<void> {
 }
 
 export function persist<T extends object>(key: string, store: Store<T>, pick: (s: T) => Partial<T>, delay = 350, onError?: () => void) {
+  const removeLegacyLastfmCredentials = (parsed: Record<string, unknown>) => {
+    if (key === 'resonance.integrations.v1') {
+      delete parsed.lastfmApiKey;
+      delete parsed.lastfmSecret;
+    }
+    return parsed;
+  };
   let hasLocal = false;
   try {
     const raw = localStorage.getItem(key);
     if (raw) {
       hasLocal = true;
-      store.set(JSON.parse(raw));
+      const parsed = removeLegacyLastfmCredentials(JSON.parse(raw));
+      store.set(parsed as Partial<T>);
+      localStorage.setItem(key, JSON.stringify(parsed));
     }
   } catch {
     /* corrupted storage — ignore */
@@ -101,7 +110,7 @@ export function persist<T extends object>(key: string, store: Store<T>, pick: (s
       const raw = entries?.[key];
       if (!raw) return;
       if (!hasLocal) {
-        const parsed = JSON.parse(raw) as Record<string, unknown>;
+        const parsed = removeLegacyLastfmCredentials(JSON.parse(raw) as Record<string, unknown>);
         if (key === 'lyra.lib.v1') {
           delete parsed.spotifyLiked;
           delete parsed.spotifyPlaylists;
@@ -118,7 +127,21 @@ export function persist<T extends object>(key: string, store: Store<T>, pick: (s
         const cleanedRaw = JSON.stringify(parsed);
         localStorage.setItem(key, cleanedRaw);
         store.set(parsed as Partial<T>);
+        if (key === 'resonance.integrations.v1') {
+          void import('./providers-api')
+            .then(({ backupFrontendState }) => backupFrontendState({ [key]: cleanedRaw }));
+        }
         return;
+      }
+      if (key === 'resonance.integrations.v1') {
+        try {
+          const backedUp = removeLegacyLastfmCredentials(JSON.parse(raw) as Record<string, unknown>);
+          const cleanedRaw = JSON.stringify(backedUp);
+          void import('./providers-api')
+            .then(({ backupFrontendState }) => backupFrontendState({ [key]: cleanedRaw }));
+        } catch {
+          /* ignore */
+        }
       }
       if (key === 'lyra.lib.v1') {
         try {
