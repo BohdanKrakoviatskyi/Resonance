@@ -3,7 +3,8 @@ import { Icon, type IconName } from '../components/Icon';
 import { IconButton, Segmented, type Vars } from '../components/ui';
 import { cx, useStore } from '../lib/util';
 import { t } from '../lib/i18n';
-import { integrations, isValidDiscordId, lastfmLogin, lastfmLogout } from '../state/integrations';
+import { integrationOptions } from '../lib/integration-options';
+import { integrations, lastfmLogin, lastfmLogout } from '../state/integrations';
 import { go } from '../state/ui';
 import { acceptAnswer, joinSession, leaveSession, listen, startHosting } from '../state/listen-together';
 
@@ -60,9 +61,7 @@ export function TextInput({
 
 export default function Integrations() {
   const discordEnabled = useStore(integrations, (s) => s.discordEnabled);
-  const discordClientId = useStore(integrations, (s) => s.discordClientId);
   const discordError = useStore(integrations, (s) => s.discordError);
-  const idInvalid = discordClientId.trim() !== '' && !isValidDiscordId(discordClientId);
 
   return (
     <div className="page max-w-[980px]">
@@ -80,27 +79,14 @@ export default function Integrations() {
           <Segmented
             value={discordEnabled ? 'on' : 'off'}
             onChange={(v) => integrations.set({ discordEnabled: v === 'on' })}
-            options={[
-              { value: 'on', label: t('enabled'), icon: 'check' },
-              { value: 'off', label: t('disabled') },
-            ]}
+            options={integrationOptions(discordEnabled, t('enabled'), t('disabled'))}
           />
-          <div className={cx('mt-5 transition-opacity duration-300', !discordEnabled && 'pointer-events-none opacity-40')}>
-            <TextInput
-              label={t('discordAppId')}
-              value={discordClientId}
-              placeholder="1234567890123456789"
-              invalid={idInvalid}
-              onChange={(v) => integrations.set({ discordClientId: v.replace(/\s/g, '') })}
-            />
-            <p className="mt-2.5 text-xs text-on-surface-variant">{t('discordAppIdHint')}</p>
-            {discordEnabled && discordError && (
-              <p className="mt-2 flex items-center gap-1.5 text-xs text-error">
-                <Icon name="error" size={16} />
-                {discordError}
-              </p>
-            )}
-          </div>
+          {discordEnabled && discordError && (
+            <p className="mt-3 flex items-center gap-1.5 text-xs text-error">
+              <Icon name="error" size={16} />
+              {discordError}
+            </p>
+          )}
         </SettingsCard>
 
         <LastfmCard />
@@ -216,24 +202,18 @@ function ListenTogetherCard() {
 
 function LastfmCard() {
   const enabled = useStore(integrations, (s) => s.lastfmEnabled);
-  const apiKey = useStore(integrations, (s) => s.lastfmApiKey);
-  const secret = useStore(integrations, (s) => s.lastfmSecret);
   const user = useStore(integrations, (s) => s.lastfmUser);
   const queued = useStore(integrations, (s) => s.lastfmQueue.length);
   const scrobbled = useStore(integrations, (s) => s.lastfmScrobbled);
   const error = useStore(integrations, (s) => s.lastfmError);
-  const [username, setUsername] = useState('');
-  const [password, setPassword] = useState('');
   const [busy, setBusy] = useState(false);
   const [loginError, setLoginError] = useState('');
-  const keysOk = /^[0-9a-f]{32}$/i.test(apiKey.trim()) && /^[0-9a-f]{32}$/i.test(secret.trim());
 
   const login = async () => {
     setBusy(true);
     setLoginError('');
     try {
-      await lastfmLogin(username, password);
-      setPassword('');
+      await lastfmLogin();
     } catch (e) {
       setLoginError(String(e));
     } finally {
@@ -246,12 +226,9 @@ function LastfmCard() {
       <Segmented
         value={enabled ? 'on' : 'off'}
         onChange={(v) => integrations.set({ lastfmEnabled: v === 'on' })}
-        options={[
-          { value: 'on', label: t('enabled'), icon: 'check' },
-          { value: 'off', label: t('disabled') },
-        ]}
+        options={integrationOptions(enabled, t('enabled'), t('disabled'))}
       />
-      <div className={cx('mt-5 grid gap-4 transition-opacity duration-300', !enabled && 'pointer-events-none opacity-40')}>
+      <div className="mt-5 grid gap-4 transition-opacity duration-300">
         {user ? (
           <div className="flex flex-wrap items-center gap-3">
             <span className="grid h-10 w-10 place-items-center rounded-full bg-primary/18 text-primary">
@@ -272,27 +249,19 @@ function LastfmCard() {
           </div>
         ) : (
           <>
-            <div className="grid gap-3 sm:grid-cols-2">
-              <TextInput label="API key" value={apiKey} onChange={(v) => integrations.set({ lastfmApiKey: v.trim() })} />
-              <TextInput label="Shared secret" type="password" value={secret} onChange={(v) => integrations.set({ lastfmSecret: v.trim() })} />
-            </div>
-            <p className="-mt-1 text-xs text-on-surface-variant">{t('lastfmKeysHint')}</p>
-            <div className={cx('grid gap-3 sm:grid-cols-2', !keysOk && 'pointer-events-none opacity-40')}>
-              <TextInput label={t('lastfmUsername')} value={username} onChange={setUsername} />
-              <TextInput label={t('lastfmPassword')} type="password" value={password} onChange={setPassword} />
-            </div>
             <div className="flex flex-wrap items-center gap-3">
               <button
                 type="button"
                 data-ripple
-                disabled={!keysOk || !username.trim() || !password || busy}
+                disabled={busy}
                 className="sl rounded-full bg-primary px-5 py-2.5 text-sm font-semibold text-on-primary transition disabled:opacity-40"
                 onClick={() => void login()}
               >
                 {busy ? t('lastfmLoggingIn') : t('lastfmLogin')}
               </button>
-              <span className="text-xs text-on-surface-variant">{t('lastfmPasswordHint')}</span>
+              {!busy && <span className="text-xs text-on-surface-variant">{t('lastfmLoginHint')}</span>}
             </div>
+            {busy && <p className="text-xs text-on-surface-variant">{t('lastfmLoginHint')}</p>}
             {loginError && <p className="text-xs text-error">{loginError}</p>}
           </>
         )}
