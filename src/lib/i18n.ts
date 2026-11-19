@@ -286,11 +286,6 @@ const S = {
   integrations: ['Интеграции', 'Integrations'],
   integrationsSub: ['Discord, Last.fm и другие сервисы', 'Discord, Last.fm and other services'],
   discordDesc: ['Показывать в профиле Discord, что вы слушаете', 'Show what you are listening to on your Discord profile'],
-  discordAppId: ['ID приложения Discord', 'Discord application ID'],
-  discordAppIdHint: [
-    'Создайте приложение на discord.com/developers/applications, назовите его «Resonance» и вставьте сюда Application ID. Discord должен быть запущен на этом компьютере.',
-    'Create an application at discord.com/developers/applications, name it "Resonance" and paste its Application ID here. Discord must be running on this computer.',
-  ],
   lastfmDesc: ['Скробблинг прослушанных треков в ваш профиль Last.fm', 'Scrobble the tracks you listen to to your Last.fm profile'],
   lastfmKeysHint: [
     'Получите ключи на last.fm/api/account/create (поле Callback URL можно оставить пустым).',

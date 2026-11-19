@@ -6,7 +6,6 @@ export interface PresenceInput {
   artist: string;
   album?: string;
   cover?: string;
-  src?: string;
   playing: boolean;
   /** Seconds into the track. */
   position: number;
@@ -19,7 +18,7 @@ export interface PresencePayload {
   artist: string;
   album: string | null;
   coverUrl: string | null;
-  url: string | null;
+  playing: boolean;
   startMs: number | null;
   endMs: number | null;
 }
@@ -34,7 +33,7 @@ export function buildPresence(p: PresenceInput, now: number): PresencePayload {
     artist: p.artist,
     album: p.album?.trim() || null,
     coverUrl: https(p.cover),
-    url: https(p.src),
+    playing: p.playing,
     startMs,
     endMs: timed && startMs !== null ? startMs + Math.round(p.duration * 1000) : null,
   };

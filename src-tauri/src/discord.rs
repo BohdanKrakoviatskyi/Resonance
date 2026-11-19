@@ -19,8 +19,8 @@ pub struct PresenceTrack {
     pub album: Option<String>,
     /// https URL of the cover; Discord fetches external images itself.
     pub cover_url: Option<String>,
-    /// Link to the track on its source, shown as a button.
-    pub url: Option<String>,
+    /// Whether playback is currently active.
+    pub playing: bool,
     /// Unix milliseconds when the track (virtually) started; present only while playing.
     pub start_ms: Option<i64>,
     pub end_ms: Option<i64>,
@@ -53,11 +53,16 @@ fn field(s: &str) -> String {
 }
 
 fn build(track: &PresenceTrack) -> Activity<'_> {
+    let state = if track.playing {
+        field(&track.artist)
+    } else {
+        field(&format!("Paused · {}", track.artist))
+    };
     let mut a = Activity::new()
         .activity_type(ActivityType::Listening)
         .status_display_type(StatusDisplayType::Details)
         .details(field(&track.title))
-        .state(field(&track.artist));
+        .state(state);
     let mut assets = Assets::new().small_image("logo").small_text("Resonance");
     if let Some(cover) = track.cover_url.as_deref().filter(|u| u.starts_with("https://")) {
         assets = assets.large_image(cover);
@@ -66,12 +71,15 @@ fn build(track: &PresenceTrack) -> Activity<'_> {
         }
     }
     a = a.assets(assets);
-    if let (Some(start), Some(end)) = (track.start_ms, track.end_ms) {
-        a = a.timestamps(Timestamps::new().start(start).end(end));
+    if track.playing {
+        if let (Some(start), Some(end)) = (track.start_ms, track.end_ms) {
+            a = a.timestamps(Timestamps::new().start(start).end(end));
+        }
     }
-    if let Some(url) = track.url.as_deref().filter(|u| u.starts_with("https://")) {
-        a = a.buttons(vec![Button::new("Open track", url)]);
-    }
+    a = a.buttons(vec![Button::new(
+        "Get Resonance",
+        "https://github.com/BohdanKrakoviatskyi/Resonance/releases/latest",
+    )]);
     a
 }
 
@@ -155,6 +163,40 @@ mod tests {
         assert_eq!(field("a"), "a ");
         assert_eq!(field(&"x".repeat(300)).chars().count(), 128);
         assert_eq!(field("  Song  "), "Song");
+    }
+
+    #[test]
+    fn always_shows_the_download_button_instead_of_a_track_link() {
+        let track: PresenceTrack = serde_json::from_value(serde_json::json!({
+            "title": "Song",
+            "artist": "Artist",
+            "playing": true
+        }))
+        .unwrap();
+        let activity = serde_json::to_value(build(&track)).unwrap();
+
+        assert_eq!(activity["buttons"][0]["label"], "Get Resonance");
+        assert_eq!(
+            activity["buttons"][0]["url"],
+            "https://github.com/BohdanKrakoviatskyi/Resonance/releases/latest"
+        );
+        assert_eq!(activity["buttons"].as_array().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn paused_activity_is_labelled_and_has_no_timer() {
+        let track: PresenceTrack = serde_json::from_value(serde_json::json!({
+            "title": "Song",
+            "artist": "Artist",
+            "playing": false,
+            "startMs": 1000,
+            "endMs": 5000
+        }))
+        .unwrap();
+        let activity = serde_json::to_value(build(&track)).unwrap();
+
+        assert_eq!(activity["state"], "Paused · Artist");
+        assert!(activity.get("timestamps").is_none());
     }
 
     #[test]

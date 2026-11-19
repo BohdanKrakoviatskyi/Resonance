@@ -20,10 +20,11 @@ test('builds timestamps only while playing', () => {
   assert.equal(p.endMs, 270_000);
   assert.equal(p.coverUrl, null, 'local covers are not reachable by Discord');
   assert.equal(p.album, null);
-  assert.equal(p.url, 'https://music.youtube.com/watch?v=1');
+  assert.equal(p.playing, true);
   const paused = buildPresence({ ...base, playing: false }, 100_000);
   assert.equal(paused.startMs, null);
   assert.equal(paused.endMs, null);
+  assert.equal(paused.playing, false);
 });
 
 test('key ignores normal playback but changes on seek and pause', () => {

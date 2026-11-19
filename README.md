@@ -38,7 +38,7 @@ A fast, native music player for YouTube Music, SoundCloud and your own files, in
 - Mini player, global shortcuts, media keys, and Russian and English UI.
 
 **Integrations** (Settings → Integrations)
-- **Discord Rich Presence**: "Listening to …" with cover art and a progress bar. Create an application at <https://discord.com/developers/applications> and paste its Application ID.
+- **Discord Rich Presence**: "Listening to …" with cover art and a progress bar. Enable or disable it in Settings → Integrations; no Discord setup is required.
 - **Last.fm scrobbling**: follows the official rules, with "now playing" and an offline queue. Create API keys at <https://www.last.fm/api/account/create>, then log in. Your password is used once and is never stored.
 
 ## Run in development
