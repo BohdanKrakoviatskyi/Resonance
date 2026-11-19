@@ -3,7 +3,7 @@ import { Icon } from './Icon';
 import { IconButton, Slider, type Vars } from './ui';
 import { clamp, cx, fmtTime, useStore } from '../lib/util';
 import { t } from '../lib/i18n';
-import { adjustVolumePos, cycleRepeat, dur, next, onFrame, player, prev, seek, seekBy, setVolumePos, volumeToPos, toggle, toggleMute, toggleShuffle, useSecond } from '../state/player';
+import { adjustVolumePos, cycleRepeat, dur, next, onFrame, player, prev, seek, seekBy, setVolumePos, volumeToPos, toggle, toggleMute, toggleShuffle, usePlaybackControlLocked, useSecond } from '../state/player';
 
 /** M3 Expressive wavy progress: the played part is a travelling sine wave that flattens when paused. */
 export function Seek({ big }: { big?: boolean }) {
@@ -20,6 +20,8 @@ export function Seek({ big }: { big?: boolean }) {
   const [dragging, setDragging] = useState(false);
   const playing = useStore(player, (s) => s.playing);
   const has = useStore(player, (s) => s.index >= 0);
+  const locked = usePlaybackControlLocked();
+  const canControl = has && !locked;
   const id = 'sk' + useId().replace(/[^a-zA-Z0-9]/g, '');
   const H = big ? 40 : 28;
   const A = big ? 4 : 3;
@@ -84,14 +86,14 @@ export function Seek({ big }: { big?: boolean }) {
   return (
     <div
       ref={wrap}
-      className={cx('seek', big && 'seek-big', playing && 'is-playing', dragging && 'dragging')}
+      className={cx('seek', big && 'seek-big', playing && 'is-playing', dragging && 'dragging', !canControl && 'disabled')}
       style={{ height: H, '--wl': L + 'px' } as Vars}
       role="slider"
-      tabIndex={has ? 0 : -1}
+      tabIndex={canControl ? 0 : -1}
       aria-label={t('seek')}
-      aria-disabled={!has}
+      aria-disabled={!canControl}
       onPointerDown={(e) => {
-        if (!has) return;
+        if (!canControl) return;
         e.currentTarget.setPointerCapture(e.pointerId);
         drag.current = fx(e.clientX);
         setDragging(true);
@@ -114,6 +116,7 @@ export function Seek({ big }: { big?: boolean }) {
         setDragging(false);
       }}
       onKeyDown={(e) => {
+        if (!canControl) return;
         if (e.key === 'ArrowRight') seekBy(5);
         else if (e.key === 'ArrowLeft') seekBy(-5);
         else return;
@@ -154,10 +157,11 @@ export function PlayButton() {
   const playing = useStore(player, (s) => s.playing);
   const loading = useStore(player, (s) => s.loading);
   const has = useStore(player, (s) => s.index >= 0);
+  const locked = usePlaybackControlLocked();
   const active = playing || loading;
   const label = active ? t('pause') : t('play');
   return (
-    <button type="button" className="play-btn sl" data-ripple data-playing={active} data-loading={loading} aria-label={label} data-tip={label} onClick={toggle} disabled={!has}>
+    <button type="button" className="play-btn sl" data-ripple data-playing={active} data-loading={loading} aria-label={label} data-tip={label} onClick={toggle} disabled={!has || locked}>
       <Icon name="play_arrow" fill className="pi-play" />
       <Icon name="pause" fill className="pi-pause" />
       {loading && (
@@ -173,18 +177,20 @@ export function Controls({ size }: { size?: 'lg' }) {
   const shuffle = useStore(player, (s) => s.shuffle);
   const repeat = useStore(player, (s) => s.repeat);
   const has = useStore(player, (s) => s.index >= 0);
+  const locked = usePlaybackControlLocked();
   return (
     <div className={cx('controls', size === 'lg' && 'controls-lg')}>
-      <IconButton icon="shuffle" label={t('shuffle')} toggle selected={shuffle} onClick={toggleShuffle} className="ctl-toggle" />
-      <IconButton icon="skip_previous" fill label={t('previous')} onClick={prev} disabled={!has} />
+      <IconButton icon="shuffle" label={t('shuffle')} toggle selected={shuffle} onClick={toggleShuffle} className="ctl-toggle" disabled={locked} />
+      <IconButton icon="skip_previous" fill label={t('previous')} onClick={prev} disabled={!has || locked} />
       <PlayButton />
-      <IconButton icon="skip_next" fill label={t('next')} onClick={() => next()} disabled={!has} />
+      <IconButton icon="skip_next" fill label={t('next')} onClick={() => next()} disabled={!has || locked} />
       <IconButton
         icon={repeat === 'one' ? 'repeat_one' : 'repeat'}
         label={repeat === 'one' ? t('repeatOne') : t('repeat')}
         toggle
         selected={repeat !== 'off'}
         onClick={cycleRepeat}
+        disabled={locked}
         className="ctl-toggle"
       />
     </div>

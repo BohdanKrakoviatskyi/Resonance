@@ -21,6 +21,14 @@ import type { Track } from '../types';
 export const setPlaybackControlLock = (locked: boolean) => playbackAccess.setLocked(locked);
 export const withRemotePlayback = <T,>(action: () => T): T => playbackAccess.withRemote(action);
 
+export function usePlaybackControlLocked() {
+  return useSyncExternalStore(
+    (onChange) => playbackAccess.subscribeLock(() => onChange()),
+    () => playbackAccess.isLocked(),
+    () => false,
+  );
+}
+
 playbackAccess.subscribeLock((locked) => {
   if (locked) {
     clearAutoCrossfadeTimer();
