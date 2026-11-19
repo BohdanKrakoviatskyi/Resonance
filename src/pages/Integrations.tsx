@@ -6,7 +6,7 @@ import { t } from '../lib/i18n';
 import { integrationOptions } from '../lib/integration-options';
 import { integrations, lastfmLogin, lastfmLogout } from '../state/integrations';
 import { go } from '../state/ui';
-import { acceptAnswer, joinSession, leaveSession, listen, startHosting } from '../state/listen-together';
+import { joinSession, leaveSession, listen, startHosting } from '../state/listen-together';
 
 export function SettingsCard({ icon, title, sub, children, i }: { icon: IconName; title: string; sub?: string; children: ReactNode; i: number }) {
   return (
@@ -96,21 +96,15 @@ export default function Integrations() {
   );
 }
 
-function CodeBox({ code }: { code: string }) {
+function RoomCode({ code }: { code: string }) {
   const [copied, setCopied] = useState(false);
   return (
-    <div className="flex items-stretch gap-2">
-      <textarea
-        readOnly
-        value={code}
-        aria-label={t('listenYourCode')}
-        onFocus={(e) => e.currentTarget.select()}
-        className="h-20 min-w-0 flex-1 resize-none rounded-2xl bg-on-surface/8 p-3 font-mono text-[11px] leading-snug outline-0"
-      />
+    <div className="flex items-center gap-3">
+      <code className="rounded-2xl bg-on-surface/8 px-4 py-3 font-mono text-xl font-bold tracking-[0.16em]">{code}</code>
       <button
         type="button"
         data-ripple
-        className="sl shrink-0 rounded-2xl bg-primary px-4 text-sm font-semibold text-on-primary"
+        className="sl rounded-2xl bg-primary px-4 py-3 text-sm font-semibold text-on-primary"
         onClick={() => {
           void navigator.clipboard.writeText(code).then(() => {
             setCopied(true);
@@ -139,7 +133,7 @@ function ListenTogetherCard() {
           value={input}
           spellCheck={false}
           onChange={(e) => setInput(e.target.value)}
-          placeholder="RSN1.…"
+          placeholder="1234-ABCD"
           className="h-20 min-w-0 flex-1 resize-none rounded-2xl bg-on-surface/8 p-3 font-mono text-[11px] leading-snug outline-0 focus:bg-on-surface/12"
         />
         <button
@@ -171,17 +165,10 @@ function ListenTogetherCard() {
         </div>
       )}
       {status === 'preparing' && <p className="text-sm text-on-surface-variant">{t('listenPreparing')}</p>}
-      {status === 'awaitingAnswer' && (
-        <div className="grid gap-4">
-          <p className="text-sm text-on-surface-variant">{t('listenStep1Host')}</p>
-          <CodeBox code={myCode} />
-          {pasteBox(t('listenStep2Host'), () => void acceptAnswer(input), t('listenConnect'))}
-        </div>
-      )}
-      {status === 'awaitingHost' && (
+      {status === 'awaitingGuest' && (
         <div className="grid gap-3">
-          <p className="text-sm text-on-surface-variant">{t('listenStepGuest')}</p>
-          <CodeBox code={myCode} />
+          <p className="text-sm text-on-surface-variant">{t('listenHostCode')}</p>
+          <RoomCode code={myCode} />
         </div>
       )}
       {status === 'connected' && (

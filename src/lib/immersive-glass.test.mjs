@@ -3,7 +3,11 @@ import { readFile } from 'node:fs/promises';
 import test from 'node:test';
 import postcss from 'postcss';
 
-const css = postcss.parse(await readFile(new URL('../index.css', import.meta.url), 'utf8'));
+const cssText = await readFile(new URL('../index.css', import.meta.url), 'utf8');
+const css = postcss.parse(cssText);
+const immersiveSource = await readFile(new URL('../components/Immersive.tsx', import.meta.url), 'utf8');
+const translations = await readFile(new URL('./i18n.ts', import.meta.url), 'utf8');
+
 
 function declarationsFor(selector) {
   const declarations = [];
@@ -14,6 +18,12 @@ function declarationsFor(selector) {
   });
   return declarations;
 }
+
+test('fullscreen lyrics have no visualizer button, rendering, styles, or translations', () => {
+  assert.doesNotMatch(immersiveSource, /Visualizer|cycleViz|vizStore|visualizer|vizOff|vizBars|vizWave/);
+  assert.doesNotMatch(cssText, /\.imm-viz\b/);
+  assert.doesNotMatch(translations, /\b(?:visualizer|vizOff|vizBars|vizWave):/);
+});
 
 test('fullscreen lyrics keep the glass-controls backdrop static during the transition', () => {
   const immersive = [];

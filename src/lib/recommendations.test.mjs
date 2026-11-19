@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { rankRecommendations } from './recommendations.ts';
+import { rankRecommendations, youtubeRadioId } from './recommendations.ts';
 
 const seed = { id: 'seed', title: 'Blue Moon!', artist: 'The Artists', duration: 180 };
 const candidate = (id, title, artist, duration = 180) => ({ id, title, artist, duration });
@@ -16,14 +16,18 @@ test('rejects same-title versions and already queued or disliked tracks', () => 
   assert.deepEqual(ranked.map((track) => track.id), ['good']);
 });
 
-test('ranks matching artist and titles ahead of weaker provider recommendations', () => {
+test('ranks artist-related recommendations ahead of title lookalikes', () => {
   const ranked = rankRecommendations(seed, [
-    candidate('unrelated', 'Blue Horizon', 'Someone Else'),
-    candidate('related', 'Blue Horizon', 'The Artists'),
-    candidate('less-related', 'Summer Rain', 'The Artists'),
+    candidate('title-lookalike', 'Blue Moon Live', 'Someone Else'),
+    candidate('artist-match', 'Night Drive', 'The Artists'),
   ]);
 
-  assert.deepEqual(ranked.map((track) => track.id), ['related', 'less-related', 'unrelated']);
+  assert.deepEqual(ranked.map((track) => track.id), ['artist-match', 'title-lookalike']);
+});
+
+test('uses the selected YouTube video ID and refuses to turn titles into recommendation queries', () => {
+  assert.equal(youtubeRadioId({ id: 'yt:abcdefghijk' }), 'abcdefghijk');
+  assert.equal(youtubeRadioId({ id: 'search:Blue Moon' }), null);
 });
 
 test('uses duration similarity to break otherwise equal recommendation ties', () => {
@@ -33,6 +37,19 @@ test('uses duration similarity to break otherwise equal recommendation ties', ()
   ]);
 
   assert.deepEqual(ranked.map((track) => track.id), ['close', 'long']);
+});
+
+test('uses only the current and played tracks as recommendation seeds', async () => {
+  const { recommendationSeedIds } = await import('./recommendations.ts');
+
+  assert.deepEqual(recommendationSeedIds('selected', ['played', 'selected']), ['selected', 'played']);
+});
+
+test('places new recommendations among upcoming tracks instead of after the playlist', async () => {
+  const { insertRecommendations } = await import('./recommendations.ts');
+
+  assert.deepEqual(insertRecommendations(['now', 'one', 'two', 'three', 'four'], 0, ['radio']), ['now', 'one', 'two', 'radio', 'three', 'four']);
+  assert.deepEqual(insertRecommendations(['now', 'one', 'two'], 2, ['radio']), ['now', 'one', 'two', 'radio']);
 });
 
 test('ranks tracks from any seed and excludes tracks already known to the user', () => {
