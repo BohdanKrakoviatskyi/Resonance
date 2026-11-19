@@ -78,6 +78,17 @@ jobs:
         shell: bash
         run: echo "LIBCLANG_PATH=C:\\Program Files\\LLVM\\bin" >> "$GITHUB_ENV"
 
+      - name: Verify Last.fm credentials
+        env:
+          LASTFM_API_KEY: ${{ secrets.LASTFM_API_KEY }}
+          LASTFM_API_SECRET: ${{ secrets.LASTFM_API_SECRET }}
+        shell: bash
+        run: |
+          if [ -z "$LASTFM_API_KEY" ] || [ -z "$LASTFM_API_SECRET" ]; then
+            echo "::error::LASTFM_API_KEY and LASTFM_API_SECRET repository secrets are required to build release artifacts"
+            exit 1
+          fi
+
       # macOS code signing + notarization, enabled only when the Apple secrets exist.
       # Missing secrets arrive as empty strings, which the Tauri bundler would treat as a broken
       # certificate, so they are exported only when set. Without them the build stays ad-hoc signed.
@@ -112,6 +123,8 @@ jobs:
           # whisper.cpp uses std::filesystem, which Apple's libc++ only offers from macOS 10.15.
           MACOSX_DEPLOYMENT_TARGET: "11.0"
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          LASTFM_API_KEY: ${{ secrets.LASTFM_API_KEY }}
+          LASTFM_API_SECRET: ${{ secrets.LASTFM_API_SECRET }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:

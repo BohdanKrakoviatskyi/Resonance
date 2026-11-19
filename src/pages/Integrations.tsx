@@ -202,24 +202,18 @@ function ListenTogetherCard() {
 
 function LastfmCard() {
   const enabled = useStore(integrations, (s) => s.lastfmEnabled);
-  const apiKey = useStore(integrations, (s) => s.lastfmApiKey);
-  const secret = useStore(integrations, (s) => s.lastfmSecret);
   const user = useStore(integrations, (s) => s.lastfmUser);
   const queued = useStore(integrations, (s) => s.lastfmQueue.length);
   const scrobbled = useStore(integrations, (s) => s.lastfmScrobbled);
   const error = useStore(integrations, (s) => s.lastfmError);
-  const [username, setUsername] = useState('');
-  const [password, setPassword] = useState('');
   const [busy, setBusy] = useState(false);
   const [loginError, setLoginError] = useState('');
-  const keysOk = /^[0-9a-f]{32}$/i.test(apiKey.trim()) && /^[0-9a-f]{32}$/i.test(secret.trim());
 
   const login = async () => {
     setBusy(true);
     setLoginError('');
     try {
-      await lastfmLogin(username, password);
-      setPassword('');
+      await lastfmLogin();
     } catch (e) {
       setLoginError(String(e));
     } finally {
@@ -234,7 +228,7 @@ function LastfmCard() {
         onChange={(v) => integrations.set({ lastfmEnabled: v === 'on' })}
         options={integrationOptions(enabled, t('enabled'), t('disabled'))}
       />
-      <div className={cx('mt-5 grid gap-4 transition-opacity duration-300', !enabled && 'pointer-events-none opacity-40')}>
+      <div className="mt-5 grid gap-4 transition-opacity duration-300">
         {user ? (
           <div className="flex flex-wrap items-center gap-3">
             <span className="grid h-10 w-10 place-items-center rounded-full bg-primary/18 text-primary">
@@ -255,27 +249,19 @@ function LastfmCard() {
           </div>
         ) : (
           <>
-            <div className="grid gap-3 sm:grid-cols-2">
-              <TextInput label="API key" value={apiKey} onChange={(v) => integrations.set({ lastfmApiKey: v.trim() })} />
-              <TextInput label="Shared secret" type="password" value={secret} onChange={(v) => integrations.set({ lastfmSecret: v.trim() })} />
-            </div>
-            <p className="-mt-1 text-xs text-on-surface-variant">{t('lastfmKeysHint')}</p>
-            <div className={cx('grid gap-3 sm:grid-cols-2', !keysOk && 'pointer-events-none opacity-40')}>
-              <TextInput label={t('lastfmUsername')} value={username} onChange={setUsername} />
-              <TextInput label={t('lastfmPassword')} type="password" value={password} onChange={setPassword} />
-            </div>
             <div className="flex flex-wrap items-center gap-3">
               <button
                 type="button"
                 data-ripple
-                disabled={!keysOk || !username.trim() || !password || busy}
+                disabled={busy}
                 className="sl rounded-full bg-primary px-5 py-2.5 text-sm font-semibold text-on-primary transition disabled:opacity-40"
                 onClick={() => void login()}
               >
                 {busy ? t('lastfmLoggingIn') : t('lastfmLogin')}
               </button>
-              <span className="text-xs text-on-surface-variant">{t('lastfmPasswordHint')}</span>
+              {!busy && <span className="text-xs text-on-surface-variant">{t('lastfmLoginHint')}</span>}
             </div>
+            {busy && <p className="text-xs text-on-surface-variant">{t('lastfmLoginHint')}</p>}
             {loginError && <p className="text-xs text-error">{loginError}</p>}
           </>
         )}
