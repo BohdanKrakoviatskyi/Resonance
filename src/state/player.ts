@@ -7,7 +7,8 @@ import { snack, openSearch } from './ui';
 import { t } from '../lib/i18n';
 import { findYouTubeFallback, relatedSoundCloudTracks, searchYouTubeRecommendations, trackStream, ytDlpTrackStream } from '../lib/api';
 import type { YtResolveAttemptTiming, YtStreamResolveResult } from '../lib/providers-api';
-import { rankRecommendations } from '../lib/recommendations';
+import { insertRecommendations, rankRecommendations, recommendationSeedIds } from '../lib/recommendations';
+import { playbackAccess } from '../lib/playback-access';
 import { createPendingAudioSeek, pendingAudioSeekFor, type PendingAudioSeek } from '../lib/pending-audio-seek';
 import { canFallbackToOutgoingDeck, evaluateAutoCrossfadeTrigger, planAutoCrossfade } from '../lib/crossfade-plan';
 import { stepQueueIndex, shouldAdvanceAfterError } from '../lib/player-queue';
@@ -16,6 +17,26 @@ import { clampFx, FX_OFF, FX_PRESETS, makeImpulse, type FxPreset, type FxSetting
 import { isWebKitPlaybackUserAgent, webkitDoubledDuration as detectWebkitDoubledDuration } from '../lib/webkit-playback';
 import { onProviderState, providerCommand } from '../lib/provider-player';
 import type { Track } from '../types';
+
+export const setPlaybackControlLock = (locked: boolean) => playbackAccess.setLocked(locked);
+export const withRemotePlayback = <T,>(action: () => T): T => playbackAccess.withRemote(action);
+
+playbackAccess.subscribeLock((locked) => {
+  if (locked) {
+    clearAutoCrossfadeTimer();
+    if (autoCrossfadePreparingForLoadId >= 0 && !crossfadeSession) {
+      currentRequestId += 1;
+      resolveAbort?.abort();
+      resolveAbort = null;
+      const inactive = getInactiveDeck();
+      if (inactive !== getActiveDeck()) stopAndResetDeck(inactive);
+      autoCrossfadePreparingForLoadId = -1;
+    }
+    if (crossfadeSession) cancelCrossfade(true);
+  } else {
+    scheduleAutoCrossfadeCheck();
+  }
+});
 
 export type Repeat = 'off' | 'all' | 'one';
 export type PlayerPlaybackState = 'idle' | 'loading' | 'playing' | 'paused' | 'error';
@@ -1764,6 +1785,10 @@ async function load(i: number, autoplay: boolean, opts?: LoadOptions) {
  * Uses preloaded inactive deck when available so audio crossfade and progress-bar rollback start in sync.
  */
 async function startAutoCrossfade() {
+  if (!playbackAccess.canControl()) {
+    clearAutoCrossfadeTimer();
+    return;
+  }
   const triggerRequestId = currentRequestId;
   if (autoCrossfadePreparingForLoadId === triggerRequestId || crossfadeSession) return;
 
@@ -1936,19 +1961,17 @@ async function startAutoCrossfade() {
 }
 
 export function playQueue(ids: string[], start = 0, shuffle?: boolean) {
-  if (!ids.length) return;
+  if (!playbackAccess.canControl() || !ids.length) return;
   const sh = shuffle ?? player.get().shuffle;
   let q = ids.slice();
   let idx = clamp(start, 0, q.length - 1);
   if (sh) {
     original = q.slice();
-    setShuffleAnchors(q);
     const first = q[idx];
     q = [first, ...shuffled(q.filter((_, k) => k !== idx))];
     idx = 0;
   } else {
     original = null;
-    setShuffleAnchors(null);
   }
   player.set({ queue: q, shuffle: sh });
   const manualFade = getCrossfadeDuration() > 0 ? MANUAL_CROSSFADE_SECONDS : 0;
@@ -1962,19 +1985,6 @@ const relatedRequests = new Map<string, Promise<Track[]>>();
 /** Keep at least this many upcoming tracks in the queue while shuffle is on ("infinite radio"). */
 const SHUFFLE_KEEP_AHEAD = 4;
 
-/** Style anchors: tracks from the search/playlist the shuffle was started from. */
-let shuffleAnchorIds: string[] = [];
-
-function sampleAnchors(ids: string[]): string[] {
-  if (ids.length <= 8) return ids.slice();
-  const out: string[] = [];
-  for (let k = 0; k < 8; k += 1) out.push(ids[Math.floor((k * ids.length) / 8)]);
-  return out;
-}
-
-function setShuffleAnchors(ids: string[] | null) {
-  shuffleAnchorIds = ids ? sampleAnchors(ids) : [];
-}
 
 function prefetchRelated(track: Track): Promise<Track[]> {
   if (!track.nativeId || relatedFetched.has(track.id)) return Promise.resolve([]);
@@ -1996,7 +2006,7 @@ function prefetchRelated(track: Track): Promise<Track[]> {
 
 /**
  * Extends the shuffle queue with style-matched recommendations (YouTube Music radio / SoundCloud related)
- * seeded by the current track + shuffle anchors (the search/playlist shuffle started from).
+ * seeded by the current and previously played tracks from the same provider.
  * Returns how many tracks were appended (0 when nothing was added).
  */
 async function extendShuffleQueue(track: Track): Promise<number> {
@@ -2013,28 +2023,10 @@ async function extendShuffleQueue(track: Track): Promise<number> {
     ...Object.values(libraryState.soundcloudPlaylistTracks).flatMap((items) => items.map((item) => item.id)),
     ...Object.keys(libraryState.cache),
   ]);
-  // Anchor-first but drifting: the search/playlist shuffle started from defines the style,
-  // while recently played tracks rotate through the seeds so each extension pulls a fresh
-  // radio pool instead of re-ranking the same frozen one (which made the queue repeat).
-  const anchorSet = new Set(shuffleAnchorIds);
-  const history = player
-    .get()
-    .queue.slice(0, player.get().index + 1)
-    .reverse()
-    .filter((id) => id !== source.id && !anchorSet.has(id));
-  const seedIds = [
-    source.id,
-    ...shuffleAnchorIds.slice(0, 2),
-    ...history,
-    ...libraryState.recent,
-    ...libraryState.liked,
-    ...libraryState.playlists.flatMap((playlist) => playlist.ids),
-    ...libraryState.soundcloudLiked.map((item) => item.id),
-  ];
-  const seeds = [...new Set(seedIds)]
+  const history = player.get().queue.slice(0, player.get().index + 1).reverse();
+  const seeds = recommendationSeedIds(source.id, history)
     .map((id) => getTrack(id))
-    .filter((item): item is Track => Boolean(item))
-    .slice(0, 5);
+    .filter((item): item is Track => item !== undefined && item.source === source.source);
   const results = await Promise.allSettled(seeds.map(prefetchRelated));
   if (currentTrack()?.id !== track.id) return 0;
 
@@ -2045,7 +2037,11 @@ async function extendShuffleQueue(track: Track): Promise<number> {
   const candidates = shuffled(rankRecommendations(seeds, related, existing, disliked, known)).slice(0, 20);
   if (!candidates.length) return 0;
   registerTracks(candidates);
-  const queue = [...player.get().queue, ...candidates.map((candidate) => candidate.id)];
+  const queue = insertRecommendations(
+    player.get().queue,
+    player.get().index,
+    candidates.map((candidate) => candidate.id),
+  );
   if (original) original.push(...candidates.map((candidate) => candidate.id));
   player.set({ queue });
   return candidates.length;
@@ -2073,6 +2069,7 @@ function maybeExtendShuffleQueue(track: Track | null | undefined) {
 }
 
 export function toggle() {
+  if (!playbackAccess.canControl()) return;
   const s = player.get();
   if (s.index < 0 || !s.queue.length) return;
   const track = currentTrack();
@@ -2104,6 +2101,7 @@ export function toggle() {
 }
 
 function step(dir: 1 | -1, auto: boolean) {
+  if (!playbackAccess.canControl()) return;
   const s = player.get();
   const n = s.queue.length;
   if (!n) return;
@@ -2143,11 +2141,13 @@ export function prev() {
   else step(-1, false);
 }
 export const jumpTo = (i: number) => {
+  if (!playbackAccess.canControl()) return;
   const manualFade = getCrossfadeDuration() > 0 ? MANUAL_CROSSFADE_SECONDS : 0;
   return load(i, true, { crossfadeSec: manualFade });
 };
 
 export function seek(sec: number) {
+  if (!playbackAccess.canControl()) return;
   const active = getActiveDeck();
   const activeEl = active.el;
   const totalDur = dur();
@@ -2249,29 +2249,30 @@ function invalidateUpcomingPreload() {
 }
 
 export function toggleShuffle() {
+  if (!playbackAccess.canControl()) return;
   const s = player.get();
   const cur = s.queue[s.index];
   if (!s.shuffle) {
     original = s.queue.slice();
-    setShuffleAnchors(original);
     const rest = shuffled(s.queue.filter((_, k) => k !== s.index));
     player.set({ shuffle: true, queue: cur ? [cur, ...rest] : rest, index: cur ? 0 : -1 });
   } else {
     const q = original ?? s.queue;
     player.set({ shuffle: false, queue: q, index: Math.max(0, q.indexOf(cur)) });
     original = null;
-    setShuffleAnchors(null);
   }
   invalidateUpcomingPreload();
 }
 
 export function cycleRepeat() {
+  if (!playbackAccess.canControl()) return;
   const r = player.get().repeat;
   player.set({ repeat: r === 'off' ? 'all' : r === 'all' ? 'one' : 'off' });
   invalidateUpcomingPreload();
 }
 
 export function playNext(id: string) {
+  if (!playbackAccess.canControl()) return;
   const s = player.get();
   if (s.index < 0) return playQueue([id]);
   const curId = s.queue[s.index];
@@ -2285,6 +2286,7 @@ export function playNext(id: string) {
 }
 
 export function addToQueue(id: string) {
+  if (!playbackAccess.canControl()) return;
   const s = player.get();
   if (s.index < 0) return playQueue([id]);
   if (!s.queue.includes(id)) {
@@ -2330,7 +2332,7 @@ function isCurrentDeckEvent(deck: Deck): boolean {
 
 function scheduleAutoCrossfadeCheck() {
   clearAutoCrossfadeTimer();
-  if (crossfadeSession) return;
+  if (!playbackAccess.canControl() || crossfadeSession) return;
   const deck = getActiveDeck();
   const el = deck.el;
   if (!el.src || el.paused || el.ended) return;
@@ -2678,7 +2680,7 @@ export function initPlayer() {
     const h: [MediaSessionAction, MediaSessionActionHandler][] = [
       ['play', () => toggle()],
       ['pause', () => {
-        if (player.get().state === 'loading') return;
+        if (!playbackAccess.canControl() || player.get().state === 'loading') return;
         if (usesProviderPlayback(currentTrack())) {
           providerCommand('pause');
           setPlayerMachineState('paused');

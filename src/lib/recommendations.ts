@@ -15,6 +15,29 @@ function similarity(a: Set<string>, b: Set<string>) {
   return shared / Math.max(a.size, b.size);
 }
 
+export function youtubeRadioId(track: Pick<RecommendationTrack, 'id'> & { nativeId?: string }): string | null {
+  const id = track.nativeId ?? (track.id.startsWith('yt:') ? track.id.slice(3) : '');
+  return /^[\w-]{11}$/.test(id) ? id : null;
+}
+
+export function recommendationSeedIds(currentId: string, historyIds: string[]): string[] {
+  return [...new Set([currentId, ...historyIds])].slice(0, 5);
+}
+
+export function insertRecommendations(queue: string[], index: number, recommendations: string[]): string[] {
+  const upcoming = queue.slice(index + 1);
+  const mixed: string[] = [];
+  let nextRecommendation = 0;
+  for (let i = 0; i < upcoming.length; i += 1) {
+    mixed.push(upcoming[i]);
+    if ((i + 1) % 2 === 0 && nextRecommendation < recommendations.length) {
+      mixed.push(recommendations[nextRecommendation++]);
+    }
+  }
+  mixed.push(...recommendations.slice(nextRecommendation));
+  return [...queue.slice(0, index + 1), ...mixed];
+}
+
 export function rankRecommendations<T extends RecommendationTrack>(
   seeds: RecommendationTrack | RecommendationTrack[],
   candidates: T[],

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { decodeCode, encodeCode, planSync } from './listen-sync.ts';
+import { createRoomCode, normalizeRoomCode, parseHostState, peerIdForRoom, planSync } from './listen-sync.ts';
 
 const track = { id: 'yt:abcdefghijk', title: 'T', artist: 'A', src: 'https://music.youtube.com/watch?v=abcdefghijk', duration: 200, source: 'youtube' };
 
@@ -24,16 +24,33 @@ test('mirrors play/pause and stops when the host has nothing', () => {
   assert.deepEqual(planSync({ trackId: null, playing: true, pos: 0 }, { type: 'state', track: null, playing: false, pos: 0 }).map((x) => x.kind), ['pause']);
 });
 
-test('local files cannot be shared', () => {
-  const a = planSync({ trackId: null, playing: false, pos: 0 }, { type: 'state', track: { ...track, source: 'local' }, playing: true, pos: 0 });
-  assert.equal(a[0].kind, 'unsupported');
+test('parses local host state without accepting unsafe stream URLs', () => {
+  const local = { ...track, id: 'local:0123456789abcdefabcd', src: 'local:0123456789abcdefabcd', nativeId: '0123456789abcdefabcd', source: 'local' };
+  assert.deepEqual(parseHostState({ type: 'state', track: local, playing: true, pos: 1 }), { type: 'state', track: local, playing: true, pos: 1 });
+  assert.equal(parseHostState({ type: 'state', track: { ...track, src: 'http://example.com/audio' }, playing: true, pos: 1 }), null);
+  assert.equal(parseHostState({ type: 'state', track: { ...track, src: 'javascript:alert(1)' }, playing: true, pos: 1 }), null);
+  assert.equal(parseHostState({ type: 'state', track: { ...track, src: 'https://user:pass@example.com/audio' }, playing: true, pos: 1 }), null);
+  assert.equal(parseHostState({ type: 'state', track: { ...local, src: 'https://example.com/audio' }, playing: true, pos: 1 }), null);
 });
 
-test('invite codes round-trip and reject garbage', async () => {
-  const sdp = { type: 'offer', sdp: 'v=0\r\no=- 123 2 IN IP4 127.0.0.1\r\n'.repeat(30) };
-  const code = await encodeCode(sdp);
-  assert.ok(code.startsWith('RSN1.'));
-  assert.ok(code.length < sdp.sdp.length / 2, 'compressed');
-  assert.deepEqual(await decodeCode(`  ${code}\n`), sdp);
-  await assert.rejects(decodeCode('hello'));
+test('local files cannot be shared and pause stale guest playback', () => {
+  const playing = planSync({ trackId: 'yt:old', playing: true, pos: 20 }, { type: 'state', track: { ...track, source: 'local' }, playing: true, pos: 0 });
+  assert.deepEqual(playing.map((action) => action.kind), ['pause', 'unsupported']);
+  const paused = planSync({ trackId: 'yt:old', playing: false, pos: 20 }, { type: 'state', track: { ...track, source: 'local' }, playing: true, pos: 0 });
+  assert.deepEqual(paused.map((action) => action.kind), ['unsupported']);
+});
+
+test('room codes normalize, validate, and map to a stable PeerJS ID', () => {
+  assert.equal(normalizeRoomCode(' 1234-abcd '), '1234-ABCD');
+  assert.equal(peerIdForRoom('1234-abcd'), 'resonance-1234-abcd');
+  assert.equal(normalizeRoomCode('1234-ABCI'), null);
+  assert.equal(normalizeRoomCode('123-ABCD'), null);
+  assert.equal(normalizeRoomCode('1234-ABCD extra'), null);
+});
+
+test('room codes use the requested numeric-alphanumeric shape', () => {
+  const values = [0.1, 0.2, 0.3, 0.4, 0.1, 0.2, 0.3, 0.4];
+  const code = createRoomCode(() => values.shift() ?? 0);
+  assert.match(code, /^\d{4}-[A-HJ-NP-Z2-9]{4}$/);
+  assert.equal(code, '1234-58BE');
 });

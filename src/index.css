@@ -635,9 +635,6 @@ html[data-theme=light] { color-scheme: light; }
   .immersive[data-live=true][data-visible=true] .imm-right { animation-delay: 60ms; }
   @keyframes imm-enter { from { opacity: 0; transform: translateY(18px) scale(1.03); } to { opacity: 1; transform: none; } }
   .imm-scrim { position: absolute; inset: 0; z-index: -1; background: color-mix(in oklab, var(--md-surface) 22%, transparent); }
-  /* Audio-reactive layer: above the scrim, below every control; never intercepts input. */
-  .imm-viz { position: fixed; inset: auto 0 0 0; z-index: -1; width: 100%; height: 36vh; pointer-events: none; color: var(--md-primary);
-    mask-image: linear-gradient(to top, #000 55%, transparent); }
   .imm-top { display: flex; align-items: center; justify-content: flex-end; padding: 18px 22px; }
   .imm-grid {
     display: grid;

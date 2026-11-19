@@ -239,12 +239,14 @@ export function TrackList({
   animateRows = true,
   paginated = false,
   resetKey,
+  radioOnPlay = false,
 }: {
   ids: string[];
   playlistId?: string;
   animateRows?: boolean;
   paginated?: boolean;
   resetKey?: string;
+  radioOnPlay?: boolean;
 }) {
   const cur = useStore(player, (s) => s.queue[s.index] ?? null);
   const playing = useStore(player, (s) => s.playing);
@@ -252,6 +254,8 @@ export function TrackList({
   const sentinelRef = useRef<HTMLDivElement>(null);
   const idsRef = useRef(ids);
   idsRef.current = ids;
+  const radioOnPlayRef = useRef(radioOnPlay);
+  radioOnPlayRef.current = radioOnPlay;
 
   const [loadedCount, setLoadedCount] = useState(() =>
     paginated ? Math.min(ids.length, TRACK_LIST_PAGE_SIZE) : ids.length,
@@ -378,7 +382,12 @@ export function TrackList({
   }, [shouldVirtualize, effectiveCount]);
 
   const onPlayIndex = useRef((idx: number) => {
-    playQueue(idsRef.current, idx);
+    if (radioOnPlayRef.current) {
+      const id = idsRef.current[idx];
+      if (id) playQueue([id], 0, true);
+    } else {
+      playQueue(idsRef.current, idx);
+    }
   }).current;
 
   const { start, end, topPad, bottomPad } = useMemo(

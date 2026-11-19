@@ -33,7 +33,7 @@ A fast, native music player for YouTube Music, SoundCloud and your own files, in
 - Pick different lyrics, load your own `.lrc` (Enhanced LRC word tags supported), and shift timing per track.
 
 **Look and feel**
-- Dynamic colors from cover art, glass and metallic styles, and an immersive fullscreen mode with an audio-reactive visualizer.
+- Dynamic colors from cover art, glass and metallic styles, and an immersive fullscreen mode.
 - A custom CSS editor with ready-made snippets.
 - Mini player, global shortcuts, media keys, and Russian and English UI.
 
