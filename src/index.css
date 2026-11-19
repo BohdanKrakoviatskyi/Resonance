@@ -416,6 +416,7 @@ html[data-theme=light] { color-scheme: light; }
   /* ---------- wavy seek bar ---------- */
   .seek { position: relative; flex: 1; min-width: 60px; cursor: pointer; touch-action: none; --c: var(--md-primary); --sw: 4px; border-radius: 6px; }
   .seek-big { --sw: 6px; }
+  .seek.disabled { --c: var(--md-on-surface-variant); opacity: .38; pointer-events: none; cursor: default; }
   .seek svg { position: absolute; inset: 0; overflow: visible; pointer-events: none; }
   .seek-wave { transform: scaleY(.01); transition: transform var(--sp-slow-d) var(--sp-slow); }
   .seek.is-playing .seek-wave { transform: scaleY(1); }
