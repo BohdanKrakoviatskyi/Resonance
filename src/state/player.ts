@@ -539,29 +539,23 @@ function syncDeckVolumes() {
   const preset = NORMALIZATION_PRESETS[normalizationTarget] ?? NORMALIZATION_PRESETS.normal;
   const makeup = normalizationEnabled ? preset.makeupLinear : 1.0;
 
+  const webkit = isWebKitPlayback();
+
   for (const deck of decks) {
     const fade = clamp(deck.fadeMultiplier, 0, 1);
     deck.el.muted = muted;
 
     if (deck.dsp && deck.dsp.ctx.state !== 'closed') {
-      deck.el.volume = 1;
-      const finalGain = muted ? 0 : clamp(master * makeup * fade, 0, 1);
-      const g = deck.dsp.channelGain.gain;
-      const now = deck.dsp.ctx.currentTime;
-      if (isWebKitPlayback()) {
-        // WebKit (macOS WKWebView) does not reliably apply a stream of setTargetAtTime events
-        // (the volume slider fires one per pointer move): the parameter can stay at its old value.
-        // Cancel what is pending and ramp linearly; a suspended context can't run automation
-        // at all, so there the value is assigned directly.
-        g.cancelScheduledValues(now);
-        if (deck.dsp.ctx.state === 'running') {
-          g.setValueAtTime(g.value, now);
-          g.linearRampToValueAtTime(finalGain, now + 0.02);
-        } else {
-          g.value = finalGain;
-        }
+      if (webkit) {
+        // WebKit (macOS WKWebView) plays a streamed media element's audio outside the Web Audio
+        // graph, so channelGain is inaudible and only el.volume is heard: the element carries the
+        // master level and the graph is held at unity, so the two never multiply.
+        // No makeup here either: it only compensates for the graph's compressor, which isn't heard.
+        deck.el.volume = clamp(master * fade, 0, 1);
+        deck.dsp.channelGain.gain.value = 1;
       } else {
-        g.setTargetAtTime(finalGain, now, 0.008);
+        deck.el.volume = 1;
+        deck.dsp.channelGain.gain.setTargetAtTime(muted ? 0 : clamp(master * makeup * fade, 0, 1), deck.dsp.ctx.currentTime, 0.008);
       }
     } else {
       deck.el.volume = muted ? 0 : clamp(master * makeup * fade, 0, 1);
@@ -2263,11 +2257,13 @@ function scheduleVolumeDiagnostic() {
     const s = player.get();
     const preset = NORMALIZATION_PRESETS[s.normalizationTarget] ?? NORMALIZATION_PRESETS.normal;
     const makeup = s.normalizationEnabled ? preset.makeupLinear : 1;
-    const expected = s.muted ? 0 : clamp(s.volume * makeup * deck.fadeMultiplier, 0, 1);
+    // The graph owns the master level everywhere except WebKit, where the element does.
+    const graphOwnsLevel = Boolean(dsp) && dsp?.ctx.state !== 'closed' && !isWebKitPlayback();
+    const expected = s.muted ? 0 : clamp(s.volume * (graphOwnsLevel ? makeup : 1) * deck.fadeMultiplier, 0, 1);
     logTrackTiming(
       currentRequestId,
       'volume_sync',
-      `track=${currentTrack()?.id ?? 'none'} provider=${usesProviderPlayback(currentTrack())} master=${s.volume} muted=${s.muted} webkit=${isWebKitPlayback()} dsp=${Boolean(dsp)} ctx=${ctx?.state ?? 'none'} element=${deck.el.volume} gain=${gain ?? 'none'} expected=${expected.toFixed(3)}`,
+      `track=${currentTrack()?.id ?? 'none'} provider=${usesProviderPlayback(currentTrack())} master=${s.volume} muted=${s.muted} webkit=${isWebKitPlayback()} dsp=${Boolean(dsp)} ctx=${ctx?.state ?? 'none'} owner=${graphOwnsLevel ? 'gain' : 'element'} element=${deck.el.volume.toFixed(3)} gain=${gain ?? 'none'} expected=${expected.toFixed(3)}`,
     );
   }, 500);
 }
