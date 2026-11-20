@@ -5,6 +5,7 @@ import { Background } from './components/Background';
 import { Icon, type IconName } from './components/Icon';
 import { type Vars } from './components/ui';
 import { MobileMiniPlayer } from './components/MobileMiniPlayer';
+import { PageHeader } from './components/PageHeader';
 import { NowPlayingSheet } from './components/NowPlayingSheet';
 import { EqSheet } from './components/EqSheet';
 import { MobileOverlays } from './components/MobileOverlays';
@@ -85,6 +86,7 @@ export default function App() {
   const scrollerRef = useRef<HTMLDivElement>(null);
   const activeTab = activeTabFor(route);
   const activeIdx = Math.max(0, TABS.findIndex((tab) => tab.id === activeTab));
+  const sectionKey = TABS.find((tab) => tab.id === activeTab)?.labelKey ?? 'home';
 
   useEffect(() => {
     scrollerRef.current?.scrollTo({ top: 0 });
@@ -112,13 +114,14 @@ export default function App() {
     <>
       <Background />
       <div className="app-shell fixed inset-0 flex flex-col overflow-hidden text-on-surface">
+        <PageHeader title={t(sectionKey)} />
         <main
           ref={scrollerRef}
           className={cx(
-            'min-h-0 flex-1 overflow-y-auto overscroll-contain pt-[env(safe-area-inset-top,0px)]',
+            'min-h-0 flex-1 overflow-y-auto overscroll-contain',
             hasTrack
-              ? 'pb-[calc(env(safe-area-inset-bottom,0px)+148px)]'
-              : 'pb-[calc(env(safe-area-inset-bottom,0px)+84px)]',
+              ? 'pb-[calc(var(--safe-bottom,0px)+148px)]'
+              : 'pb-[calc(var(--safe-bottom,0px)+84px)]',
           )}
         >
           <div key={key} className="page-enter">
@@ -126,8 +129,11 @@ export default function App() {
           </div>
         </main>
 
-        {/* Floating Glass Bottom Chrome (MiniPlayer + Dock) */}
-        <div className="pointer-events-none fixed inset-x-0 bottom-0 z-20 flex flex-col gap-2 px-3 pb-[calc(env(safe-area-inset-bottom,0px)+8px)]">
+        {/* Floating Glass Bottom Chrome (MiniPlayer + Dock).
+            absolute, а не fixed: якорь — сам шелл, единственный источник правды о нижней
+            кромке. fixed цеплялся к layout viewport, который WebView меняет при клавиатуре
+            и edge-to-edge, из-за чего док отрывался от низа и уезжал вместе со скроллом. */}
+        <div className="pointer-events-none absolute inset-x-0 bottom-0 z-20 flex flex-col gap-2 px-3 pb-[calc(var(--safe-bottom,0px)+8px)]">
           <MobileMiniPlayer />
 
           <nav
