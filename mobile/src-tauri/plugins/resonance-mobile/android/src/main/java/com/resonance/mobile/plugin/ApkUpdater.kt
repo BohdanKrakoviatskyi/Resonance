@@ -3,6 +3,7 @@ package com.resonance.mobile.plugin
 import android.app.Activity
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
 import androidx.core.content.FileProvider
 import java.io.File
 import java.net.HttpURLConnection
@@ -37,8 +38,16 @@ object ApkUpdater {
         return target
     }
 
+    /** The Tauri template owns the FileProvider; take whichever authority it registered. */
+    private fun authority(context: Context): String {
+        val info = context.packageManager.getPackageInfo(context.packageName, PackageManager.GET_PROVIDERS)
+        val provider = info.providers?.firstOrNull { it.name == FileProvider::class.java.name }
+            ?: info.providers?.firstOrNull { it.authority?.endsWith(".fileprovider") == true }
+        return provider?.authority ?: "${context.packageName}.fileprovider"
+    }
+
     fun install(activity: Activity, apk: File) {
-        val uri = FileProvider.getUriForFile(activity, "${activity.packageName}.fileprovider", apk)
+        val uri = FileProvider.getUriForFile(activity, authority(activity), apk)
         val intent = Intent(Intent.ACTION_VIEW).apply {
             setDataAndType(uri, "application/vnd.android.package-archive")
             addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_ACTIVITY_NEW_TASK)
