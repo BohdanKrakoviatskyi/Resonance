@@ -4,6 +4,15 @@ on:
   push:
     tags: ["v*"]
   workflow_dispatch:
+    inputs:
+      desktop:
+        description: "Build desktop apps (macOS, Linux, Windows) and publish their release assets"
+        type: boolean
+        default: true
+      mobile:
+        description: "Build the signed Android APK and attach it to the release"
+        type: boolean
+        default: false
 
 permissions:
   contents: write
@@ -40,6 +49,7 @@ jobs:
 
   release:
     needs: test
+    if: ${{ github.event_name == 'push' || inputs.desktop }}
     strategy:
       fail-fast: false
       matrix:
@@ -138,3 +148,195 @@ jobs:
           prerelease: false
           includeUpdaterJson: true
           args: --target ${{ matrix.target }}
+
+  release-mobile:
+    name: Release Mobile (Android APK)
+    needs: test
+    if: ${{ inputs.mobile || (github.event_name == 'push' && vars.MOBILE_RELEASE == 'true') }}
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Host Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential libclang-dev pkg-config zip unzip
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: mobile/package-lock.json
+
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Configure Preinstalled Android SDK 36, Build-Tools & NDK
+        run: |
+          SDK_ROOT="${ANDROID_HOME:-/usr/local/lib/android/sdk}"
+          SDKMANAGER=$(ls -d "${SDK_ROOT}"/cmdline-tools/*/bin/sdkmanager | sort -V | tail -n 1)
+          echo "Using sdkmanager: ${SDKMANAGER}"
+          yes | "${SDKMANAGER}" --licenses >/dev/null || true
+          "${SDKMANAGER}" "platform-tools" "platforms;android-36" "build-tools;35.0.0"
+          if ! ls -d "${SDK_ROOT}"/ndk/27* >/dev/null 2>&1 && ! ls -d "${SDK_ROOT}"/ndk/28* >/dev/null 2>&1; then
+            "${SDKMANAGER}" "ndk;27.2.12479018"
+          fi
+          NDK_DIR=$(ls -d "${SDK_ROOT}"/ndk/* | sort -V | tail -n 1)
+          echo "ANDROID_HOME=${SDK_ROOT}" >> "$GITHUB_ENV"
+          echo "ANDROID_SDK_ROOT=${SDK_ROOT}" >> "$GITHUB_ENV"
+          echo "ANDROID_NDK_HOME=${NDK_DIR}" >> "$GITHUB_ENV"
+          echo "NDK_HOME=${NDK_DIR}" >> "$GITHUB_ENV"
+          echo "Selected NDK: ${NDK_DIR}"
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android
+
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: mobile/src-tauri
+
+      - name: Resolve Mobile & Desktop Versions
+        run: |
+          MOBILE_VERSION=$(node -p "require('./mobile/package.json').version")
+          DESKTOP_VERSION=$(node -p "require('./src-tauri/tauri.conf.json').version")
+          echo "MOBILE_VERSION=${MOBILE_VERSION}" >> "$GITHUB_ENV"
+          echo "DESKTOP_VERSION=${DESKTOP_VERSION}" >> "$GITHUB_ENV"
+          echo "APK_NAME=Resonance-Mobile-v${MOBILE_VERSION}-arm64-v8a.apk" >> "$GITHUB_ENV"
+          echo "Mobile version: ${MOBILE_VERSION} (tag mobile-v${MOBILE_VERSION})"
+          echo "Desktop version: ${DESKTOP_VERSION} (tag v${DESKTOP_VERSION})"
+
+      - name: Install & Build Mobile Frontend
+        working-directory: mobile
+        run: |
+          npm ci
+          npm run typecheck
+          npm run build
+
+      - name: Initialize & Configure Android Project
+        working-directory: mobile
+        run: |
+          npx tauri android init --ci --skip-targets-install
+          node scripts/configure-android.mjs
+
+      - name: Build Release APK (arm64-v8a)
+        working-directory: mobile
+        run: |
+          TOOLCHAIN="${ANDROID_NDK_HOME}/toolchains/llvm/prebuilt/linux-x86_64"
+          export CC_aarch64_linux_android="${TOOLCHAIN}/bin/aarch64-linux-android26-clang"
+          export CXX_aarch64_linux_android="${TOOLCHAIN}/bin/aarch64-linux-android26-clang++"
+          export AR_aarch64_linux_android="${TOOLCHAIN}/bin/llvm-ar"
+          export CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER="${TOOLCHAIN}/bin/aarch64-linux-android26-clang"
+          export BINDGEN_EXTRA_CLANG_ARGS_aarch64_linux_android="--sysroot=${TOOLCHAIN}/sysroot --target=aarch64-linux-android26"
+          npx tauri android build --apk --target aarch64
+
+      - name: Align & Sign Release APK
+        working-directory: mobile
+        env:
+          MOBILE_KEYSTORE_BASE64: ${{ secrets.MOBILE_KEYSTORE_BASE64 }}
+          MOBILE_KEYSTORE_PASSWORD: ${{ secrets.MOBILE_KEYSTORE_PASSWORD }}
+          MOBILE_KEY_ALIAS: ${{ secrets.MOBILE_KEY_ALIAS }}
+        run: |
+          BUILD_TOOLS=$(ls -d "${ANDROID_HOME}"/build-tools/* | sort -V | tail -n 1)
+          echo "Using Android build-tools: $BUILD_TOOLS"
+          UNSIGNED_APK=$(find src-tauri/gen/android/app/build/outputs/apk -type f -name "*release*.apk" | head -n 1)
+          if [ -z "$UNSIGNED_APK" ]; then
+            UNSIGNED_APK=$(find src-tauri/gen/android/app/build/outputs/apk -type f -name "*.apk" | head -n 1)
+          fi
+          if [ -z "$UNSIGNED_APK" ]; then
+            echo "ERROR: Built APK not found!"
+            find src-tauri/gen/android/app/build/outputs -maxdepth 5 || true
+            exit 1
+          fi
+          echo "Found built APK: $UNSIGNED_APK"
+
+          KEYSTORE_PATH="${RUNNER_TEMP}/resonance-mobile.p12"
+          KS_ALIAS="${MOBILE_KEY_ALIAS:-resonance}"
+          if [ -n "$MOBILE_KEYSTORE_BASE64" ] && [ -n "$MOBILE_KEYSTORE_PASSWORD" ]; then
+            echo "$MOBILE_KEYSTORE_BASE64" | base64 -d > "$KEYSTORE_PATH"
+            KS_PASS="$MOBILE_KEYSTORE_PASSWORD"
+          else
+            # No stable key configured: sign with a throwaway one so the release is installable.
+            # An APK signed this way cannot install over an earlier build, so set
+            # MOBILE_KEYSTORE_BASE64 / MOBILE_KEYSTORE_PASSWORD to make updates work.
+            echo "::warning::No MOBILE_KEYSTORE_BASE64 configured - signing with a throwaway key."
+            KS_PASS="ResonanceMobileSign2026"
+            keytool -genkeypair -v \
+              -storetype PKCS12 \
+              -keystore "$KEYSTORE_PATH" \
+              -alias "$KS_ALIAS" \
+              -keyalg RSA \
+              -keysize 2048 \
+              -validity 10000 \
+              -storepass "$KS_PASS" \
+              -keypass "$KS_PASS" \
+              -dname "CN=Resonance Mobile, OU=Mobile, O=Resonance, L=Internet, S=Internet, C=US"
+          fi
+
+          mkdir -p release-out
+          ALIGNED_APK="${RUNNER_TEMP}/aligned.apk"
+
+          "${BUILD_TOOLS}/zipalign" -f -p 4 "$UNSIGNED_APK" "$ALIGNED_APK"
+          "${BUILD_TOOLS}/apksigner" sign \
+            --ks "$KEYSTORE_PATH" \
+            --ks-key-alias "$KS_ALIAS" \
+            --ks-pass "pass:${KS_PASS}" \
+            --key-pass "pass:${KS_PASS}" \
+            --v1-signing-enabled true \
+            --v2-signing-enabled true \
+            --v3-signing-enabled true \
+            --out "release-out/${APK_NAME}" \
+            "$ALIGNED_APK"
+
+          "${BUILD_TOOLS}/apksigner" verify --verbose "release-out/${APK_NAME}"
+          rm -f "$KEYSTORE_PATH" "$ALIGNED_APK"
+          ls -lh "release-out/${APK_NAME}"
+
+      - name: Upload Signed APK Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Resonance-Mobile-APK
+          path: mobile/release-out/*.apk
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Publish APK To GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          APK="mobile/release-out/${APK_NAME}"
+          MOBILE_ONLY="${{ github.event_name == 'workflow_dispatch' && !inputs.desktop }}"
+
+          if [ "$MOBILE_ONLY" = "true" ]; then
+            TAG="mobile-v${MOBILE_VERSION}"
+            TITLE="Resonance Mobile v${MOBILE_VERSION}"
+            if gh release view "$TAG" >/dev/null 2>&1; then
+              echo "Release ${TAG} already exists, uploading assets to it."
+            else
+              gh release create "$TAG" \
+                --target "${GITHUB_SHA}" \
+                --title "$TITLE" \
+                --notes "Signed Android release APK (arm64-v8a) for Resonance Mobile v${MOBILE_VERSION}."
+            fi
+          else
+            TAG="v${DESKTOP_VERSION}"
+            echo "Waiting for the desktop release ${TAG} created by tauri-action..."
+            FOUND=""
+            for _ in $(seq 1 120); do
+              if gh release view "$TAG" >/dev/null 2>&1; then
+                FOUND="yes"
+                break
+              fi
+              sleep 20
+            done
+            if [ -z "$FOUND" ]; then
+              echo "ERROR: Release ${TAG} never appeared within 40 minutes."
+              exit 1
+            fi
+          fi
+
+          gh release upload "$TAG" "$APK" --clobber
+          echo "Published ${APK_NAME} to ${TAG}"

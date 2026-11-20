@@ -1,0 +1,14 @@
+node_modules/
+dist/
+src-tauri/target/
+src-tauri/gen/schemas/
+src-tauri/gen/android/.gradle/
+src-tauri/gen/android/build/
+src-tauri/gen/android/app/build/
+src-tauri/gen/android/local.properties
+src-tauri/plugins/resonance-mobile/android/.tauri/
+src-tauri/plugins/resonance-mobile/android/build/
+src-tauri/plugins/resonance-mobile/.tauri/
+src-tauri/plugins/resonance-mobile/ios/.build/
+*.keystore
+*.jks
