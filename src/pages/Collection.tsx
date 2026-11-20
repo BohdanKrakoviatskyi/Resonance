@@ -3,7 +3,7 @@ import { Icon } from '../components/Icon';
 import { Button, EmptyState, IconButton, Loader } from '../components/ui';
 import { FavCover, PlaylistCover } from '../components/Cover';
 import { TrackList } from '../components/TrackList';
-import { useStore } from '../lib/util';
+import { cx, useStore } from '../lib/util';
 import { durLabel, t, tracksLabel } from '../lib/i18n';
 import {
   getFavoriteIds,
@@ -27,27 +27,35 @@ import { recognizeMissing, stopRecognizeMissing, whisper } from '../state/whispe
 
 /** Recognizes lyrics for every track in the list that no source has, in the background. */
 function RecognizeAllButton({ ids }: { ids: string[] }) {
-  const ready = useStore(whisper, (s) => s.models.some((m) => m.id === s.model && m.installed));
   const batch = useStore(whisper, (s) => s.batch);
-  if (!ready || !ids.length) return null;
+  const downloading = useStore(whisper, (s) => s.downloading);
+  const model = useStore(whisper, (s) => s.model);
+  const modelInfo = useStore(whisper, (s) => s.models.find((item) => item.id === s.model));
+  if (!ids.length) return null;
+  const progress = downloading?.total ? Math.min(100, Math.round((downloading.received / downloading.total) * 100)) : null;
+  const label = batch
+    ? downloading
+      ? t('whisperBatchDownloading', { model: downloading.model, pct: progress ?? '…' })
+      : t('whisperBatchProgress', { checked: batch.checked, total: batch.total, found: batch.recognized })
+    : modelInfo?.installed
+      ? t('whisperBatchAction')
+      : t('whisperBatchDownloadAction', { model, mb: modelInfo?.sizeMb ?? (model === 'medium' ? 539 : model === 'base' ? 60 : 190) });
   if (batch) {
     return (
-      <IconButton
-        icon="close"
-        size="lg"
-        selected
-        label={t('whisperBatchProgress', { checked: batch.checked, total: batch.total, found: batch.recognized })}
-        onClick={stopRecognizeMissing}
-      />
+      <div className="flex min-w-0 max-w-full flex-col gap-1.5">
+        <button type="button" data-ripple className="sl inline-flex h-12 w-12 shrink-0 items-center justify-center rounded-full bg-primary/14 text-primary transition hover:bg-primary/22" aria-label={label} onClick={stopRecognizeMissing}>
+          <Icon name="close" size={20} />
+        </button>
+        {downloading && <div className="h-1.5 overflow-hidden rounded-full bg-on-surface/10" role="progressbar" aria-label={t('whisperDownloadProgress')} aria-valuenow={progress ?? undefined} aria-valuemin={0} aria-valuemax={100}>
+          <div className={cx('h-full rounded-full bg-primary transition-[width] duration-200', progress === null && 'whisper-progress-indeterminate')} style={progress === null ? undefined : { width: `${progress}%` }} />
+        </div>}
+      </div>
     );
   }
   return (
-    <IconButton
-      icon="auto_awesome"
-      size="lg"
-      label={t('whisperBatchStart')}
-      onClick={() => void recognizeMissing(ids.map((id) => getLibTrack(id)).filter((tr): tr is NonNullable<typeof tr> => !!tr))}
-    />
+    <button type="button" data-ripple className="sl inline-flex h-12 w-12 shrink-0 items-center justify-center rounded-full bg-on-surface/8 text-on-surface transition hover:bg-on-surface/14" aria-label={label} onClick={() => void recognizeMissing(ids.map((id) => getLibTrack(id)).filter((tr): tr is NonNullable<typeof tr> => !!tr))}>
+      <Icon name="auto_awesome" size={20} className="text-primary" />
+    </button>
   );
 }
 

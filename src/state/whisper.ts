@@ -23,6 +23,8 @@ export const whisper = createStore({
   downloading: null as null | { model: string; received: number; total: number },
   /** Track currently being transcribed. */
   activeTrack: null as string | null,
+  /** Current stage of the active recognition job. */
+  stage: null as null | 'preparing' | 'transcribing',
   /** True when the active job belongs to the background batch (not cancelled by track changes). */
   activeBackground: false,
   /** Background batch over many tracks: recognize everything that has no lyrics. */
@@ -44,23 +46,45 @@ export async function refreshWhisperModels() {
 
 export const isModelReady = () => whisper.get().models.some((m) => m.id === whisper.get().model && m.installed);
 
-export async function downloadWhisperModel(model: string) {
-  whisper.set({ downloading: { model, received: 0, total: 0 }, error: '' });
-  const { listen } = await import('@tauri-apps/api/event');
-  const un = await listen<{ model: string; received: number; total: number }>('whisper-download', (e) => whisper.set({ downloading: e.payload }));
-  try {
-    await invoke('whisper_download', { model });
-    whisper.set({ model });
-  } catch (e) {
-    if (String(e) !== 'cancelled') whisper.set({ error: String(e) });
-  } finally {
-    un();
-    whisper.set({ downloading: null });
-    await refreshWhisperModels();
-  }
+let modelDownload: { model: string; promise: Promise<boolean> } | null = null;
+let downloadCancel: (() => void) | null = null;
+let cancelDownloadRequested = false;
+
+export function downloadWhisperModel(model: string, opts: { select?: boolean } = {}): Promise<boolean> {
+  if (modelDownload) return modelDownload.model === model ? modelDownload.promise : Promise.resolve(false);
+  cancelDownloadRequested = false;
+  const promise = (async () => {
+    whisper.set({ downloading: { model, received: 0, total: 0 }, error: '' });
+    let un: (() => void) | undefined;
+    try {
+      const { listen } = await import('@tauri-apps/api/event');
+      un = await listen<{ model: string; received: number; total: number }>('whisper-download', (e) => {
+        if (e.payload.model === model) whisper.set({ downloading: e.payload });
+      });
+      if (cancelDownloadRequested) return false;
+      downloadCancel = () => void invoke('whisper_cancel_download').catch(() => {});
+      await invoke('whisper_download', { model });
+      if (opts.select !== false) whisper.set({ model });
+      return true;
+    } catch (e) {
+      if (String(e) !== 'cancelled') whisper.set({ error: String(e) });
+      return false;
+    } finally {
+      un?.();
+      whisper.set({ downloading: null });
+      downloadCancel = null;
+      modelDownload = null;
+      await refreshWhisperModels();
+    }
+  })();
+  modelDownload = { model, promise };
+  return promise;
 }
 
-export const cancelWhisperDownload = () => invoke('whisper_cancel_download').catch(() => {});
+export const cancelWhisperDownload = () => {
+  cancelDownloadRequested = true;
+  downloadCancel?.();
+};
 
 export async function deleteWhisperModel(model: string) {
   await invoke('whisper_delete', { model }).catch((e) => whisper.set({ error: String(e) }));
@@ -69,8 +93,11 @@ export async function deleteWhisperModel(model: string) {
 
 export function cancelTranscription() {
   if (!whisper.get().activeTrack) return;
-  whisper.set({ activeTrack: null });
+  abort?.abort();
+  whisper.set({ activeTrack: null, activeBackground: false, stage: null });
   void invoke('whisper_cancel').catch(() => {});
+  void cancelWhisperDownload();
+  void invoke('cancel_soundcloud_analysis_command').catch(() => {});
 }
 
 /** Decodes any stream the webview can play into 16 kHz mono PCM (max 10 minutes). */
@@ -96,8 +123,12 @@ let abort: AbortController | null = null;
  * timing), so they persist, are backed up, and can be reset from the lyrics picker.
  * Resolves to true when lyrics were produced.
  */
-export async function transcribeTrack(track: Track, opts: { background?: boolean } = {}): Promise<boolean> {
-  if (!inTauri() || !isModelReady()) return false;
+export async function transcribeTrack(
+  track: Track,
+  opts: { background?: boolean; model?: string; load?: WhisperLoad } = {},
+): Promise<boolean> {
+  const model = opts.model ?? whisper.get().model;
+  if (!inTauri()) return false;
   // Already running for this track (e.g. both the panel and fullscreen lyrics asked).
   if (whisper.get().activeTrack === track.id) return false;
   // A foreground request (the track you're listening to) preempts a background batch job.
@@ -105,27 +136,49 @@ export async function transcribeTrack(track: Track, opts: { background?: boolean
   abort?.abort();
   abort = new AbortController();
   const signal = abort.signal;
-  whisper.set({ activeTrack: track.id, activeBackground: !!opts.background, error: '' });
+  const requestId = crypto.randomUUID();
+  whisper.set({ activeTrack: track.id, activeBackground: !!opts.background, stage: 'preparing', error: '' });
   try {
-    const stream = await streamUrlForAnalysis(track);
-    if (stream.hls || !stream.url) throw new Error('unsupported stream');
-    const pcm = await decodeTo16kMono(stream.url, signal);
+    if (!whisper.get().models.some((m) => m.id === model && m.installed)) {
+      if (!(await downloadWhisperModel(model, { select: model === whisper.get().model }))) return false;
+    }
     if (signal.aborted || whisper.get().activeTrack !== track.id) return false;
-    const { model, load, lang } = whisper.get();
+    const stream = await streamUrlForAnalysis(track);
+    if (!stream.url) throw new Error('Аудиопоток для распознавания не найден.');
+    if (signal.aborted || whisper.get().activeTrack !== track.id) return false;
+    let pcm: Float32Array;
+    if (stream.hls && track.source === 'soundcloud' && track.nativeId) {
+      const raw = await invoke<ArrayBuffer>('soundcloud_analysis_pcm_command', { trackUrn: track.nativeId });
+      if (raw.byteLength % Float32Array.BYTES_PER_ELEMENT !== 0) throw new Error('Некорректные аудиоданные от распознавателя.');
+      pcm = new Float32Array(raw);
+    } else {
+      if (stream.hls) throw new Error('Этот формат аудиопотока пока не поддерживается для распознавания.');
+      pcm = await decodeTo16kMono(stream.url, signal);
+    }
+    if (signal.aborted || whisper.get().activeTrack !== track.id) return false;
+    const { load, lang } = whisper.get();
+    whisper.set({ stage: 'transcribing' });
     const lines = await invoke<TranscriptLine[]>('whisper_transcribe', pcmToBytes(pcm), {
       headers: {
         'x-model': model,
-        'x-threads': String(threadsFor(load, navigator.hardwareConcurrency || 4)),
+        'x-request-id': requestId,
+        'x-track-id': track.id,
+        'x-threads': String(threadsFor(opts.load ?? load, navigator.hardwareConcurrency || 4)),
         'x-lang': lang === 'auto' ? guessLanguage(`${track.title} ${track.artist}`) : lang,
       },
     });
-    if (whisper.get().activeTrack !== track.id || lines.length < 2) return false;
+    if (whisper.get().activeTrack !== track.id) return false;
+    if (lines.length < 2) {
+      whisper.set({ error: 'Не удалось распознать достаточно текста для сохранения.' });
+      return false;
+    }
     setManualLyricsChoice(track.id, {
       id: -Date.now(),
       trackName: track.title,
       artistName: track.metaArtist || track.artist,
       duration: track.fullDuration ?? track.duration,
       syncedLyrics: toEnhancedLrc(lines),
+      generatedBy: 'whisper',
     });
     whisper.set({ completed: `${track.id}:${Date.now()}` });
     return true;
@@ -134,8 +187,12 @@ export async function transcribeTrack(track: Track, opts: { background?: boolean
     if (!/cancel|abort/i.test(msg)) whisper.set({ error: msg });
     return false;
   } finally {
-    if (whisper.get().activeTrack === track.id) whisper.set({ activeTrack: null, activeBackground: false });
+    if (whisper.get().activeTrack === track.id) whisper.set({ activeTrack: null, activeBackground: false, stage: null });
   }
+}
+
+export async function transcribeMoreAccurately(track: Track): Promise<boolean> {
+  return transcribeTrack(track, { model: 'medium', load: 'high' });
 }
 
 export function initWhisper() {
@@ -163,7 +220,7 @@ let batchStop = false;
  * takes priority (a foreground request preempts the running batch job).
  */
 export async function recognizeMissing(tracks: Track[]) {
-  if (!inTauri() || !isModelReady() || whisper.get().batch) return;
+  if (!inTauri() || whisper.get().batch) return;
   const { getLyrics, hasManualLyricsChoice } = await import('../lib/api');
   const list = tracks.filter((t) => t && (t.fullDuration ?? t.duration) <= 600);
   batchStop = false;
@@ -171,6 +228,7 @@ export async function recognizeMissing(tracks: Track[]) {
   const bump = (p: Partial<NonNullable<ReturnType<typeof whisper.get>['batch']>>) =>
     whisper.set((s) => (s.batch ? { batch: { ...s.batch, ...p } } : {}));
   try {
+    if (!isModelReady() && !(await downloadWhisperModel(whisper.get().model))) return;
     for (const t of list) {
       if (batchStop) break;
       bump({ current: `${t.artist} — ${t.title}` });
@@ -199,8 +257,10 @@ export async function recognizeMissing(tracks: Track[]) {
 
 export function stopRecognizeMissing() {
   batchStop = true;
+  if (whisper.get().downloading) void cancelWhisperDownload();
   if (whisper.get().activeBackground) {
     abort?.abort();
     cancelTranscription();
   }
+  if (whisper.get().downloading) void cancelWhisperDownload();
 }

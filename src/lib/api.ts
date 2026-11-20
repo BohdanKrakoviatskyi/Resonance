@@ -82,19 +82,21 @@ export async function searchTracks(query: string, signal?: AbortSignal): Promise
 
 const streamInflight = new Map<string, Promise<{ url: string; hls: boolean; preview: boolean }>>();
 
-export function trackStream(trackUrn: string): Promise<{ url: string; hls: boolean; preview: boolean }> {
-  let request = streamInflight.get(trackUrn);
+export function trackStream(trackUrn: string, analysis = false): Promise<{ url: string; hls: boolean; preview: boolean }> {
+  const key = `${analysis ? 'analysis:' : 'playback:'}${trackUrn}`;
+  let request = streamInflight.get(key);
   if (!request) {
-    request = rpc<{ url: string; hls?: boolean; preview?: boolean }>('track.stream', { trackUrn })
+    request = rpc<{ url: string; hls?: boolean; preview?: boolean }>('track.stream', { trackUrn, analysis })
       .then((result) => {
         if (!result?.url) throw new Error('SoundCloud did not return an audio stream.');
         return { url: result.url, hls: Boolean(result.hls), preview: Boolean(result.preview) };
       })
-      .finally(() => streamInflight.delete(trackUrn));
-    streamInflight.set(trackUrn, request);
+      .finally(() => streamInflight.delete(key));
+    streamInflight.set(key, request);
   }
   return request;
 }
+
 
 export async function relatedSoundCloudTracks(trackId: number): Promise<Track[]> {
   return (await soundCloudRelatedTracks(trackId)).map(mapSoundCloudTrack);
@@ -335,6 +337,7 @@ export interface ManualLyricsChoice {
   syncedLyrics?: string;
   plainLyrics?: string;
   instrumental?: boolean;
+  generatedBy?: 'whisper';
 }
 
 const MANUAL_LYRICS_STORAGE_KEY = 'resonance.manual_lyrics.v1';
@@ -421,6 +424,14 @@ export function setManualLyricsChoice(trackId: string, choice: ManualLyricsChoic
 
 export function hasManualLyricsChoice(trackId: string): boolean {
   return Boolean(loadLyricsOverrides()[trackId]);
+}
+
+export function hasWhisperLyricsChoice(trackId: string): boolean {
+  const choice = loadLyricsOverrides()[trackId];
+  return Boolean(
+    choice?.generatedBy === 'whisper' ||
+      (!choice?.generatedBy && choice?.syncedLyrics && /<\d{2}:\d{2}\.\d{2}>/.test(choice.syncedLyrics)),
+  );
 }
 
 export async function searchLyricsManual(query: string, signal?: AbortSignal): Promise<ManualLyricsChoice[]> {
