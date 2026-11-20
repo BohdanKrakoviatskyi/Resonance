@@ -877,15 +877,15 @@ function RecognizeLyrics({ track }: { track: Track }) {
   if (!ready) {
     // One click starts the full flow: download the selected model, then immediately recognize.
     return (
-      <div className="mt-1 flex flex-col items-center gap-1.5">
+      <div className="mt-1 flex w-full max-w-full shrink-0 flex-col items-center gap-1.5">
         <button
           type="button"
           data-ripple
-          className="sl inline-flex items-center gap-2 rounded-full bg-primary/16 px-4 py-2 text-sm font-semibold text-primary transition hover:bg-primary/24"
+          className="sl inline-flex max-w-full shrink-0 items-center gap-2 rounded-full bg-primary/16 px-4 py-2 text-center text-sm font-semibold text-primary transition hover:bg-primary/24"
           onClick={() => void transcribeTrack(track)}
         >
           <Icon name="auto_awesome" size={18} />
-          {t('whisperGetModel', { mb: smallMb })}
+          <span className="min-w-0">{t('whisperGetModel', { mb: smallMb })}</span>
         </button>
         {error && <span className="max-w-[260px] text-center text-xs text-error">{error}</span>}
       </div>
