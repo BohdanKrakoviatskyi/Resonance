@@ -24,6 +24,20 @@ test('drops invalid video IDs and deduplicates tracks while preserving order', (
   assert.equal(ytmusicPlaylistId('PL1'), 'ytpl:PL1');
 });
 
+test('preserves duplicate video occurrences in provider playlists for exact removal', () => {
+  const tracks = mapYtMusicTracks([
+    { videoId: 'same', title: 'First', setVideoId: 'item-1' },
+    { videoId: 'same', title: 'Second', setVideoId: 'item-2' },
+  ], true);
+  assert.equal(tracks.length, 2);
+  assert.deepEqual(tracks.map((track) => track.setVideoId), ['item-1', 'item-2']);
+  assert.notEqual(tracks[0].id, tracks[1].id);
+  assert.deepEqual(mapYtMusicTracks([
+    { videoId: 'same', title: 'First', setVideoId: 'item-1' },
+    { videoId: 'same', title: 'Second', setVideoId: 'item-2' },
+  ]).map((track) => track.id), ['yt:same']);
+});
+
 test('parses provider collection IDs without accepting local or SoundCloud IDs', () => {
   assert.deepEqual(parseYtMusicCollectionId('ytpl:PL1'), { kind: 'playlist', playlistId: 'PL1' });
   assert.deepEqual(parseYtMusicCollectionId('ytliked'), { kind: 'liked' });

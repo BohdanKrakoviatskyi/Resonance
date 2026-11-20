@@ -279,7 +279,7 @@ async function fetchYtmLyrics(t: Track): Promise<LyricsData | null> {
     return plain.length >= 3 ? { plain } : null;
   };
   const speed = speedVariant(t.title);
-  const ownId = t.nativeId ?? (t.id.startsWith('yt:') ? t.id.slice(3) : '');
+  const ownId = t.nativeId ?? (t.id.startsWith('yt:') ? t.id.slice(3).split('~')[0] : '');
   if ((t.source === 'youtube' || t.id.startsWith('yt:')) && /^[\w-]{11}$/.test(ownId) && !speed) {
     const own = toData(await invoke<Res>('ytm_lyrics', { videoId: ownId }).catch(() => null), 1);
     if (own) return own;

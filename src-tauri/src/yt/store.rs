@@ -9,7 +9,10 @@ use super::clients::{app_data_root_dir, now_unix_secs};
 use super::identity::{
     YtMusicProfile, delete_ytmusic_credentials, read_ytmusic_credentials, save_ytmusic_credentials,
 };
-use super::music_api::{YtMusicLibraryDto, fetch_account_profile, fetch_playlist_tracks_native, sync_library};
+use super::music_api::{
+    YtMusicLibraryDto, edit_playlist_track, fetch_account_profile, fetch_playlist_tracks_native,
+    set_song_liked, sync_library,
+};
 use super::music_parse::YtMusicPlaylistDto;
 use super::proxy::YtStreamProxy;
 
@@ -79,17 +82,23 @@ impl YtStore {
     }
 
     fn lock(&self) -> Result<std::sync::MutexGuard<'_, Connection>, String> {
-        let conn = self
-            .conn
-            .as_ref()
-            .ok_or_else(|| self.init_error.clone().unwrap_or_else(|| "YouTube Music database unavailable".to_string()))?;
-        conn.lock().map_err(|e| format!("YouTube Music database lock failed: {e}"))
+        let conn = self.conn.as_ref().ok_or_else(|| {
+            self.init_error
+                .clone()
+                .unwrap_or_else(|| "YouTube Music database unavailable".to_string())
+        })?;
+        conn.lock()
+            .map_err(|e| format!("YouTube Music database lock failed: {e}"))
     }
 
     pub fn get_json<T: for<'de> Deserialize<'de>>(&self, key: &str) -> Result<Option<T>, String> {
         let guard = self.lock()?;
         let raw: Option<String> = guard
-            .query_row("SELECT json FROM kv_cache WHERE key = ?1", params![key], |row| row.get(0))
+            .query_row(
+                "SELECT json FROM kv_cache WHERE key = ?1",
+                params![key],
+                |row| row.get(0),
+            )
             .ok();
         match raw {
             None => Ok(None),
@@ -116,7 +125,10 @@ impl YtStore {
     pub fn clear_prefix(&self, prefix: &str) -> Result<(), String> {
         let guard = self.lock()?;
         guard
-            .execute("DELETE FROM kv_cache WHERE key LIKE ?1", params![format!("{prefix}%")])
+            .execute(
+                "DELETE FROM kv_cache WHERE key LIKE ?1",
+                params![format!("{prefix}%")],
+            )
             .map_err(|e| format!("Could not clear YouTube Music cache: {e}"))?;
         Ok(())
     }
@@ -189,11 +201,41 @@ pub async fn yt_auth_logout(store: tauri::State<'_, YtStore>) -> Result<YtAuthSt
 }
 
 #[tauri::command]
-pub async fn yt_library_cached(store: tauri::State<'_, YtStore>) -> Result<Option<YtMusicLibraryDto>, String> {
+pub async fn yt_library_cached(
+    store: tauri::State<'_, YtStore>,
+) -> Result<Option<YtMusicLibraryDto>, String> {
     let s = store.inner().clone();
     tokio::task::spawn_blocking(move || s.get_json::<YtMusicLibraryDto>("library"))
         .await
         .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+pub async fn yt_music_set_song_liked(
+    proxy: tauri::State<'_, YtStreamProxy>,
+    video_id: String,
+    liked: bool,
+) -> Result<(), String> {
+    set_song_liked(&proxy.browse_http, &video_id, liked).await
+}
+
+#[tauri::command]
+pub async fn yt_music_edit_playlist_track(
+    proxy: tauri::State<'_, YtStreamProxy>,
+    playlist_id: String,
+    video_id: String,
+    set_video_id: Option<String>,
+    add: bool,
+) -> Result<(), String> {
+    edit_playlist_track(
+        &proxy.browse_http,
+        &playlist_id,
+        &video_id,
+        set_video_id.as_deref(),
+        add,
+    )
+    .await?;
+    Ok(())
 }
 
 #[tauri::command]
@@ -215,7 +257,11 @@ pub async fn yt_playlist_tracks_cached(
     store: tauri::State<'_, YtStore>,
     playlist_id: String,
 ) -> Result<Option<YtMusicPlaylistDto>, String> {
-    let clean_id = playlist_id.trim().strip_prefix("VL").unwrap_or(playlist_id.trim()).to_string();
+    let clean_id = playlist_id
+        .trim()
+        .strip_prefix("VL")
+        .unwrap_or(playlist_id.trim())
+        .to_string();
     let s = store.inner().clone();
     tokio::task::spawn_blocking(move || s.get_json::<YtMusicPlaylistDto>(&format!("pl:{clean_id}")))
         .await
@@ -244,12 +290,19 @@ pub async fn yt_playlist_artwork(
     store: tauri::State<'_, YtStore>,
     playlist_id: String,
 ) -> Result<Option<String>, String> {
-    let clean_id = playlist_id.trim().strip_prefix("VL").unwrap_or(playlist_id.trim()).to_string();
+    let clean_id = playlist_id
+        .trim()
+        .strip_prefix("VL")
+        .unwrap_or(playlist_id.trim())
+        .to_string();
     let s = store.inner().clone();
     let cached_art = tokio::task::spawn_blocking({
         let s = s.clone();
         let key = format!("pl:{clean_id}");
-        move || s.get_json::<YtMusicPlaylistDto>(&key).map(|p| p.and_then(|pl| pl.artwork_url))
+        move || {
+            s.get_json::<YtMusicPlaylistDto>(&key)
+                .map(|p| p.and_then(|pl| pl.artwork_url))
+        }
     })
     .await
     .map_err(|e| e.to_string())??;

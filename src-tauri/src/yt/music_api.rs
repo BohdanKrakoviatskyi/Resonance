@@ -23,6 +23,9 @@ const MUSIC_SUGGEST_URL: &str =
     "https://music.youtube.com/youtubei/v1/music/get_search_suggestions?prettyPrint=false";
 const MUSIC_ACCOUNT_URL: &str =
     "https://music.youtube.com/youtubei/v1/account/account_menu?prettyPrint=false";
+const MUSIC_LIKE_URL: &str = "https://music.youtube.com/youtubei/v1/like";
+const MUSIC_PLAYLIST_EDIT_URL: &str =
+    "https://music.youtube.com/youtubei/v1/browse/edit_playlist?prettyPrint=false";
 const ORIGIN: &str = "https://music.youtube.com";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -55,17 +58,21 @@ pub async fn post_music(
         .header("X-Youtube-Client-Name", &remix.client_id)
         .header("X-Youtube-Client-Version", &remix.client_version);
 
-    if authenticated
-        && let Some(creds) = tokio::task::spawn_blocking(read_ytmusic_credentials)
+    if authenticated {
+        let creds = tokio::task::spawn_blocking(read_ytmusic_credentials)
             .await
-            .ok()
-            .flatten()
-            && let Some(sapisid) = extract_cookie_value(&creds.cookie, "__Secure-3PAPISID") {
-                req = req
-                    .header("Authorization", compute_sapisidhash(&sapisid, ORIGIN))
-                    .header("Cookie", creds.cookie)
-                    .header("X-Goog-AuthUser", creds.auth_user);
-            }
+            .map_err(|e| format!("Could not read YouTube Music credentials: {e}"))?
+            .ok_or_else(|| "Connect YouTube Music before changing your library.".to_string())?;
+        let sapisid =
+            extract_cookie_value(&creds.cookie, "__Secure-3PAPISID").ok_or_else(|| {
+                "YouTube Music session is missing an authentication cookie. Reconnect your account."
+                    .to_string()
+            })?;
+        req = req
+            .header("Authorization", compute_sapisidhash(&sapisid, ORIGIN))
+            .header("Cookie", creds.cookie)
+            .header("X-Goog-AuthUser", creds.auth_user);
+    }
 
     let resp = req
         .json(&body)
@@ -73,7 +80,10 @@ pub async fn post_music(
         .await
         .map_err(|e| format!("YouTube Music request failed: {e}"))?;
     if !resp.status().is_success() {
-        return Err(format!("YouTube Music returned HTTP {}", resp.status().as_u16()));
+        return Err(format!(
+            "YouTube Music returned HTTP {}",
+            resp.status().as_u16()
+        ));
     }
     resp.json::<Value>()
         .await
@@ -108,19 +118,163 @@ pub async fn fetch_account_profile(
         .await
         .map_err(|e| format!("Failed to validate YouTube Music account: {e}"))?;
     if !resp.status().is_success() {
-        return Err(format!("Account validation failed: HTTP {}", resp.status().as_u16()));
+        return Err(format!(
+            "Account validation failed: HTTP {}",
+            resp.status().as_u16()
+        ));
     }
-    let data: Value = resp.json().await.map_err(|e| format!("Invalid account JSON: {e}"))?;
+    let data: Value = resp
+        .json()
+        .await
+        .map_err(|e| format!("Invalid account JSON: {e}"))?;
     let mut hdrs = Vec::new();
     collect_by_key(&data, "activeAccountHeaderRenderer", &mut hdrs);
-    let hdr = hdrs.first().copied().ok_or_else(|| "YouTube Music rejected the session.".to_string())?;
+    let hdr = hdrs
+        .first()
+        .copied()
+        .ok_or_else(|| "YouTube Music rejected the session.".to_string())?;
     let name = runs_text(hdr.pointer("/accountName/runs"));
     let handle = runs_text(hdr.pointer("/channelHandle/runs"));
     let picture = best_thumbnail(hdr.pointer("/accountPhoto/thumbnails")).unwrap_or_default();
     if name.is_empty() && handle.is_empty() {
         return Err("YouTube Music did not return an account.".to_string());
     }
-    Ok(YtMusicProfile { name, handle, picture })
+    Ok(YtMusicProfile {
+        name,
+        handle,
+        picture,
+    })
+}
+
+fn require_mutation_success(data: &Value, operation: &str) -> Result<(), String> {
+    if let Some(status) = data.get("status").and_then(Value::as_str) {
+        if status.contains("SUCCEEDED") {
+            return Ok(());
+        }
+        return Err(format!(
+            "YouTube Music did not confirm {operation} (status: {status})."
+        ));
+    }
+    let results = data
+        .get("playlistEditResults")
+        .and_then(Value::as_array)
+        .filter(|results| !results.is_empty());
+    if let Some(results) = results
+        && results.iter().all(|result| {
+            result.get("error").is_none()
+                && result.get("status").is_none_or(|s| {
+                    s.as_str()
+                        .is_some_and(|status| status.contains("SUCCEEDED"))
+                })
+        })
+    {
+        return Ok(());
+    }
+    Err(format!(
+        "YouTube Music returned no confirmation for {operation}."
+    ))
+}
+
+fn require_like_success(data: &Value, action: &str) -> Result<(), String> {
+    if data.get("error").is_some() {
+        return Err(format!("YouTube Music rejected the {action} request."));
+    }
+    match data.get("status").and_then(Value::as_str) {
+        Some(status) if status.contains("SUCCEEDED") => Ok(()),
+        Some(status) => Err(format!(
+            "YouTube Music did not confirm the {action} request (status: {status})."
+        )),
+        None if data.get("responseContext").is_some() => Ok(()),
+        None => Err(format!(
+            "YouTube Music returned no confirmation for the {action} request."
+        )),
+    }
+}
+
+pub async fn set_song_liked(http: &Client, video_id: &str, liked: bool) -> Result<(), String> {
+    let video_id = video_id.trim();
+    if !is_valid_video_id(video_id) {
+        return Err("Invalid YouTube video ID.".to_string());
+    }
+    let action = if liked { "like" } else { "removelike" };
+    let url = format!("{MUSIC_LIKE_URL}/{action}?prettyPrint=false");
+    let data = post_music(
+        http,
+        &url,
+        json!({ "target": { "videoId": video_id } }),
+        true,
+    )
+    .await?;
+    require_like_success(&data, action)
+}
+
+pub async fn edit_playlist_track(
+    http: &Client,
+    playlist_id: &str,
+    video_id: &str,
+    set_video_id: Option<&str>,
+    add: bool,
+) -> Result<(), String> {
+    let playlist_id = playlist_id
+        .trim()
+        .strip_prefix("VL")
+        .unwrap_or(playlist_id.trim());
+    let video_id = video_id.trim();
+    if playlist_id.is_empty()
+        || playlist_id.len() > 128
+        || !playlist_id
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-'))
+    {
+        return Err("Invalid YouTube Music playlist ID.".to_string());
+    }
+    if !is_valid_video_id(video_id) {
+        return Err("Invalid YouTube video ID.".to_string());
+    }
+    let action = if add {
+        // Avoid duplicate additions when the picker is opened from a stale snapshot.
+        let current = fetch_playlist_tracks_native(http, playlist_id).await?;
+        if current
+            .tracks
+            .unwrap_or_default()
+            .iter()
+            .any(|track| track.video_id == video_id)
+        {
+            return Err(
+                "This track is already in the YouTube Music playlist. The playlist was refreshed."
+                    .to_string(),
+            );
+        }
+        json!({ "action": "ACTION_ADD_VIDEO", "addedVideoId": video_id })
+    } else {
+        let set_video_id = set_video_id.map(str::trim).filter(|id| !id.is_empty())
+            .ok_or_else(|| "This playlist item is missing its YouTube Music entry ID; refresh the playlist and try again.".to_string())?;
+        let current = fetch_playlist_tracks_native(http, playlist_id).await?;
+        if !current.tracks.unwrap_or_default().iter().any(|track| {
+            track.video_id == video_id && track.set_video_id.as_deref() == Some(set_video_id)
+        }) {
+            return Err(
+                "This YouTube Music playlist item changed. Refresh the playlist and try again."
+                    .to_string(),
+            );
+        }
+        json!({ "action": "ACTION_REMOVE_VIDEO", "setVideoId": set_video_id, "removedVideoId": video_id })
+    };
+    let data = post_music(
+        http,
+        MUSIC_PLAYLIST_EDIT_URL,
+        json!({ "playlistId": playlist_id, "actions": [action] }),
+        true,
+    )
+    .await?;
+    require_mutation_success(
+        &data,
+        if add {
+            "adding the track to the playlist"
+        } else {
+            "removing the track from the playlist"
+        },
+    )
 }
 
 pub async fn sync_library(http: &Client) -> Result<YtMusicLibraryDto, String> {
@@ -145,30 +299,51 @@ pub async fn sync_library(http: &Client) -> Result<YtMusicLibraryDto, String> {
     let liked_songs = liked_res.unwrap_or_default();
 
     if profile.name.is_empty() && playlists.is_empty() && liked_songs.is_empty() {
-        return Err("Сессия YouTube Music истекла. Переподключите аккаунт в настройках.".to_string());
+        return Err(
+            "Сессия YouTube Music истекла. Переподключите аккаунт в настройках.".to_string(),
+        );
     }
 
-    Ok(YtMusicLibraryDto { profile, playlists, liked_songs })
+    Ok(YtMusicLibraryDto {
+        profile,
+        playlists,
+        liked_songs,
+    })
 }
 
 async fn fetch_user_playlists(http: &Client) -> Result<Vec<YtMusicPlaylistDto>, String> {
-    let data = post_music(http, MUSIC_BROWSE_URL, json!({ "browseId": "FEmusic_liked_playlists" }), true).await?;
+    let data = post_music(
+        http,
+        MUSIC_BROWSE_URL,
+        json!({ "browseId": "FEmusic_liked_playlists" }),
+        true,
+    )
+    .await?;
     let mut cards = Vec::new();
     collect_by_key(&data, "musicTwoRowItemRenderer", &mut cards);
 
     let mut out = Vec::new();
     let mut seen = HashSet::new();
     for card in cards {
-        let Some(browse_id) = card.pointer("/navigationEndpoint/browseEndpoint/browseId").and_then(|v| v.as_str()) else {
+        let Some(browse_id) = card
+            .pointer("/navigationEndpoint/browseEndpoint/browseId")
+            .and_then(|v| v.as_str())
+        else {
             continue;
         };
-        let playlist_id = browse_id.strip_prefix("VL").unwrap_or(browse_id).to_string();
+        let playlist_id = browse_id
+            .strip_prefix("VL")
+            .unwrap_or(browse_id)
+            .to_string();
         if playlist_id == "LM" || playlist_id == "SE" || playlist_id.starts_with("FEmusic") {
             continue;
         }
         let title = runs_text(card.pointer("/title/runs"));
         let lower = title.trim().to_lowercase();
-        if matches!(lower.as_str(), "episodes for later" | "sounds from shorts" | "liked music") {
+        if matches!(
+            lower.as_str(),
+            "episodes for later" | "sounds from shorts" | "liked music"
+        ) {
             continue;
         }
         if !seen.insert(playlist_id.clone()) {
@@ -176,10 +351,16 @@ async fn fetch_user_playlists(http: &Client) -> Result<Vec<YtMusicPlaylistDto>, 
         }
         let subtitle = runs_text(card.pointer("/subtitle/runs"));
         let track_count = parse_count_from_text(&subtitle);
-        let artwork_url = best_thumbnail(card.pointer("/thumbnailRenderer/musicThumbnailRenderer/thumbnail/thumbnails"));
+        let artwork_url = best_thumbnail(
+            card.pointer("/thumbnailRenderer/musicThumbnailRenderer/thumbnail/thumbnails"),
+        );
         out.push(YtMusicPlaylistDto {
             playlist_id,
-            title: if title.is_empty() { "Untitled playlist".to_string() } else { title },
+            title: if title.is_empty() {
+                "Untitled playlist".to_string()
+            } else {
+                title
+            },
             artwork_url,
             track_count,
             tracks: None,
@@ -189,17 +370,31 @@ async fn fetch_user_playlists(http: &Client) -> Result<Vec<YtMusicPlaylistDto>, 
 }
 
 async fn fetch_liked_songs(http: &Client) -> Result<Vec<YtMusicTrackDto>, String> {
-    let mut tracks = fetch_browse_tracks(http, "VLLM", 12).await.unwrap_or_default();
+    let mut tracks = fetch_browse_tracks(http, "VLLM", 12)
+        .await
+        .unwrap_or_default();
     if tracks.is_empty() {
-        tracks = fetch_browse_tracks(http, "FEmusic_liked_videos", 12).await.unwrap_or_default();
+        tracks = fetch_browse_tracks(http, "FEmusic_liked_videos", 12)
+            .await
+            .unwrap_or_default();
     }
     Ok(tracks)
 }
 
-async fn fetch_browse_tracks(http: &Client, browse_id: &str, max_pages: usize) -> Result<Vec<YtMusicTrackDto>, String> {
+async fn fetch_browse_tracks(
+    http: &Client,
+    browse_id: &str,
+    max_pages: usize,
+) -> Result<Vec<YtMusicTrackDto>, String> {
     let mut tracks = Vec::new();
     let mut seen = HashSet::new();
-    let mut data = post_music(http, MUSIC_BROWSE_URL, json!({ "browseId": browse_id }), true).await?;
+    let mut data = post_music(
+        http,
+        MUSIC_BROWSE_URL,
+        json!({ "browseId": browse_id }),
+        true,
+    )
+    .await?;
 
     for page_idx in 0..max_pages {
         let mut parsed = 0;
@@ -223,12 +418,21 @@ async fn fetch_browse_tracks(http: &Client, browse_id: &str, max_pages: usize) -
         let Some(token) = find_continuation_token(&data) else {
             break;
         };
-        data = post_music(http, MUSIC_BROWSE_URL, json!({ "continuation": token }), true).await?;
+        data = post_music(
+            http,
+            MUSIC_BROWSE_URL,
+            json!({ "continuation": token }),
+            true,
+        )
+        .await?;
     }
     Ok(tracks)
 }
 
-pub async fn fetch_playlist_tracks_native(http: &Client, playlist_id: &str) -> Result<YtMusicPlaylistDto, String> {
+pub async fn fetch_playlist_tracks_native(
+    http: &Client,
+    playlist_id: &str,
+) -> Result<YtMusicPlaylistDto, String> {
     let trimmed = playlist_id.trim();
     if trimmed.is_empty() {
         return Err("Playlist ID is required.".to_string());
@@ -240,20 +444,25 @@ pub async fn fetch_playlist_tracks_native(http: &Client, playlist_id: &str) -> R
         format!("VL{clean_id}")
     };
 
-    let mut data = post_music(http, MUSIC_BROWSE_URL, json!({ "browseId": browse_id }), true).await?;
+    let mut data = post_music(
+        http,
+        MUSIC_BROWSE_URL,
+        json!({ "browseId": browse_id }),
+        true,
+    )
+    .await?;
     let title = extract_playlist_title(&data).unwrap_or_else(|| "Playlist".to_string());
     let mut artwork_url = extract_header_artwork(&data);
 
     let mut tracks = Vec::new();
-    let mut seen = HashSet::new();
     for page_idx in 0..20 {
         let mut parsed = 0;
         for r in track_renderers(&data) {
             if let Some(t) = parse_responsive_track(r) {
+                // Preserve duplicate videos: every occurrence has its own setVideoId and
+                // must remain individually removable from the provider playlist.
                 parsed += 1;
-                if seen.insert(t.video_id.clone()) {
-                    tracks.push(t);
-                }
+                tracks.push(t);
             }
         }
         if parsed == 0 {
@@ -265,7 +474,13 @@ pub async fn fetch_playlist_tracks_native(http: &Client, playlist_id: &str) -> R
         let Some(token) = find_continuation_token(&data) else {
             break;
         };
-        data = post_music(http, MUSIC_BROWSE_URL, json!({ "continuation": token }), true).await?;
+        data = post_music(
+            http,
+            MUSIC_BROWSE_URL,
+            json!({ "continuation": token }),
+            true,
+        )
+        .await?;
     }
 
     if artwork_url.is_none() {
@@ -281,7 +496,10 @@ pub async fn fetch_playlist_tracks_native(http: &Client, playlist_id: &str) -> R
     })
 }
 
-pub async fn search_music_tracks(http: &Client, query: &str) -> Result<Vec<YtSearchTrackDto>, String> {
+pub async fn search_music_tracks(
+    http: &Client,
+    query: &str,
+) -> Result<Vec<YtSearchTrackDto>, String> {
     let trimmed = query.trim();
     if trimmed.is_empty() {
         return Ok(Vec::new());
@@ -295,20 +513,27 @@ pub async fn search_music_tracks(http: &Client, query: &str) -> Result<Vec<YtSea
     let mut seen = HashSet::new();
     for r in renderers {
         if let Some(t) = parse_responsive_track(r)
-            && seen.insert(t.video_id.clone()) {
-                tracks.push(to_search_dto(t));
-                if tracks.len() >= 15 {
-                    break;
-                }
+            && seen.insert(t.video_id.clone())
+        {
+            tracks.push(to_search_dto(t));
+            if tracks.len() >= 15 {
+                break;
             }
+        }
     }
     Ok(tracks)
 }
 
-pub async fn search_music_suggestions(http: &Client, query: &str) -> Result<YtSearchSuggestionsDto, String> {
+pub async fn search_music_suggestions(
+    http: &Client,
+    query: &str,
+) -> Result<YtSearchSuggestionsDto, String> {
     let trimmed = query.trim();
     if trimmed.is_empty() {
-        return Ok(YtSearchSuggestionsDto { queries: Vec::new(), tracks: Vec::new() });
+        return Ok(YtSearchSuggestionsDto {
+            queries: Vec::new(),
+            tracks: Vec::new(),
+        });
     }
     let data = post_music(http, MUSIC_SUGGEST_URL, json!({ "input": trimmed }), false).await?;
     let mut suggest_nodes = Vec::new();
@@ -324,11 +549,19 @@ pub async fn search_music_suggestions(http: &Client, query: &str) -> Result<YtSe
 
     let mut items = Vec::new();
     collect_by_key(&data, "musicResponsiveListItemRenderer", &mut items);
-    let tracks = items.into_iter().filter_map(parse_responsive_track).take(4).map(to_search_dto).collect();
+    let tracks = items
+        .into_iter()
+        .filter_map(parse_responsive_track)
+        .take(4)
+        .map(to_search_dto)
+        .collect();
     Ok(YtSearchSuggestionsDto { queries, tracks })
 }
 
-pub async fn fetch_radio_tracks(http: &Client, video_id: &str) -> Result<Vec<YtSearchTrackDto>, String> {
+pub async fn fetch_radio_tracks(
+    http: &Client,
+    video_id: &str,
+) -> Result<Vec<YtSearchTrackDto>, String> {
     let trimmed = video_id.trim();
     if !is_valid_video_id(trimmed) {
         return Err("Invalid YouTube video ID.".to_string());
@@ -345,7 +578,11 @@ pub async fn fetch_radio_tracks(http: &Client, video_id: &str) -> Result<Vec<YtS
     let mut out = Vec::new();
     let mut seen = HashSet::new();
     for r in panels {
-        let Some(vid) = r.get("videoId").and_then(|v| v.as_str()).filter(|id| is_valid_video_id(id)) else {
+        let Some(vid) = r
+            .get("videoId")
+            .and_then(|v| v.as_str())
+            .filter(|id| is_valid_video_id(id))
+        else {
             continue;
         };
         if vid == trimmed || !seen.insert(vid.to_string()) {
@@ -369,7 +606,11 @@ pub async fn fetch_radio_tracks(http: &Client, video_id: &str) -> Result<Vec<YtS
             permalink: format!("https://music.youtube.com/watch?v={vid}"),
             artwork_url,
             duration_ms,
-            artist: if artist.is_empty() { "YouTube Music".to_string() } else { artist.to_string() },
+            artist: if artist.is_empty() {
+                "YouTube Music".to_string()
+            } else {
+                artist.to_string()
+            },
         });
     }
     Ok(out)
@@ -405,4 +646,30 @@ pub async fn fetch_yt_playlist_tracks(
     playlist_id: String,
 ) -> Result<YtMusicPlaylistDto, String> {
     fetch_playlist_tracks_native(&state.browse_http, &playlist_id).await
+}
+
+#[cfg(test)]
+mod mutation_tests {
+    use super::{require_like_success, require_mutation_success};
+    use serde_json::json;
+
+    #[test]
+    fn like_response_must_be_confirmed() {
+        assert!(require_like_success(&json!({ "status": "STATUS_SUCCEEDED" }), "like").is_ok());
+        assert!(require_like_success(&json!({ "responseContext": {} }), "like").is_ok());
+        assert!(require_like_success(&json!({ "status": "STATUS_FAILED" }), "like").is_err());
+        assert!(require_like_success(&json!({}), "like").is_err());
+        assert!(require_like_success(&json!({ "error": {} }), "like").is_err());
+    }
+
+    #[test]
+    fn playlist_response_must_be_confirmed() {
+        assert!(
+            require_mutation_success(&json!({ "status": "STATUS_SUCCEEDED" }), "adding").is_ok()
+        );
+        assert!(require_mutation_success(&json!({ "playlistEditResults": [{ "playlistEditVideoAddedResultData": { "videoId": "id" } }] }), "adding").is_ok());
+        assert!(require_mutation_success(&json!({ "status": "STATUS_FAILED" }), "adding").is_err());
+        assert!(require_mutation_success(&json!({ "playlistEditResults": [] }), "adding").is_err());
+        assert!(require_mutation_success(&json!({}), "adding").is_err());
+    }
 }

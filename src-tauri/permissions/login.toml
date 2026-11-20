@@ -37,6 +37,8 @@ commands.allow = [
   "yt_auth_logout",
   "yt_library_cached",
   "yt_library_sync",
+  "yt_music_set_song_liked",
+  "yt_music_edit_playlist_track",
   "yt_playlist_tracks_cached",
   "yt_playlist_tracks_sync",
   "yt_playlist_artwork",

@@ -28,6 +28,8 @@ export interface Track {
   duration: number;
   fullDuration?: number;
   nativeId?: string;
+  /** YT Music playlist occurrence ID required to remove one specific playlist entry. */
+  setVideoId?: string;
   preview?: boolean;
   playback?: 'direct';
   source: Source;

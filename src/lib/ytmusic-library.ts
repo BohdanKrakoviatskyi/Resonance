@@ -8,6 +8,7 @@ export type YtMusicTrack = {
   artworkUrl?: string | null;
   durationSeconds?: number | null;
   available?: boolean;
+  setVideoId?: string | null;
 };
 
 export type YtMusicPlaylist = {
@@ -42,14 +43,14 @@ export type YtMusicLibrary = {
   likedSongs: YtMusicTrack[];
 };
 
-export function mapYtMusicTrack(track: YtMusicTrack): Track {
+export function mapYtMusicTrack(track: YtMusicTrack, occurrenceId?: string): Track {
   const videoId = String(track.videoId || '').trim();
   const artist = track.artist || track.artists?.filter(Boolean).join(', ') || 'YouTube Music';
   const duration = Number(track.durationSeconds) || 0;
   const fallbackCover = videoId ? `https://i.ytimg.com/vi/${encodeURIComponent(videoId)}/hqdefault.jpg` : undefined;
   const artwork = upscaleYtmArtwork(track.artworkUrl) || fallbackCover;
   return {
-    id: `yt:${videoId}`,
+    id: occurrenceId ? `yt:${videoId}~${encodeURIComponent(occurrenceId)}` : `yt:${videoId}`,
     title: track.title || 'Unknown title',
     artist,
     cover: artwork,
@@ -60,6 +61,7 @@ export function mapYtMusicTrack(track: YtMusicTrack): Track {
     nativeId: videoId,
     playback: 'direct',
     source: 'youtube',
+    ...(track.setVideoId ? { setVideoId: track.setVideoId } : {}),
   };
 }
 
@@ -85,13 +87,33 @@ export function normalizeYtMusicPlaylist(playlist: YtMusicPlaylist): YtMusicPlay
   };
 }
 
-export function mapYtMusicTracks(tracks: YtMusicTrack[]): Track[] {
+export function mapYtMusicTracks(tracks: YtMusicTrack[], preserveOccurrences = false): Track[] {
   const seen = new Set<string>();
+  const counts = new Map<string, number>();
+  if (preserveOccurrences) {
+    for (const track of tracks) {
+      const id = String(track.videoId || '').trim();
+      if (id) counts.set(id, (counts.get(id) ?? 0) + 1);
+    }
+  }
+  const occurrences = new Map<string, number>();
+  const seenOccurrences = new Set<string>();
   return tracks.flatMap((track) => {
-    const id = String(track.videoId || '').trim();
-    if (!id || seen.has(id)) return [];
-    seen.add(id);
-    return [mapYtMusicTrack(track)];
+    const videoId = String(track.videoId || '').trim();
+    if (!videoId) return [];
+    if (!preserveOccurrences) {
+      if (seen.has(videoId)) return [];
+      seen.add(videoId);
+      return [mapYtMusicTrack(track)];
+    }
+    const setVideoId = String(track.setVideoId || '').trim();
+    const ordinal = occurrences.get(videoId) ?? 0;
+    occurrences.set(videoId, ordinal + 1);
+    const key = setVideoId ? `${videoId}:${setVideoId}` : `${videoId}:occurrence:${ordinal}`;
+    if (seenOccurrences.has(key)) return [];
+    seenOccurrences.add(key);
+    const occurrenceId = (counts.get(videoId) ?? 0) > 1 ? setVideoId || `occurrence-${ordinal}` : undefined;
+    return [mapYtMusicTrack(track, occurrenceId)];
   });
 }
 

@@ -17,7 +17,7 @@ const inTauri = () => typeof window !== 'undefined' && '__TAURI_INTERNALS__' in 
 /** Only YouTube Music tracks can be downloaded (SoundCloud streams are HLS/time-limited). */
 export function offlineId(track: Track | null | undefined): string | null {
   if (!track) return null;
-  const id = track.nativeId ?? (track.id.startsWith('yt:') ? track.id.slice(3) : '');
+  const id = track.nativeId ?? (track.id.startsWith('yt:') ? track.id.slice(3).split('~')[0] : '');
   return (track.source === 'youtube' || track.id.startsWith('yt:')) && /^[\w-]{11}$/.test(id) ? id : null;
 }
 
