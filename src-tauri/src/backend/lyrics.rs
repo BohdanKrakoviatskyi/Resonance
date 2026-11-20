@@ -394,13 +394,12 @@ pub fn parse_lrc(content: &str) -> Vec<LyricsLine> {
                 _ => {
                     // [offset:±ms] shifts every timestamp of the record; consume it so it is not
                     // mistaken for the text of the line.
-                    if parts[0].eq_ignore_ascii_case("offset") {
-                        if let Ok(value) = parts[1].parse::<i64>() {
+                    if parts[0].eq_ignore_ascii_case("offset")
+                        && let Ok(value) = parts[1].parse::<i64>() {
                             offset_ms = value;
                             row = &row[end + 1..];
                             continue;
                         }
-                    }
                     break;
                 }
             }
@@ -602,11 +601,10 @@ impl Backend {
             if is_blank_record(record) {
                 continue;
             }
-            if let Some(score) = score_lrclib_record(&scoring, record, require_duration) {
-                if best.as_ref().is_none_or(|current| score.rank > current.score.rank) {
+            if let Some(score) = score_lrclib_record(&scoring, record, require_duration)
+                && best.as_ref().is_none_or(|current| score.rank > current.score.rank) {
                     best = Some(ScoredRecord { record: record.clone(), score });
                 }
-            }
         }
         let Some(best) = best else {
             logs.push(format!("LRCLIB: в каталоге проверено записей {}, подходящих нет", records.len()));
@@ -638,11 +636,10 @@ impl Backend {
                 queries.push(LyricsQuery { title: title.clone(), artist: artist.clone(), duration });
             }
         }
-        if queries.len() < 8 {
-            if let Some(first) = titles.first() {
+        if queries.len() < 8
+            && let Some(first) = titles.first() {
                 queries.push(LyricsQuery { title: first.clone(), artist: String::new(), duration });
             }
-        }
 
         let mut best: Option<ScoredRecord> = None;
         let mut seen = HashSet::new();

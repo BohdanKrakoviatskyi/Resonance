@@ -173,6 +173,8 @@ interface CrossfadeSession {
   durationSec: number;
   elapsedSec: number;
   lastTs: number | null;
+  /** performance.now() последнего кадра (rAF или фолбэк-таймера): сторож не должен дублировать шаги. */
+  lastFrameAt: number;
   rafId: number;
   /**
    * Fallback driver: rAF полностью замирает, когда окно уходит в фон (WebKit/App Nap),
@@ -212,6 +214,14 @@ let fallbackController: AbortController | null = null;
 let resolveAbort: AbortController | null = null;
 const relatedFetched = new Set<string>();
 const recommendationSource = new Map<string, Track>();
+/** relatedFetched/recommendationSource живут всю сессию: самые старые записи вытесняем, иначе они растут по строке на трек. */
+const TRACK_CACHE_LIMIT = 200;
+function trimTrackCache<K>(cache: { size: number; keys(): IterableIterator<K>; delete(key: K): unknown }) {
+  for (const key of cache.keys()) {
+    if (cache.size <= TRACK_CACHE_LIMIT) return;
+    cache.delete(key);
+  }
+}
 const ytStreamPrefetch = new Map<string, Promise<YtStreamResolveResult>>();
 // Short-lived resolved prefetches so a click shortly after hover/queue warm-up can reuse them (Rust cache lasts longer).
 const ytPrefetchResolved = new Map<string, { res: YtStreamResolveResult; at: number }>();
@@ -653,9 +663,10 @@ function applyCrossfadeGains(fromDeck: Deck, toDeck: Deck, progress: number) {
   syncDeckVolumes();
 }
 
-function stepCrossfadeFrame(now: number) {
+function stepCrossfadeFrame(now: number, schedule = true) {
   const session = crossfadeSession;
   if (!session || session.paused) return;
+  session.lastFrameAt = now;
   if (session.lastTs !== null) {
     const dt = Math.max(0, (now - session.lastTs) / 1000);
     session.elapsedSec += dt;
@@ -677,7 +688,9 @@ function stepCrossfadeFrame(now: number) {
     session.endFadeFraction = clamp(session.durationSec / toDur, 0, 0.95);
   }
 
-  player.set({ fadeProgress: progress });
+  // Подписчиков у fadeProgress нет: стор дёргаем только когда шаг визуально заметен.
+  const rounded = Math.round(progress * 100) / 100;
+  if (player.get().fadeProgress !== rounded) player.set({ fadeProgress: rounded });
   emitFrame();
   emitTime();
 
@@ -685,13 +698,21 @@ function stepCrossfadeFrame(now: number) {
     finishCrossfade(session);
     return;
   }
-  session.rafId = requestAnimationFrame(stepCrossfadeFrame);
+  // Цепочку rAF заводит только она сама: фолбэк-таймер шагает без неё, иначе на каждый тик
+  // появлялась лишняя параллельная цепочка (у 4-секундного фейда их набиралось ~17), и
+  // отменить можно было только последнюю.
+  if (schedule) session.rafId = requestAnimationFrame(stepCrossfadeFrame);
 }
+
+const CROSSFADE_FRAME_GRACE_MS = 200;
 
 function startCrossfadeFallbackTimer(session: CrossfadeSession) {
   if (session.fallbackTimer !== null) return;
   session.fallbackTimer = window.setInterval(() => {
-    stepCrossfadeFrame(performance.now());
+    if (crossfadeSession !== session || session.paused) return;
+    const now = performance.now();
+    if (now - session.lastFrameAt < CROSSFADE_FRAME_GRACE_MS) return;
+    stepCrossfadeFrame(now, false);
   }, 250);
 }
 
@@ -760,6 +781,7 @@ function startCrossfadeRamp(
     durationSec,
     elapsedSec: 0,
     lastTs: null,
+    lastFrameAt: performance.now(),
     rafId: 0,
     fallbackTimer: null,
     paused: false,
@@ -1143,29 +1165,41 @@ const kick = () => {
   }
   if (!raf) scheduleTick();
 };
+const revive = () => {
+  try {
+    if (frameSubs.size && !getActiveDeck().el.paused) kick();
+  } catch {
+    /* decks ещё не инициализированы */
+  }
+};
+let reviveTimer: number | null = null;
+/** Сторож нужен только пока есть подписчики onFrame: без них он бы тикал всю жизнь вхолостую. */
+function startReviveTimer() {
+  if (reviveTimer === null) reviveTimer = window.setInterval(revive, 400);
+}
+function stopReviveTimer() {
+  if (reviveTimer !== null) {
+    clearInterval(reviveTimer);
+    reviveTimer = null;
+  }
+}
 if (typeof document !== 'undefined') {
-  const revive = () => {
-    try {
-      if (frameSubs.size && !getActiveDeck().el.paused) kick();
-    } catch {
-      /* decks ещё не инициализированы */
-    }
-  };
   document.addEventListener('fullscreenchange', revive);
   document.addEventListener('webkitfullscreenchange', revive);
   document.addEventListener('visibilitychange', revive);
   window.addEventListener('resize', revive);
   window.addEventListener('focus', revive);
-  // Страховочный сторож на случай, когда ни одно из событий выше не пришло.
-  window.setInterval(revive, 400);
 }
 /** Per-frame callback while playing (DOM writes only — avoids React re-renders). */
 export function onFrame(f: (t: number, d: number, realT: number) => void) {
   frameSubs.add(f);
+  // Страховочный сторож на случай, когда ни одно из событий выше не пришло.
+  startReviveTimer();
   f(curTime(), dur(), realCurTime());
   kick();
   return () => {
     frameSubs.delete(f);
+    if (!frameSubs.size) stopReviveTimer();
   };
 }
 
@@ -1450,7 +1484,10 @@ async function fallbackSoundCloud(track: Track, index: number, reqId: number): P
       ...rawFallback,
     };
     registerTracks([fallback]);
-    if (player.get().shuffle) recommendationSource.set(fallback.id, track);
+    if (player.get().shuffle) {
+      recommendationSource.set(fallback.id, track);
+      trimTrackCache(recommendationSource);
+    }
     const queue = player.get().queue.slice();
     queue[index] = fallback.id;
     player.set({ queue });
@@ -1548,6 +1585,7 @@ async function load(i: number, autoplay: boolean, opts?: LoadOptions) {
     activeDeckIdx = toDeck.id;
     audio = toDeck.el;
     setPlayerMachineState('loading', { requestId: reqId, index: i, duration: tr.duration, pos: 0 });
+    savePlayhead(0);
 
     try {
       activeTrace.resolveStartedPerfMs = performance.now();
@@ -1670,6 +1708,7 @@ async function load(i: number, autoplay: boolean, opts?: LoadOptions) {
     isCrossfading: false,
     fadeProgress: 0,
   });
+  savePlayhead(0);
 
   if (usesProviderPlayback(tr)) {
     setPlayerMachineState(autoplay ? 'playing' : 'paused');
@@ -2006,6 +2045,7 @@ function prefetchRelated(track: Track): Promise<Track[]> {
       : searchYouTubeRecommendations(track);
     request = fetch.then((tracks) => {
       relatedFetched.add(track.id);
+      trimTrackCache(relatedFetched);
       return tracks;
     }).catch(() => []).finally(() => relatedRequests.delete(track.id));
     relatedRequests.set(track.id, request);
@@ -2322,8 +2362,32 @@ onProviderState((state) => {
   emitTime();
 });
 
+/** Плейхед живёт в отдельном мелком ключе, а не в persisted-player: иначе каждый timeupdate
+ *  перезаписывал весь стор плеера и через секунду тянул полный бэкап состояния в бэкенд. */
+const PLAYHEAD_KEY = 'lyra.player.playhead.v1';
+/** Как часто плейхед обновляется на ходу (между паузами/концом трека) — на случай падения. */
+const PLAYHEAD_SAVE_STEP_SEC = 30;
 let lastSaved = 0;
 let errorAdvanceTimer: ReturnType<typeof setTimeout> | null = null;
+
+function savePlayhead(pos = realCurTime()) {
+  const id = currentTrack()?.id;
+  if (!id) return;
+  try {
+    localStorage.setItem(PLAYHEAD_KEY, JSON.stringify({ id, pos: Math.max(0, Math.round(pos * 10) / 10) }));
+  } catch {
+    /* ignore */
+  }
+}
+
+function savedPlayhead(id: string): number {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(PLAYHEAD_KEY) ?? 'null') as { id?: string; pos?: number } | null;
+    return parsed?.id === id && typeof parsed.pos === 'number' && isFinite(parsed.pos) ? Math.max(0, parsed.pos) : 0;
+  } catch {
+    return 0;
+  }
+}
 
 function scheduleErrorAdvance(reqId: number) {
   if (!shouldAdvanceAfterError(errors)) return;
@@ -2421,12 +2485,14 @@ function bindDeckEvents(deck: Deck) {
         if (isCurrentDeckEvent(deck) && el.paused && !el.ended) {
           pauseCrossfadeIfActive();
           setPlayerMachineState('paused', { pos: el.src ? el.currentTime : 0 });
+          savePlayhead();
         }
       });
       return;
     }
     clearAutoCrossfadeTimer();
     setPlayerMachineState('paused', { pos: el.src ? el.currentTime : 0 });
+    savePlayhead();
   });
 
   el.addEventListener('waiting', () => {
@@ -2480,6 +2546,7 @@ function bindDeckEvents(deck: Deck) {
       return;
     }
     if (deck.requestId !== currentRequestId) return;
+    savePlayhead(0);
     next(true);
   });
 
@@ -2562,9 +2629,10 @@ function bindDeckEvents(deck: Deck) {
 
     emitTime();
     if (el.paused) emitFrame();
-    if (Math.abs(el.currentTime - lastSaved) > 4) {
+    if (Math.abs(el.currentTime - lastSaved) > PLAYHEAD_SAVE_STEP_SEC) {
       lastSaved = el.currentTime;
       player.set({ pos: el.currentTime });
+      savePlayhead(el.currentTime);
     }
   });
 
@@ -2655,8 +2723,6 @@ export function initPlayer() {
     muted: s.muted,
     shuffle: s.shuffle,
     repeat: s.repeat,
-    pos: s.pos,
-    duration: s.duration,
     normalizationEnabled: s.normalizationEnabled,
     normalizationTarget: s.normalizationTarget,
     crossfadeEnabled: s.crossfadeEnabled,
@@ -2672,16 +2738,17 @@ export function initPlayer() {
   const curId = s.queue[s.index];
   const q = s.queue.filter((id) => getTrack(id));
   const idx = curId ? q.indexOf(curId) : -1;
+  const restoredPos = curId ? savedPlayhead(curId) : 0;
   setPlayerMachineState('idle', {
     queue: q,
     index: idx,
-    pos: idx >= 0 ? s.pos : 0,
+    pos: idx >= 0 ? restoredPos : 0,
     crossfadeDuration: clamp(s.crossfadeDuration || DEFAULT_CROSSFADE_DURATION, 1, 12),
     isCrossfading: false,
     fadeProgress: 0,
   });
   refreshAllDspChains();
-  pendingSeek = idx >= 0 && q[idx] ? createPendingAudioSeek(q[idx], s.pos) : null;
+  pendingSeek = idx >= 0 && q[idx] ? createPendingAudioSeek(q[idx], restoredPos) : null;
   const cur = currentTrack();
   if (cur) mediaMeta(cur);
   if ('mediaSession' in navigator) {
@@ -2712,5 +2779,5 @@ export function initPlayer() {
       }
     }
   }
-  window.addEventListener('pagehide', () => player.set({ pos: realCurTime() }));
+  window.addEventListener('pagehide', () => savePlayhead());
 }

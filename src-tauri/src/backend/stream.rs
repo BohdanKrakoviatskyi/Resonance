@@ -69,7 +69,7 @@ pub fn transcoding_choices(transcodings: &[Transcoding], preview_url: &str) -> V
             progressive.push(choice);
         }
     }
-    aac_hls.sort_by(|a, b| b.bitrate.cmp(&a.bitrate)); // stable
+    aac_hls.sort_by_key(|c| std::cmp::Reverse(c.bitrate)); // stable
     let mut choices = aac_hls;
     choices.extend(other_hls);
     choices.extend(progressive);

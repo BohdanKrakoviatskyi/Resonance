@@ -88,11 +88,10 @@ impl ClientProfile {
         if let Some(v) = self.android_sdk_version {
             client["androidSdkVersion"] = json!(v);
         }
-        if self.send_visitor_data {
-            if let Some(vd) = visitor_data.filter(|s| !s.is_empty()) {
+        if self.send_visitor_data
+            && let Some(vd) = visitor_data.filter(|s| !s.is_empty()) {
                 client["visitorData"] = json!(vd);
             }
-        }
         json!({ "client": client })
     }
 }
@@ -102,13 +101,11 @@ impl ClientRegistry {
         let bundled: Self =
             serde_json::from_str(BUNDLED_CLIENTS_JSON).expect("bundled clients.json must be valid");
         let override_path = app_data_root_dir().join("clients.json");
-        if let Ok(raw) = std::fs::read_to_string(&override_path) {
-            if let Some(parsed) = Self::parse_valid(&raw) {
-                if parsed.schema_version >= bundled.schema_version {
+        if let Ok(raw) = std::fs::read_to_string(&override_path)
+            && let Some(parsed) = Self::parse_valid(&raw)
+                && parsed.schema_version >= bundled.schema_version {
                     return parsed;
                 }
-            }
-        }
         bundled
     }
 
@@ -158,19 +155,16 @@ pub async fn refresh_remote_clients_if_stale(http: &Client) -> bool {
     let stamp_path = base.join("clients_last_sync.txt");
     let now = now_unix_secs();
 
-    if clients_path.is_file() {
-        if let Ok(raw) = std::fs::read_to_string(&stamp_path) {
-            if raw
+    if clients_path.is_file()
+        && let Ok(raw) = std::fs::read_to_string(&stamp_path)
+            && raw
                 .trim()
                 .parse::<u64>()
                 .is_ok_and(|last| now.saturating_sub(last) < REMOTE_CLIENTS_MAX_AGE_SECS)
             {
                 return false;
             }
-        }
-    }
 
-    let _ = std::fs::write(&stamp_path, now.to_string());
     let Ok(resp) = tokio::time::timeout(Duration::from_secs(5), http.get(REMOTE_CLIENTS_URL).send()).await else {
         return false;
     };
@@ -190,9 +184,13 @@ pub async fn refresh_remote_clients_if_stale(http: &Client) -> bool {
     }
 
     let tmp = clients_path.with_extension("json.tmp");
-    if std::fs::write(&tmp, &body).is_ok() {
-        let _ = std::fs::rename(tmp, &clients_path);
+    if std::fs::write(&tmp, &body).is_err() || std::fs::rename(&tmp, &clients_path).is_err() {
+        let _ = std::fs::remove_file(&tmp);
+        return false;
     }
+    // Only a persisted, parsed registry counts as a successful sync: an offline start must
+    // not suppress the next refresh for REMOTE_CLIENTS_MAX_AGE_SECS.
+    let _ = std::fs::write(&stamp_path, now.to_string());
     if let Ok(mut guard) = registry_cell().write() {
         *guard = parsed;
     }
@@ -342,11 +340,10 @@ impl GateTracker {
         if client_key.is_empty() || link_age > FRESH_LINK_WINDOW {
             return;
         }
-        if let Some(exp) = extract_query_param_u64(url, "expire") {
-            if exp <= now_unix_secs() {
+        if let Some(exp) = extract_query_param_u64(url, "expire")
+            && exp <= now_unix_secs() {
                 return;
             }
-        }
         if let Ok(mut map) = self.gates.lock() {
             map.insert(client_key.to_ascii_uppercase(), Instant::now() + GATE_TTL);
         }

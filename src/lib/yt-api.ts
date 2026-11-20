@@ -32,8 +32,11 @@ export function ytLibraryCached(signal?: AbortSignal): Promise<YtMusicLibrary | 
   return invokeAbortable('yt_library_cached', {}, signal);
 }
 
+/** A full library walk can outlast the default 60 s IPC budget, so it gets five minutes. */
+const SYNC_TIMEOUT_MS = 300_000;
+
 export function ytLibrarySync(signal?: AbortSignal): Promise<YtMusicLibrary> {
-  return invokeAbortable('yt_library_sync', {}, signal);
+  return invokeAbortable('yt_library_sync', {}, signal, SYNC_TIMEOUT_MS);
 }
 
 export function ytPlaylistCached(playlistId: string, signal?: AbortSignal): Promise<YtMusicPlaylist | null> {
@@ -44,7 +47,7 @@ export function ytPlaylistSync(playlistId: string, signal?: AbortSignal): Promis
   return shareInflight(
     inflightPlaylists,
     playlistId,
-    (runSignal) => invokeAbortable<YtMusicPlaylist>('yt_playlist_tracks_sync', { playlistId }, runSignal),
+    (runSignal) => invokeAbortable<YtMusicPlaylist>('yt_playlist_tracks_sync', { playlistId }, runSignal, SYNC_TIMEOUT_MS),
     signal,
   );
 }
@@ -107,5 +110,5 @@ export function ytClearNativeCache(signal?: AbortSignal): Promise<YtCacheClearRe
 }
 
 export function fetchExternalPlaylist(url: string, signal?: AbortSignal): Promise<ExternalPlaylistResponse> {
-  return invokeAbortable('fetch_external_playlist', { url }, signal);
+  return invokeAbortable('fetch_external_playlist', { url }, signal, SYNC_TIMEOUT_MS);
 }

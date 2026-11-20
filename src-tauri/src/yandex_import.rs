@@ -96,14 +96,16 @@ async fn get_json(http: &Client, url: &str) -> Result<Value, String> {
     serde_json::from_slice(&bytes).map_err(|e| format!("Invalid Yandex Music JSON: {e}"))
 }
 
-/// Big playlists list only track ids; hydrate them via POST /tracks in chunks.
-async fn hydrate(http: &Client, ids: &[String]) -> Result<Vec<Value>, String> {
+/// Big playlists list only track ids; hydrate them via POST /tracks in chunks. Each hydrated track
+/// keeps the position of the item it stands for.
+async fn hydrate(http: &Client, ids: &[(usize, String)]) -> Result<Vec<(usize, Value)>, String> {
     let mut out = Vec::new();
     for chunk in ids.chunks(100) {
+        let joined = chunk.iter().map(|(_, id)| id.as_str()).collect::<Vec<_>>().join(",");
         let resp = http
             .post(format!("{API}/tracks"))
             .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64)")
-            .form(&[("track-ids", chunk.join(","))])
+            .form(&[("track-ids", joined)])
             .send()
             .await
             .map_err(|e| format!("Yandex Music request failed: {e}"))?;
@@ -113,25 +115,30 @@ async fn hydrate(http: &Client, ids: &[String]) -> Result<Vec<Value>, String> {
         let bytes = crate::playlist_import::read_limited(resp, 16 << 20).await?;
         let v: Value = serde_json::from_slice(&bytes).map_err(|e| format!("Invalid Yandex Music JSON: {e}"))?;
         if let Some(arr) = v.get("result").and_then(Value::as_array) {
-            out.extend(arr.iter().cloned());
+            for (n, track) in arr.iter().enumerate() {
+                if let Some((index, _)) = chunk.get(n) {
+                    out.push((*index, track.clone()));
+                }
+            }
         }
     }
     Ok(out)
 }
 
-/// Splits playlist items into full track objects and ids that still need hydration.
-pub fn split_playlist_items(items: &[Value]) -> (Vec<Value>, Vec<String>) {
+/// Splits playlist items into full track objects and ids that still need hydration, each paired
+/// with its position in the list so the hydrated ones can be put back where they belong.
+pub fn split_playlist_items(items: &[Value]) -> (Vec<(usize, Value)>, Vec<(usize, String)>) {
     let mut full = Vec::new();
     let mut missing = Vec::new();
-    for it in items {
+    for (index, it) in items.iter().enumerate() {
         if let Some(t) = it.get("track").filter(|t| t.get("title").is_some()) {
-            full.push(t.clone());
+            full.push((index, t.clone()));
         } else if let Some(id) = it.get("id").and_then(|v| v.as_str().map(str::to_string).or_else(|| v.as_i64().map(|n| n.to_string()))) {
             let album = it.get("albumId").and_then(|v| v.as_i64().map(|n| n.to_string()).or_else(|| v.as_str().map(str::to_string)));
-            missing.push(match album {
+            missing.push((index, match album {
                 Some(a) => format!("{id}:{a}"),
                 None => id,
-            });
+            }));
         }
     }
     (full, missing)
@@ -162,9 +169,12 @@ pub async fn fetch_yandex_music(http: &Client, url: &Url) -> Result<ExternalPlay
             let (mut full, missing) = split_playlist_items(&items);
             if !missing.is_empty() {
                 full.extend(hydrate(http, &missing).await?);
+                // Id-only items come back last; put them back where the playlist had them.
+                full.sort_by_key(|(index, _)| *index);
             }
             let art = cover(r.pointer("/cover/uri").and_then(Value::as_str)).or_else(|| cover(r.get("ogImage").and_then(Value::as_str)));
-            (r.get("title").and_then(Value::as_str).unwrap_or("Yandex Music").to_string(), art, full)
+            let ordered: Vec<Value> = full.into_iter().map(|(_, track)| track).collect();
+            (r.get("title").and_then(Value::as_str).unwrap_or("Yandex Music").to_string(), art, ordered)
         }
     };
     let tracks: Vec<_> = raw_tracks.iter().filter_map(map_track).collect();
@@ -216,10 +226,16 @@ mod tests {
     }
 
     #[test]
-    fn splits_full_and_id_only_items() {
+    fn splits_full_and_id_only_items_with_their_positions() {
         let items = vec![json!({"id": 1, "track": {"title": "x"}}), json!({"id": 2, "albumId": 9}), json!({"id": "3"})];
         let (full, missing) = split_playlist_items(&items);
         assert_eq!(full.len(), 1);
-        assert_eq!(missing, vec!["2:9".to_string(), "3".to_string()]);
+        assert_eq!(full[0].0, 0);
+        assert_eq!(missing, vec![(1, "2:9".to_string()), (2, "3".to_string())]);
+        // Id-only items keep their place among the inlined ones, so the merged list can be re-sorted.
+        let mixed = vec![json!({"track": {"title": "a"}}), json!({"id": 2}), json!({"track": {"title": "c"}})];
+        let (full, missing) = split_playlist_items(&mixed);
+        assert_eq!(full.iter().map(|(index, _)| *index).collect::<Vec<_>>(), vec![0, 2]);
+        assert_eq!(missing, vec![(1, "2".to_string())]);
     }
 }

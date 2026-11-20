@@ -1,7 +1,7 @@
 import { useState, type ReactNode } from 'react';
 import { Icon, type IconName } from '../components/Icon';
 import { IconButton, Segmented, type Vars } from '../components/ui';
-import { cx, useStore } from '../lib/util';
+import { useStore } from '../lib/util';
 import { t } from '../lib/i18n';
 import { integrationOptions } from '../lib/integration-options';
 import { integrations, lastfmLogin, lastfmLogout } from '../state/integrations';
@@ -22,40 +22,6 @@ export function SettingsCard({ icon, title, sub, children, i }: { icon: IconName
       </div>
       {children}
     </section>
-  );
-}
-
-export function TextInput({
-  value,
-  onChange,
-  placeholder,
-  invalid,
-  type = 'text',
-  label,
-}: {
-  value: string;
-  onChange: (v: string) => void;
-  placeholder?: string;
-  invalid?: boolean;
-  type?: 'text' | 'password';
-  label: string;
-}) {
-  return (
-    <label className="block">
-      <span className="mb-1.5 block text-sm font-semibold">{label}</span>
-      <input
-        type={type}
-        value={value}
-        spellCheck={false}
-        autoComplete="off"
-        placeholder={placeholder}
-        onChange={(e) => onChange(e.target.value)}
-        className={cx(
-          'h-11 w-full rounded-2xl bg-on-surface/8 px-4 text-[15px] font-medium tabular-nums outline-0 transition-colors placeholder:text-on-surface-variant/60 focus:bg-on-surface/12',
-          invalid && 'ring-2 ring-error/70',
-        )}
-      />
-    </label>
   );
 }
 

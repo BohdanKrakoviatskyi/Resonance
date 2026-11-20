@@ -50,3 +50,11 @@ symphonia = { version = "0.6.1", default-features = false, features = ["aac", "i
 [profile.dev.package.whisper-rs-sys]
 opt-level = 3
 
+[lints.clippy]
+# Acknowledged by the audit and left as designed: the resolver/player tuples are wide on purpose and
+# the transcribe command's error is small enough to stay unboxed. Everything else must stay clean,
+# because CI runs clippy with -D warnings.
+type_complexity = "allow"
+large_enum_variant = "allow"
+result_large_err = "allow"
+too_many_arguments = "allow"

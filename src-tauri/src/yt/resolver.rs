@@ -128,8 +128,8 @@ pub async fn resolve_via_profile(
         "contentCheckOk": true,
         "racyCheckOk": true
     });
-    if profile.send_cookie || profile.client_name == "WEB_REMIX" || profile.is_embedded {
-        if let Some(sts) = solver.current_sts() {
+    if (profile.send_cookie || profile.client_name == "WEB_REMIX" || profile.is_embedded)
+        && let Some(sts) = solver.current_sts() {
             payload["playbackContext"] = json!({
                 "contentPlaybackContext": {
                     "html5Preference": "HTML5_PREF_WANTS",
@@ -137,7 +137,6 @@ pub async fn resolve_via_profile(
                 }
             });
         }
-    }
 
     let mut req = http
         .post(PLAYER_ENDPOINT)
@@ -147,13 +146,12 @@ pub async fn resolve_via_profile(
         .header("X-Youtube-Client-Version", &profile.client_version)
         .header("Origin", if profile.client_name == "WEB_REMIX" { "https://music.youtube.com" } else { "https://www.youtube.com" })
         .header("Referer", if profile.client_name == "WEB_REMIX" { "https://music.youtube.com/" } else { "https://www.youtube.com/" });
-    if profile.send_visitor_data {
-        if let Some(vd) = visitor_data.filter(|s| !s.is_empty()) {
+    if profile.send_visitor_data
+        && let Some(vd) = visitor_data.filter(|s| !s.is_empty()) {
             req = req.header("X-Goog-Visitor-Id", vd);
         }
-    }
-    if profile.send_cookie {
-        if let Some(cookie) = cookie_header {
+    if profile.send_cookie
+        && let Some(cookie) = cookie_header {
             let origin = if profile.client_name == "WEB_REMIX" { "https://music.youtube.com" } else { YOUTUBE_ORIGIN };
             if let Some(sapisid) = extract_cookie_value(cookie, "__Secure-3PAPISID") {
                 req = req
@@ -162,7 +160,6 @@ pub async fn resolve_via_profile(
             }
             req = req.header("Cookie", cookie);
         }
-    }
 
     let resp = req
         .json(&payload)
@@ -381,15 +378,13 @@ pub async fn resolve_via_tv_samsung(
         .await
         .ok()
         .flatten()
-    {
-        if let Some(sapisid) = extract_cookie_value(&creds.cookie, "__Secure-3PAPISID") {
+        && let Some(sapisid) = extract_cookie_value(&creds.cookie, "__Secure-3PAPISID") {
             req = req
                 .header("Authorization", compute_sapisidhash(&sapisid, YOUTUBE_ORIGIN))
                 .header("Cookie", creds.cookie)
                 .header("X-Goog-AuthUser", creds.auth_user)
                 .header("X-Origin", YOUTUBE_ORIGIN);
         }
-    }
 
     let resp = req
         .json(&payload)
@@ -499,7 +494,9 @@ fn pick_best_audio_candidate(
         let (url, sig, sp) = if let Some(u) = fmt.get("url").and_then(|v| v.as_str()).filter(|s| !s.is_empty()) {
             (u.to_string(), None, None)
         } else if let Some(sc) = fmt.get("signatureCipher").and_then(|v| v.as_str()).filter(|s| !s.is_empty()) {
-            let parsed = Url::parse(&format!("https://example.invalid/?{sc}")).ok()?;
+            let Ok(parsed) = Url::parse(&format!("https://example.invalid/?{sc}")) else {
+                continue;
+            };
             let mut u = None;
             let mut s = None;
             let mut p = None;
@@ -511,7 +508,7 @@ fn pick_best_audio_candidate(
                     _ => {}
                 }
             }
-            let raw_u = u?;
+            let Some(raw_u) = u else { continue };
             (raw_u, s, p)
         } else {
             continue;

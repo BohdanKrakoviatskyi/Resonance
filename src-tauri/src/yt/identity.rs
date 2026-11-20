@@ -109,6 +109,12 @@ impl VisitorIdentity {
     }
 }
 
+impl Default for VisitorIdentity {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 async fn mint_visitor_data(http: &Client) -> Option<String> {
     if let Some(vd) = mint_visitor_from_sw_js_data(http).await {
         return Some(vd);

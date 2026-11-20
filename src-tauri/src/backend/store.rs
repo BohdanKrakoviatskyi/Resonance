@@ -75,11 +75,10 @@ fn user_config_dir() -> Result<PathBuf, String> {
 }
 
 pub fn app_data_dir() -> Result<PathBuf, String> {
-    if let Ok(configured) = std::env::var("BSC_DATA_DIR") {
-        if !configured.is_empty() {
+    if let Ok(configured) = std::env::var("BSC_DATA_DIR")
+        && !configured.is_empty() {
             return Ok(PathBuf::from(configured));
         }
-    }
     let config = user_config_dir()?;
     Ok(migrate_legacy_data_dir(config.join(APP_NAME), &config.join(LEGACY_APP_NAME)))
 }
@@ -187,11 +186,10 @@ impl State {
             Ok(history) => state.history = history,
             Err(e) => log::warn!("local backend: playback history ignored: {e}"),
         }
-        if let Ok(data) = std::fs::read(&paths.frontend_backup) {
-            if let Ok(map) = serde_json::from_slice::<HashMap<String, String>>(&data) {
+        if let Ok(data) = std::fs::read(&paths.frontend_backup)
+            && let Ok(map) = serde_json::from_slice::<HashMap<String, String>>(&data) {
                 state.frontend_backup = map;
             }
-        }
         state
     }
 }

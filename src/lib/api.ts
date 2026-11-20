@@ -126,9 +126,22 @@ export async function searchYouTubeRecommendations(track: Track, signal?: AbortS
 export { ytDlpTrackStream };
 
 const FALLBACK_MEMO_TTL_MS = 10 * 60_000;
+const FALLBACK_MEMO_MAX = 200;
 type FallbackEntry = { promise: Promise<Track | null>; controller: AbortController; refs: number };
 const fallbackInflight = new Map<string, FallbackEntry>();
 const fallbackMemo = new Map<string, { track: Track; expires: number }>();
+
+/** Drops expired memos and keeps the map bounded (insertion order = oldest first). */
+function pruneFallbackMemo() {
+  const now = Date.now();
+  for (const [id, entry] of fallbackMemo) {
+    if (entry.expires <= now) fallbackMemo.delete(id);
+  }
+  for (const id of fallbackMemo.keys()) {
+    if (fallbackMemo.size <= FALLBACK_MEMO_MAX) break;
+    fallbackMemo.delete(id);
+  }
+}
 
 function abortError() {
   return new DOMException('Aborted', 'AbortError');
@@ -173,7 +186,10 @@ async function runYouTubeFallback(track: Track, signal: AbortSignal): Promise<Tr
 export function findYouTubeFallback(track: Track, signal?: AbortSignal): Promise<Track | null> {
   if (signal?.aborted) return Promise.reject(abortError());
   const memo = fallbackMemo.get(track.id);
-  if (memo && memo.expires > Date.now()) return Promise.resolve(memo.track);
+  if (memo) {
+    if (memo.expires > Date.now()) return Promise.resolve(memo.track);
+    fallbackMemo.delete(track.id);
+  }
   let entry = fallbackInflight.get(track.id);
   if (!entry) {
     const key = track.id;
@@ -183,7 +199,10 @@ export function findYouTubeFallback(track: Track, signal?: AbortSignal): Promise
       refs: 0,
       promise: runYouTubeFallback(track, controller.signal)
         .then((match) => {
-          if (match) fallbackMemo.set(key, { track: match, expires: Date.now() + FALLBACK_MEMO_TTL_MS });
+          if (match) {
+            pruneFallbackMemo();
+            fallbackMemo.set(key, { track: match, expires: Date.now() + FALLBACK_MEMO_TTL_MS });
+          }
           return match;
         })
         .finally(() => {
@@ -626,11 +645,3 @@ async function fetchLyrics(t: Track): Promise<LyricsData | null> {
   if (!match) return null;
   return scaleLyrics(lyricsDataFromRecord(match.candidate), match.timeScale);
 }
-
-/** Individual lyrics sources, for diagnostics (which source found what for a track). */
-export const lyricsSources = {
-  lrclib: (t: Track) => fetchLyrics(t),
-  soundcloud: (t: Track) => fetchSoundCloudLyrics(t),
-  netease: (t: Track) => fetchWordLyrics(t),
-  ytm: (t: Track) => fetchYtmLyrics(t),
-};

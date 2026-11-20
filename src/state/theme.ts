@@ -249,29 +249,10 @@ export interface ColorInputLogEntry {
   rgb: [number, number, number];
 }
 
-export interface ThemeDragStats {
-  events: number;
-  frames: number;
-  rerenders: number;
-  saves: number;
-  pointerWrites: number;
-  domElementCount: number;
-  varsUpdatedPerFrame: number;
-  avgFrameMs: number;
-  maxFrameMs: number;
-  avgFrameDeltaMs: number;
-  maxFrameDeltaMs: number;
-  avgRecalcStyleMs: number;
-  maxRecalcStyleMs: number;
-  recentInputs: ColorInputLogEntry[];
-}
-
 const dragStats = {
   events: 0,
   frames: 0,
   rerenders: 0,
-  saves: 0,
-  pointerWrites: 0,
   domElementCount: 0,
   varsUpdatedPerFrame: 0,
   totalFrameMs: 0,
@@ -283,26 +264,6 @@ const dragStats = {
   maxRecalcStyleMs: 0,
   recentInputs: [] as ColorInputLogEntry[],
 };
-
-export function resetThemeDragStats() {
-  dragStats.events = 0;
-  dragStats.frames = 0;
-  dragStats.rerenders = 0;
-  dragStats.saves = 0;
-  dragStats.pointerWrites = 0;
-  dragStats.domElementCount = typeof document !== 'undefined' ? document.querySelectorAll('*').length : 0;
-  dragStats.varsUpdatedPerFrame = 0;
-  dragStats.totalFrameMs = 0;
-  dragStats.maxFrameMs = 0;
-  dragStats.totalFrameDeltaMs = 0;
-  dragStats.maxFrameDeltaMs = 0;
-  dragStats.deltaSamples = 0;
-  dragStats.totalRecalcStyleMs = 0;
-  dragStats.maxRecalcStyleMs = 0;
-  dragStats.recentInputs = [];
-  lastFrameTs = 0;
-  lastInputLogTs = 0;
-}
 
 export function logColorPickerInput(rawHex: string) {
   const ts = performance.now();
@@ -321,29 +282,6 @@ export function logColorPickerInput(rawHex: string) {
 
 export function recordThemeRerender() {
   if (previewTransitionPaused) dragStats.rerenders += 1;
-}
-
-export function recordThemePointerWrite() {
-  if (previewTransitionPaused) dragStats.pointerWrites += 1;
-}
-
-export function getThemeDragStats(): ThemeDragStats {
-  return {
-    events: dragStats.events,
-    frames: dragStats.frames,
-    rerenders: dragStats.rerenders,
-    saves: dragStats.saves,
-    pointerWrites: dragStats.pointerWrites,
-    domElementCount: dragStats.domElementCount || (typeof document !== 'undefined' ? document.querySelectorAll('*').length : 0),
-    varsUpdatedPerFrame: dragStats.varsUpdatedPerFrame,
-    avgFrameMs: dragStats.frames ? +(dragStats.totalFrameMs / dragStats.frames).toFixed(3) : 0,
-    maxFrameMs: +dragStats.maxFrameMs.toFixed(3),
-    avgFrameDeltaMs: dragStats.deltaSamples ? +(dragStats.totalFrameDeltaMs / dragStats.deltaSamples).toFixed(3) : 0,
-    maxFrameDeltaMs: +dragStats.maxFrameDeltaMs.toFixed(3),
-    avgRecalcStyleMs: dragStats.frames ? +(dragStats.totalRecalcStyleMs / dragStats.frames).toFixed(3) : 0,
-    maxRecalcStyleMs: +dragStats.maxRecalcStyleMs.toFixed(3),
-    recentInputs: dragStats.recentInputs.slice(-16),
-  };
 }
 
 /**

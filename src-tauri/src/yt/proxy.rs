@@ -132,11 +132,18 @@ impl YtStreamProxy {
         let proxy = self.clone();
         tokio::spawn(async move {
             loop {
-                if let Ok((stream, _)) = listener.accept().await {
-                    let p = proxy.clone();
-                    tokio::spawn(async move {
-                        let _ = handle_proxy_connection(stream, p).await;
-                    });
+                match listener.accept().await {
+                    Ok((stream, _)) => {
+                        let p = proxy.clone();
+                        tokio::spawn(async move {
+                            let _ = handle_proxy_connection(stream, p).await;
+                        });
+                    }
+                    Err(e) => {
+                        // EMFILE/ENOBUFS: accept would fail instantly forever, so back off.
+                        log::warn!("yt proxy accept failed: {e}");
+                        tokio::time::sleep(Duration::from_millis(100)).await;
+                    }
                 }
             }
         });
@@ -201,8 +208,8 @@ impl YtStreamProxy {
                 .clone()
         };
         let _inflight_guard = video_lock.lock().await;
-        if !force_refresh {
-            if let Some(existing) = self.cached_valid(trimmed).await {
+        if !force_refresh
+            && let Some(existing) = self.cached_valid(trimmed).await {
                 let ms = total_start.elapsed().as_millis() as u64;
                 return Ok((
                     existing.clone(),
@@ -215,7 +222,6 @@ impl YtStreamProxy {
                     }],
                 ));
             }
-        }
         let res = self.resolve_fast(trimmed, epoch, total_start).await;
         self.cleanup_inflight(trimmed, &video_lock).await;
         res
@@ -335,12 +341,11 @@ impl YtStreamProxy {
                     }
                 }
             }
-            if saw_bot_wall {
-                if let Some(fresh_vd) = self.visitor.reroll(&self.playback_http).await {
+            if saw_bot_wall
+                && let Some(fresh_vd) = self.visitor.reroll(&self.playback_http).await {
                     self.gates.clear();
                     visitor_data = Some(fresh_vd);
                 }
-            }
         }
 
         // Phase 2: Race remaining open InnerTube profiles concurrently in one shot (bounded by CLIENT_TIMEOUT).
@@ -455,20 +460,34 @@ impl YtStreamProxy {
             }
         }
 
-        if let Ok(emb) = tokio::time::timeout(
+        let t_emb = Instant::now();
+        let emb_res = tokio::time::timeout(
             TV_SAMSUNG_TIMEOUT,
             resolve_via_web_embedded(&self.playback_http, &self.player_js, video_id),
         )
         .await
-        .unwrap_or_else(|_| Err("WEB_EMBEDDED_PLAYER: timeout".to_string()))
-        {
-            attempts.push(YtResolveAttemptTiming {
-                method: emb.level_label.clone(),
-                outcome: "ok".to_string(),
-                duration_ms: total_start.elapsed().as_millis() as u64,
-            });
-            self.insert_cached_stream(video_id, emb.clone()).await;
-            return Ok((emb, false, total_start.elapsed().as_millis() as u64, attempts));
+        .unwrap_or_else(|_| Err("WEB_EMBEDDED_PLAYER: timeout".to_string()));
+        let dt_emb = t_emb.elapsed().as_millis() as u64;
+        match emb_res {
+            Ok(emb) => {
+                attempts.push(YtResolveAttemptTiming {
+                    method: emb.level_label.clone(),
+                    outcome: "ok".to_string(),
+                    duration_ms: dt_emb,
+                });
+                self.insert_cached_stream(video_id, emb.clone()).await;
+                return Ok((emb, false, total_start.elapsed().as_millis() as u64, attempts));
+            }
+            Err(err) => {
+                attempts.push(YtResolveAttemptTiming {
+                    method: "InnerTube: WEB_EMBEDDED_PLAYER".to_string(),
+                    outcome: format!("err: {err}"),
+                    duration_ms: dt_emb,
+                });
+                if is_bot_wall_reason(&err) {
+                    self.gates.record_player_gate("WEB_EMBEDDED_PLAYER", BOT_WALL_GATE_TTL);
+                }
+            }
         }
 
         // Last resort: authenticated WEB_REMIX with QuickJS sig/n solver when all unauth profiles are gated.
@@ -546,15 +565,14 @@ impl YtStreamProxy {
         let snapshot = {
             let mut cache = self.cache.lock().await;
             cache.retain(|_, v| !v.is_expired());
-            if cache.len() >= MAX_CACHED_STREAMS && !cache.contains_key(video_id) {
-                if let Some(oldest) = cache
+            if cache.len() >= MAX_CACHED_STREAMS && !cache.contains_key(video_id)
+                && let Some(oldest) = cache
                     .iter()
                     .min_by_key(|(_, v)| v.expires_at)
                     .map(|(k, _)| k.clone())
                 {
                     cache.remove(&oldest);
                 }
-            }
             cache.insert(video_id.to_string(), resolved);
             cache.clone()
         };
@@ -586,11 +604,10 @@ impl YtStreamProxy {
 
     async fn cleanup_inflight(&self, video_id: &str, lock_ref: &Arc<Mutex<()>>) {
         let mut inflight = self.inflight.lock().await;
-        if let Some(existing) = inflight.get(video_id) {
-            if Arc::ptr_eq(existing, lock_ref) && Arc::strong_count(existing) == 2 {
+        if let Some(existing) = inflight.get(video_id)
+            && Arc::ptr_eq(existing, lock_ref) && Arc::strong_count(existing) == 2 {
                 inflight.remove(video_id);
             }
-        }
     }
 }
 
@@ -648,11 +665,10 @@ pub async fn frontend_log(message: String) {
     let path = app_data_root_dir().join("player-timing.log");
     // Cap the log so a long session cannot grow it without limit: past 1 MB
     // new lines are dropped (the file is a diagnostic aid, not history).
-    if let Ok(meta) = tokio::fs::metadata(&path).await {
-        if meta.len() >= FRONTEND_LOG_MAX_BYTES {
+    if let Ok(meta) = tokio::fs::metadata(&path).await
+        && meta.len() >= FRONTEND_LOG_MAX_BYTES {
             return;
         }
-    }
     let line = format!("[ts={}] {message}\n", now_unix_secs());
     if let Ok(mut f) = tokio::fs::OpenOptions::new()
         .create(true)

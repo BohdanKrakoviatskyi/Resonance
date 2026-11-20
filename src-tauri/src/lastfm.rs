@@ -86,7 +86,7 @@ async fn call(mut params: Vec<(String, String)>) -> Result<Value, String> {
             .unwrap_or("error");
         // 9 = invalid session: the user revoked access; drop our key so the UI asks to log in again.
         if code == 9 {
-            let _ = clear_session();
+            let _ = clear_session().await;
         }
         return Err(format!("lastfm {code}: {msg}"));
     }
@@ -135,20 +135,35 @@ fn delete_session_file(path: &Path) -> std::io::Result<()> {
     }
 }
 
-fn load_session() -> Option<LastfmSession> {
-    read_session_file(&session_path())
+/// Session files are read and written on a blocking thread: these run inside async commands, and
+/// a per-track start must not pay for a disk read (or an fsync at login) on the executor.
+async fn load_session() -> Option<LastfmSession> {
+    let path = session_path();
+    tokio::task::spawn_blocking(move || read_session_file(&path))
+        .await
+        .ok()
+        .flatten()
 }
 
-fn save_session(session: &LastfmSession) -> Result<(), String> {
-    write_session_file(&session_path(), session).map_err(|error| error.to_string())
+async fn save_session(session: LastfmSession) -> Result<(), String> {
+    let path = session_path();
+    tokio::task::spawn_blocking(move || write_session_file(&path, &session))
+        .await
+        .map_err(|error| error.to_string())?
+        .map_err(|error| error.to_string())
 }
 
-fn clear_session() -> Result<(), String> {
-    delete_session_file(&session_path()).map_err(|error| error.to_string())
+async fn clear_session() -> Result<(), String> {
+    let path = session_path();
+    tokio::task::spawn_blocking(move || delete_session_file(&path))
+        .await
+        .map_err(|error| error.to_string())?
+        .map_err(|error| error.to_string())
 }
 
-fn session_key() -> Result<String, String> {
+async fn session_key() -> Result<String, String> {
     load_session()
+        .await
         .map(|s| s.key)
         .ok_or_else(|| "not logged in to Last.fm".to_string())
 }
@@ -212,8 +227,9 @@ pub async fn lastfm_login(app: tauri::AppHandle) -> Result<String, String> {
     loop {
         match fetch_authorized_session(token).await {
             Ok(session) => {
-                save_session(&session)?;
-                return Ok(session.name);
+                let name = session.name.clone();
+                save_session(session).await?;
+                return Ok(name);
             }
             Err(error)
                 if error.contains("lastfm 14:") && tokio::time::Instant::now() < deadline =>
@@ -229,13 +245,13 @@ pub async fn lastfm_login(app: tauri::AppHandle) -> Result<String, String> {
 }
 
 #[tauri::command]
-pub fn lastfm_status() -> Option<String> {
-    load_session().map(|s| s.name)
+pub async fn lastfm_status() -> Option<String> {
+    load_session().await.map(|s| s.name)
 }
 
 #[tauri::command]
-pub fn lastfm_logout() -> Result<(), String> {
-    clear_session()
+pub async fn lastfm_logout() -> Result<(), String> {
+    clear_session().await
 }
 
 #[tauri::command]
@@ -243,7 +259,7 @@ pub async fn lastfm_now_playing(item: ScrobbleItem) -> Result<(), String> {
     let mut p = vec![
         kv("method", "track.updateNowPlaying"),
         kv("api_key", configured_api_key()?),
-        kv("sk", session_key()?),
+        kv("sk", session_key().await?),
         kv("artist", item.artist),
         kv("track", item.track),
     ];
@@ -265,7 +281,7 @@ pub async fn lastfm_scrobble(items: Vec<ScrobbleItem>) -> Result<u32, String> {
     let mut p = vec![
         kv("method", "track.scrobble"),
         kv("api_key", configured_api_key()?),
-        kv("sk", session_key()?),
+        kv("sk", session_key().await?),
     ];
     for (i, it) in items.into_iter().take(50).enumerate() {
         p.push(kv(&format!("artist[{i}]"), it.artist));

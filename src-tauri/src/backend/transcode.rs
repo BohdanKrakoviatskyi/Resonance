@@ -68,11 +68,10 @@ async fn fetch_body(
         .error_for_status()
         .map_err(|e| format!("SoundCloud audio request failed: {e}"))?;
     ensure_current(generation, expected)?;
-    if let Some(length) = response.content_length() {
-        if length as usize > max {
+    if let Some(length) = response.content_length()
+        && length as usize > max {
             return Err("SoundCloud audio exceeds the local recognition size limit".into());
         }
-    }
     let mut body = Vec::new();
     let mut response = response;
     while let Some(chunk) = response

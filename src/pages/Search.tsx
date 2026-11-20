@@ -36,6 +36,10 @@ export function useRemote(q: string) {
       .then((r) => {
         registerTracks(r);
         cache.set(key, r);
+        if (cache.size > 30) {
+          const oldest = cache.keys().next().value;
+          if (oldest !== undefined) cache.delete(oldest);
+        }
         setSt((prev) => ({ key, items: r, suggestions: prev.key === key ? prev.suggestions : [], error: false }));
       })
       .catch((e: Error) => e.name !== 'AbortError' && setSt({ key, items: [], suggestions: [], error: true }));

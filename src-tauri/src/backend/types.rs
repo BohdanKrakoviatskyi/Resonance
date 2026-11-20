@@ -5,16 +5,9 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use super::util::{is_empty_str, is_false, is_zero, normalize_artwork, track_urn_or_default, username_of, vi, vs, vo, varr};
+use super::util::{is_empty_str, is_zero, normalize_artwork, track_urn_or_default, username_of, vi, vs, vo, varr};
 
 pub const APP_NAME: &str = "Resonance";
-
-#[derive(Debug, Clone, Serialize)]
-pub struct AppInfo {
-    pub name: &'static str,
-    pub version: &'static str,
-    pub backend: &'static str,
-}
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase", default)]
@@ -163,123 +156,6 @@ pub struct SearchTrack {
 
 #[derive(Debug, Clone, Default, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct TrackDetailsUser {
-    pub id: i64,
-    pub username: String,
-    pub avatar_url: String,
-    pub permalink_url: String,
-    pub followers_count: i64,
-}
-
-#[derive(Debug, Clone, Default, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct TrackDetails {
-    pub id: i64,
-    pub urn: String,
-    pub title: String,
-    pub permalink_url: String,
-    pub artwork_url: String,
-    pub description: String,
-    pub genre: String,
-    pub tag_list: String,
-    pub duration: i64,
-    pub playback_count: i64,
-    pub likes_count: i64,
-    pub reposts_count: i64,
-    pub comment_count: i64,
-    pub created_at: String,
-    pub display_date: String,
-    pub waveform_url: String,
-    pub user: TrackDetailsUser,
-}
-
-#[derive(Debug, Clone, Default, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct UserProfile {
-    pub id: i64,
-    pub username: String,
-    #[serde(skip_serializing_if = "is_empty_str")]
-    pub full_name: String,
-    #[serde(skip_serializing_if = "is_empty_str")]
-    pub permalink_url: String,
-    #[serde(skip_serializing_if = "is_empty_str")]
-    pub avatar_url: String,
-    #[serde(skip_serializing_if = "is_empty_str")]
-    pub banner_url: String,
-    #[serde(skip_serializing_if = "is_empty_str")]
-    pub description: String,
-    #[serde(skip_serializing_if = "is_empty_str")]
-    pub city: String,
-    #[serde(skip_serializing_if = "is_empty_str")]
-    pub country: String,
-    pub followers_count: i64,
-    pub followings_count: i64,
-    pub track_count: i64,
-    #[serde(skip_serializing_if = "is_zero")]
-    pub likes_count: i64,
-    #[serde(skip_serializing_if = "is_false")]
-    pub verified: bool,
-}
-
-#[derive(Debug, Clone, Default, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct SocialUser {
-    pub id: i64,
-    pub username: String,
-    #[serde(skip_serializing_if = "is_empty_str")]
-    pub full_name: String,
-    #[serde(skip_serializing_if = "is_empty_str")]
-    pub permalink_url: String,
-    #[serde(skip_serializing_if = "is_empty_str")]
-    pub avatar_url: String,
-    #[serde(skip_serializing_if = "is_zero")]
-    pub followers_count: i64,
-    #[serde(skip_serializing_if = "is_zero")]
-    pub followings_count: i64,
-    #[serde(skip_serializing_if = "is_zero")]
-    pub track_count: i64,
-}
-
-#[derive(Debug, Clone, Default, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct SocialPage {
-    pub collection: Vec<SocialUser>,
-    #[serde(skip_serializing_if = "is_empty_str")]
-    pub next_href: String,
-}
-
-#[derive(Debug, Clone, Default, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct TrackPage {
-    pub tracks: Vec<TrackCard>,
-    #[serde(skip_serializing_if = "is_empty_str")]
-    pub next_href: String,
-}
-
-#[derive(Debug, Clone, Default, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct MixedSelection {
-    pub id: String,
-    pub title: String,
-    #[serde(skip_serializing_if = "is_empty_str")]
-    pub description: String,
-    pub tracks: Vec<SearchTrack>,
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub playlists: Vec<PlaylistCard>,
-    #[serde(skip_serializing_if = "is_false")]
-    pub made_for_you: bool,
-}
-
-#[derive(Debug, Clone, Default, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct TrackLikeResult {
-    pub liked: bool,
-    #[serde(skip_serializing_if = "is_empty_str")]
-    pub captcha_url: String,
-}
-
-#[derive(Debug, Clone, Default, Serialize)]
-#[serde(rename_all = "camelCase")]
 pub struct TrackStreamOption {
     pub url: String,
     pub preview: bool,
@@ -419,9 +295,6 @@ impl ScPlaylist {
         }
     }
 
-    pub fn is_album_key_present(v: &Value) -> bool {
-        v.get("is_album").is_some()
-    }
 
     /// `(id, urn)` as shown to the renderer: the numeric id wins when present.
     pub fn card_ids(&self) -> (String, String) {

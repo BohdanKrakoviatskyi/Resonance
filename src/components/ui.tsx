@@ -138,7 +138,7 @@ export function Slider({ value, min = 0, max = 1, step = 0, onChange, label, cla
 
 export function Chip({ icon, label, selected, onClick, className, style }: { icon?: IconName; label: string; selected?: boolean; onClick?: () => void; className?: string; style?: CSSProperties }) {
   return (
-    <button type="button" data-ripple className={cx('chip sl', className)} data-on={selected ? '' : undefined} onClick={onClick} style={style}>
+    <button type="button" data-ripple className={cx('chip sl', className)} data-on={selected ? '' : undefined} aria-pressed={selected} onClick={onClick} style={style}>
       {icon && <Icon name={icon} fill={selected} />}
       {label}
     </button>
@@ -193,7 +193,7 @@ export function Menu({ anchor, open, onClose, children }: { anchor: HTMLElement 
       oy = 'bottom';
     }
     setPos({ left, top, origin: `${ox} ${oy}` });
-  }, [mounted, anchor, open]);
+  }, [mounted, anchor, open, children]);
 
   useEffect(() => {
     if (!open) return;
