@@ -463,7 +463,9 @@ async function recompute() {
   if (a.bgMode === 'image' && a.bgImage) {
     bg = { key: 'img' + imgKey, kind: 'image', image: a.bgImage, base: roles.surface, colors: [], blur: a.bgBlur, dim };
   } else if (artwork) {
-    bg = { key: 'art' + artwork, kind: 'image', image: artwork, base: roles.surface, colors: [], blur: 56 + a.bgBlur, dim };
+    // The blur slider is in px and applies to artwork mode too; the old 56px floor made a 0px
+    // setting lie about what it does.
+    bg = { key: 'art' + artwork, kind: 'image', image: artwork, base: roles.surface, colors: [], blur: a.bgBlur, dim };
   } else if (a.bgMode === 'dynamic' && pal) {
     const d = Hct.fromInt(pal.dominant);
     const base = hct(d.hue, Math.min(d.chroma, 30), dark ? 10 : 94);
