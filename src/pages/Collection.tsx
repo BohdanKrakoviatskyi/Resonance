@@ -539,6 +539,7 @@ export default function Collection({ kind, id }: { kind: 'favorites' | 'playlist
         <TrackList
           ids={visibleIds}
           playlistId={kind === 'playlist' && !isProviderPlaylist ? pl!.id : undefined}
+          ytPlaylistId={kind === 'playlist' ? ytPlaylistId : undefined}
           animateRows={animateRows}
           paginated
           resetKey={`${kind}:${id ?? ''}:${favProvider}:${normalizedQuery}`}

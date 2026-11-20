@@ -19,7 +19,8 @@ use yt::music_api::{search_yt_tracks, yt_radio_tracks, yt_search_suggestions};
 use yt::proxy::{YtStreamProxy, frontend_log, resolve_yt_stream_url};
 use yt::store::{
     YtStore, yt_auth_logout, yt_auth_save, yt_auth_status, yt_clear_cache, yt_library_cached,
-    yt_library_sync, yt_playlist_artwork, yt_playlist_tracks_cached, yt_playlist_tracks_sync,
+    yt_library_sync, yt_music_edit_playlist_track, yt_music_set_song_liked, yt_playlist_artwork,
+    yt_playlist_tracks_cached, yt_playlist_tracks_sync,
 };
 
 #[tauri::command]
@@ -188,6 +189,8 @@ pub fn run() {
             yt_auth_logout,
             yt_library_cached,
             yt_library_sync,
+            yt_music_set_song_liked,
+            yt_music_edit_playlist_track,
             yt_playlist_tracks_cached,
             yt_playlist_tracks_sync,
             yt_playlist_artwork,

@@ -10,7 +10,7 @@ import {
   TRACK_LIST_PAGE_SIZE,
   TRACK_VIRTUALIZE_THRESHOLD,
 } from '../lib/track-window';
-import { getTrack, isDisliked, isLiked, library, toggleDislike, toggleLike, togglePlaylistTrack } from '../state/library';
+import { editYtMusicPlaylistTrack, getTrack, isDisliked, isLiked, library, loadYtMusicLibrary, loadYtMusicPlaylistTracks, toggleDislike, toggleLike, togglePlaylistTrack, toggleYtMusicLike } from '../state/library';
 import { addToQueue, player, playNext, playQueue, prefetchTrackByIdLowPriority, toggle } from '../state/player';
 import { canDownload, downloadTracks, removeDownload, useIsDownloaded, useIsQueued } from '../state/offline';
 import { openDialog, openSearch } from '../state/ui';
@@ -21,6 +21,7 @@ import youtubeMusicLogo from '../assets/youtube-music.svg';
 export function LikeButton({ id, size = 'md', variant, className }: { id: string; size?: 'sm' | 'md' | 'lg'; variant?: 'tonal'; className?: string }) {
   const liked = useStore(library, () => isLiked(id));
   const [burst, setBurst] = useState(0);
+  const [pending, setPending] = useState(false);
   const label = t(liked ? 'unlike' : 'like');
   return (
     <span className={cx('like-wrap', className)} data-keep={liked}>
@@ -32,9 +33,17 @@ export function LikeButton({ id, size = 'md', variant, className }: { id: string
         data-tip={label}
         data-on={liked ? '' : undefined}
         className={cx('ib sl', size !== 'md' && `ib-${size}`, variant && `ib-${variant}`)}
+        disabled={pending}
         onClick={(e) => {
           e.stopPropagation();
-          if (toggleLike(id)) setBurst((b) => b + 1);
+          if (getTrack(id)?.source === 'youtube' || id.startsWith('yt:')) {
+            setPending(true);
+            void toggleYtMusicLike(id).then((confirmed) => {
+              if (confirmed) setBurst((b) => b + 1);
+            }).finally(() => setPending(false));
+          } else if (toggleLike(id)) {
+            setBurst((b) => b + 1);
+          }
         }}
       >
         <Icon key={liked ? 'on' : 'off'} name="favorite" fill={liked} className={cx(liked && 'text-primary', burst > 0 && liked && 'pop')} />
@@ -57,6 +66,19 @@ export function DislikeButton({ id, variant, size }: { id: string; variant?: 'to
 
 export function PlaylistPicker({ id, onClose, onBack }: { id: string; onClose: () => void; onBack?: () => void }) {
   const playlists = useStore(library, (s) => s.playlists);
+  const ytPlaylists = useStore(library, (s) => s.ytmusicPlaylists);
+  const ytTracks = useStore(library, (s) => s.ytmusicPlaylistTracks);
+  const targetTrack = getTrack(id);
+  useEffect(() => {
+    if (targetTrack?.source !== 'youtube') return;
+    if (ytPlaylists.length === 0) void loadYtMusicLibrary().catch(() => {});
+    for (const playlist of ytPlaylists) {
+      if (!ytTracks[playlist.playlistId]) {
+        void loadYtMusicPlaylistTracks(playlist.playlistId).catch(() => {});
+      }
+    }
+  }, [targetTrack?.source, ytPlaylists, ytTracks]);
+  const targetVideoId = targetTrack?.nativeId ?? (id.startsWith('yt:') ? id.slice(3).split('~')[0] : '');
   return (
     <>
       <div className="menu-head">
@@ -73,10 +95,31 @@ export function PlaylistPicker({ id, onClose, onBack }: { id: string; onClose: (
           onClick={() => togglePlaylistTrack(p.id, id)}
         />
       ))}
+      {targetTrack?.source === 'youtube' && ytPlaylists.length > 0 && <div className="menu-div" />}
+      {targetTrack?.source === 'youtube' && ytPlaylists.map((playlist, i) => {
+        const match = (ytTracks[playlist.playlistId] ?? []).find((item) => item.nativeId === targetVideoId);
+        return (
+          <MenuItem
+            key={`yt:${playlist.playlistId}`}
+            i={playlists.length + i}
+            leading={<PlaylistCover p={{ id: `ytpl:${playlist.playlistId}`, name: playlist.title, ids: [], created: 0, artworkUrl: playlist.artworkUrl ?? undefined }} className="h-9 w-9 rounded-[10px]" />}
+            label={playlist.title}
+            checked={!!match}
+            onClick={() => {
+              if (match) {
+                void editYtMusicPlaylistTrack(playlist.playlistId, match, false);
+              } else {
+                const track = getTrack(id);
+                if (track) void editYtMusicPlaylistTrack(playlist.playlistId, track, true);
+              }
+            }}
+          />
+        );
+      })}
       <div className="menu-div" />
       <MenuItem
         icon="add"
-        i={playlists.length}
+        i={playlists.length + (targetTrack?.source === 'youtube' ? ytPlaylists.length : 0)}
         label={t('newPlaylist')}
         onClick={() => {
           onClose();
@@ -87,7 +130,7 @@ export function PlaylistPicker({ id, onClose, onBack }: { id: string; onClose: (
   );
 }
 
-export function TrackMenu({ track, anchor, onClose, playlistId }: { track: Track; anchor: HTMLElement | null; onClose: () => void; playlistId?: string }) {
+export function TrackMenu({ track, anchor, onClose, playlistId, ytPlaylistId }: { track: Track; anchor: HTMLElement | null; onClose: () => void; playlistId?: string; ytPlaylistId?: string }) {
   const [sub, setSub] = useState(false);
   const close = () => {
     setSub(false);
@@ -103,6 +146,7 @@ export function TrackMenu({ track, anchor, onClose, playlistId }: { track: Track
           <MenuItem i={1} icon="add_to_queue" label={t('addToQueue')} onClick={() => (addToQueue(track.id), close())} />
           <MenuItem i={2} icon="playlist_add" label={t('addToPlaylist')} trailing="chevron_right" onClick={() => setSub(true)} />
           {playlistId && <MenuItem i={3} icon="playlist_remove" label={t('removeFromPlaylist')} onClick={() => (togglePlaylistTrack(playlistId, track.id), close())} />}
+          {ytPlaylistId && <MenuItem i={3} icon="playlist_remove" label={t('removeFromPlaylist')} onClick={() => { void editYtMusicPlaylistTrack(ytPlaylistId, track, false); close(); }} />}
           {canDownload(track) && <DownloadMenuItem track={track} onDone={close} />}
           <div className="menu-div" />
           <MenuItem i={4} icon="person" label={t('goToArtist')} onClick={() => (openSearch(track.artist), close())} />
@@ -144,10 +188,11 @@ type RowProps = {
   isPlaying: boolean;
   animateRow?: boolean;
   playlistId?: string;
+  ytPlaylistId?: string;
   onPlayIndex: (index: number) => void;
 };
 
-export const TrackRow = memo(function TrackRow({ id, index, isCurrent, isPlaying, animateRow = true, playlistId, onPlayIndex }: RowProps) {
+export const TrackRow = memo(function TrackRow({ id, index, isCurrent, isPlaying, animateRow = true, playlistId, ytPlaylistId, onPlayIndex }: RowProps) {
   const disliked = useStore(library, () => isDisliked(id));
   const [anchor, setAnchor] = useState<HTMLElement | null>(null);
   const hoverTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -240,7 +285,7 @@ export const TrackRow = memo(function TrackRow({ id, index, isCurrent, isPlaying
           setAnchor(anchor ? null : e.currentTarget);
         }}
       />
-      <TrackMenu track={tr} anchor={anchor} onClose={() => setAnchor(null)} playlistId={playlistId} />
+      <TrackMenu track={tr} anchor={anchor} onClose={() => setAnchor(null)} playlistId={playlistId} ytPlaylistId={ytPlaylistId} />
     </div>
   );
 });
@@ -248,6 +293,7 @@ export const TrackRow = memo(function TrackRow({ id, index, isCurrent, isPlaying
 export function TrackList({
   ids,
   playlistId,
+  ytPlaylistId,
   animateRows = true,
   paginated = false,
   resetKey,
@@ -255,6 +301,7 @@ export function TrackList({
 }: {
   ids: string[];
   playlistId?: string;
+  ytPlaylistId?: string;
   animateRows?: boolean;
   paginated?: boolean;
   resetKey?: string;
@@ -439,6 +486,7 @@ export function TrackList({
               isPlaying={id === cur && playing}
               animateRow={animateRows && idx < TRACK_LIST_PAGE_SIZE}
               playlistId={playlistId}
+              ytPlaylistId={ytPlaylistId}
               onPlayIndex={onPlayIndex}
             />
           );

@@ -7,9 +7,12 @@ import {
   ytClearNativeCache,
   ytLibraryCached,
   ytLibrarySync,
+  ytSetSongLiked,
+  ytEditPlaylistTrack,
   ytPlaylistArt,
   ytPlaylistCached,
   ytPlaylistSync,
+  ytPlaylistRefresh,
   ytRadio,
   ytResolveStream,
   ytSearchSuggestions,
@@ -108,8 +111,11 @@ export const ytMusicAuthSave = ytAuthSave;
 export const ytMusicAuthLogout = ytAuthLogout;
 export const ytMusicLibraryCached = (signal?: AbortSignal): Promise<YtMusicLibrary | null> => ytLibraryCached(signal);
 export const ytMusicLibrarySync = ytLibrarySync;
+export const ytMusicSetSongLiked = ytSetSongLiked;
+export const ytMusicEditPlaylistTrack = ytEditPlaylistTrack;
 export const ytMusicPlaylistCached = (playlistId: string, signal?: AbortSignal): Promise<YtMusicPlaylist | null> => ytPlaylistCached(playlistId, signal);
 export const ytMusicPlaylistTracks = ytPlaylistSync;
+export const ytMusicPlaylistRefresh = ytPlaylistRefresh;
 export const ytMusicPlaylistArtwork = ytPlaylistArt;
 export const searchYtDlpTracks = ytSearchTracks;
 export const ytMusicSearchSuggestions = ytSearchSuggestions;

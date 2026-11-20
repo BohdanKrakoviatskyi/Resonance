@@ -39,6 +39,20 @@ export function ytLibrarySync(signal?: AbortSignal): Promise<YtMusicLibrary> {
   return invokeAbortable('yt_library_sync', {}, signal, SYNC_TIMEOUT_MS);
 }
 
+export function ytSetSongLiked(videoId: string, liked: boolean, signal?: AbortSignal): Promise<void> {
+  return invokeAbortable('yt_music_set_song_liked', { videoId, liked }, signal);
+}
+
+export function ytEditPlaylistTrack(
+  playlistId: string,
+  videoId: string,
+  add: boolean,
+  setVideoId?: string,
+  signal?: AbortSignal,
+): Promise<void> {
+  return invokeAbortable('yt_music_edit_playlist_track', { playlistId, videoId, setVideoId, add }, signal, SYNC_TIMEOUT_MS);
+}
+
 export function ytPlaylistCached(playlistId: string, signal?: AbortSignal): Promise<YtMusicPlaylist | null> {
   return invokeAbortable('yt_playlist_tracks_cached', { playlistId }, signal);
 }
@@ -50,6 +64,11 @@ export function ytPlaylistSync(playlistId: string, signal?: AbortSignal): Promis
     (runSignal) => invokeAbortable<YtMusicPlaylist>('yt_playlist_tracks_sync', { playlistId }, runSignal, SYNC_TIMEOUT_MS),
     signal,
   );
+}
+
+/** Bypass any earlier in-flight playlist read after a successful provider mutation. */
+export function ytPlaylistRefresh(playlistId: string, signal?: AbortSignal): Promise<YtMusicPlaylist> {
+  return invokeAbortable<YtMusicPlaylist>('yt_playlist_tracks_sync', { playlistId }, signal, SYNC_TIMEOUT_MS);
 }
 
 export function ytPlaylistArt(playlistId: string, signal?: AbortSignal): Promise<string | null> {

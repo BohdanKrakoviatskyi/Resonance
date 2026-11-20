@@ -273,7 +273,7 @@ function setPlayerMachineState(nextState: PlayerPlaybackState, patch?: PlayerSta
 const extractYtVideoId = (track: Track | null | undefined): string => {
   if (!track) return '';
   if (track.nativeId) return String(track.nativeId).trim();
-  if (track.id.startsWith('yt:')) return track.id.slice(3).trim();
+  if (track.id.startsWith('yt:')) return track.id.slice(3).split('~')[0].trim();
   return '';
 };
 const isYouTubeTrack = (track: Track | null | undefined): boolean =>

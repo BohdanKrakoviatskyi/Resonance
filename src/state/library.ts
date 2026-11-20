@@ -3,7 +3,7 @@ import type { Playlist, PlaylistSection, SoundCloudPlaylist, Track } from '../ty
 import {
   soundCloudAuthStatus, soundCloudPlaylistTracks, soundCloudPlaylistsMine, soundCloudTracksMine,
   ytMusicAuthStatus, ytMusicLibraryCached, ytMusicLibrarySync, ytMusicPlaylistArtwork,
-  ytMusicPlaylistCached, ytMusicPlaylistTracks,
+  ytMusicPlaylistCached, ytMusicPlaylistTracks, ytMusicPlaylistRefresh, ytMusicSetSongLiked, ytMusicEditPlaylistTrack,
 } from '../lib/providers-api';
 import { mapSoundCloudTrack } from '../lib/api';
 import { mapYtMusicTracks, normalizeYtMusicPlaylist, upscaleYtmArtwork, type YtMusicPlaylist, type YtMusicProfile } from '../lib/ytmusic-library';
@@ -110,12 +110,12 @@ function sanitizeStoredTrack(tr: Track): Track {
   if (!tr || typeof tr !== 'object') return tr;
   const id = String(tr.id || '');
   if (id.startsWith('yt:') || (tr.source as string) === 'ytmusic' || tr.source === 'youtube') {
-    const videoId = String(tr.nativeId || (id.startsWith('yt:') ? id.slice(3) : '')).trim();
+    const videoId = String(tr.nativeId || (id.startsWith('yt:') ? id.slice(3).split('~')[0] : '')).trim();
     const fallbackCover = videoId ? `https://i.ytimg.com/vi/${encodeURIComponent(videoId)}/hqdefault.jpg` : undefined;
     const cover = upscaleYtmArtwork(tr.cover || tr.thumb || fallbackCover);
     return {
       ...tr,
-      id: videoId ? `yt:${videoId}` : id,
+      id: videoId ? (id.startsWith(`yt:${videoId}~`) ? id : `yt:${videoId}`) : id,
       cover,
       thumb: upscaleYtmArtwork(tr.thumb) || cover,
       src: videoId ? `https://music.youtube.com/watch?v=${encodeURIComponent(videoId)}` : tr.src || '',
@@ -454,7 +454,7 @@ export function loadYtMusicPlaylistTracks(playlistId: string, force = false): Pr
       if (!force && (!cached || cached.length === 0)) {
         const sqlPl = await ytMusicPlaylistCached(playlistId).catch(() => null);
         if (epoch === ytmusicEpoch && sqlPl?.tracks?.length) {
-          const sqlTracks = mapYtMusicTracks(sqlPl.tracks);
+          const sqlTracks = mapYtMusicTracks(sqlPl.tracks, true);
           if (sqlTracks.length > 0) {
             registerTracks(sqlTracks);
             const sqlArt = sqlPl.artworkUrl || sqlTracks[0]?.cover || null;
@@ -468,10 +468,7 @@ export function loadYtMusicPlaylistTracks(playlistId: string, force = false): Pr
         }
       }
       const playlist = await ytMusicPlaylistTracks(playlistId);
-      const tracks = mapYtMusicTracks(playlist.tracks ?? []);
-      if (tracks.length === 0) {
-        throw new Error('Плейлист YouTube Music вернул 0 треков');
-      }
+      const tracks = mapYtMusicTracks(playlist.tracks ?? [], true);
       if (epoch === ytmusicEpoch) {
         registerTracks(tracks);
         const fallbackArt = playlist.artworkUrl || tracks[0]?.cover || null;
@@ -625,7 +622,13 @@ function ensureLibraryIndexes(s = library.get()) {
 
 export const isLiked = (id: string) => {
   ensureLibraryIndexes();
-  return likedIdsSet.has(id);
+  if (likedIdsSet.has(id)) return true;
+  const track = getTrack(id);
+  if (track?.source === 'youtube' || id.startsWith('yt:')) {
+    const videoId = track?.nativeId || (id.startsWith('yt:') ? id.slice(3).split('~')[0] : '');
+    return Boolean(videoId && likedIdsSet.has(`yt:${videoId}`));
+  }
+  return false;
 };
 
 export const isDisliked = (id: string) => {
@@ -641,6 +644,11 @@ export const getFavoriteIds = (provider: 'all' | 'soundcloud' | 'youtube'): stri
 };
 
 export function toggleLike(id: string): boolean {
+  const track = getTrack(id);
+  if (track?.source === 'youtube' || id.startsWith('yt:')) {
+    void toggleYtMusicLike(id);
+    return !isLiked(id);
+  }
   ensureCached(id);
   const s = library.get();
   const currentlyLiked = isLiked(id);
@@ -654,6 +662,84 @@ export function toggleLike(id: string): boolean {
   });
   snack(t(on ? 'addedFav' : 'removedFav'));
   return on;
+}
+
+const ytmusicMutations = new Set<string>();
+
+export async function toggleYtMusicLike(id: string): Promise<boolean> {
+  const track = getTrack(id);
+  const videoId = track?.nativeId || (id.startsWith('yt:') ? id.slice(3).split('~')[0] : '');
+  if (!videoId || ytmusicMutations.has(`like:${videoId}`)) return false;
+  const key = `like:${videoId}`;
+  const currentlyLiked = isLiked(id);
+  const liked = !currentlyLiked;
+  ytmusicMutations.add(key);
+  try {
+    await ytMusicSetSongLiked(videoId, liked);
+    const fresh = await ytMusicLibrarySync();
+    const tracks = mapYtMusicTracks(fresh.likedSongs).filter(
+      (item) => !CORRUPTED_REPLACED_FAVORITE_IDS.has(item.id) && !library.get().disliked.includes(item.id),
+    );
+    const confirmed = tracks.some((item) => item.nativeId === videoId) === liked;
+    registerTracks(tracks);
+    library.set({
+      ytmusicLiked: confirmed ? tracks : library.get().ytmusicLiked,
+      ytmusicPlaylists: visibleYtMusicPlaylists(fresh.playlists),
+      ytmusicProfile: fresh.profile ?? library.get().ytmusicProfile,
+      ytmusicLibraryError: confirmed ? '' : t('ytmusicMutationUnverified'),
+    });
+    snack(t(confirmed ? (liked ? 'addedFav' : 'removedFav') : 'ytmusicMutationUnverified'));
+    return confirmed;
+  } catch (error) {
+    snack(t('ytmusicMutationError', { error: error instanceof Error ? error.message : String(error) }));
+    return false;
+  } finally {
+    ytmusicMutations.delete(key);
+  }
+}
+
+export async function editYtMusicPlaylistTrack(playlistId: string, track: Track, add: boolean): Promise<boolean> {
+  const videoId = track.nativeId || (track.id.startsWith('yt:') ? track.id.slice(3).split('~')[0] : '');
+  if (!playlistId || !videoId || ytmusicMutations.has(`playlist:${playlistId}:${videoId}`)) return false;
+  const key = `playlist:${playlistId}:${videoId}`;
+  ytmusicMutations.add(key);
+  try {
+    await ytMusicEditPlaylistTrack(playlistId, videoId, add, add ? undefined : track.setVideoId);
+    const playlist = await ytMusicPlaylistRefresh(playlistId);
+    const tracks = mapYtMusicTracks(playlist.tracks ?? [], true);
+    if (tracks.length === 0 && playlist.trackCount > 0) throw new Error(t('ytmusicPlaylistLoadError'));
+    const present = add
+      ? tracks.some((item) => item.nativeId === videoId)
+      : tracks.some((item) => item.id === track.id && item.setVideoId === track.setVideoId);
+    if (present !== add) {
+      if (add) {
+        library.set((state) => ({
+          ytmusicPlaylistTracks: { ...state.ytmusicPlaylistTracks, [playlistId]: tracks },
+          ytmusicPlaylists: state.ytmusicPlaylists.map((item) =>
+            item.playlistId === playlistId ? normalizeYtMusicPlaylist({ ...item, trackCount: tracks.length }) : item,
+          ),
+        }));
+      }
+      throw new Error(t('ytmusicMutationUnverified'));
+    }
+    registerTracks(tracks);
+    library.set((state) => ({
+      ytmusicPlaylistTracks: { ...state.ytmusicPlaylistTracks, [playlistId]: tracks },
+      ytmusicPlaylistArt: playlist.artworkUrl
+        ? { ...state.ytmusicPlaylistArt, [playlistId]: upscaleYtmArtwork(playlist.artworkUrl) ?? null }
+        : state.ytmusicPlaylistArt,
+      ytmusicPlaylists: state.ytmusicPlaylists.map((item) =>
+        item.playlistId === playlistId ? normalizeYtMusicPlaylist({ ...item, title: playlist.title, trackCount: tracks.length, artworkUrl: playlist.artworkUrl ?? item.artworkUrl }) : item,
+      ),
+    }));
+    snack(t(add ? 'addedTo' : 'removedFrom', { name: library.get().ytmusicPlaylists.find((item) => item.playlistId === playlistId)?.title ?? t('ytmusicPlaylist') }));
+    return true;
+  } catch (error) {
+    snack(t('ytmusicMutationError', { error: error instanceof Error ? error.message : String(error) }));
+    return false;
+  } finally {
+    ytmusicMutations.delete(key);
+  }
 }
 
 export function toggleDislike(id: string) {

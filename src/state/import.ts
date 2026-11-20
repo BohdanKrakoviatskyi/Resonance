@@ -157,7 +157,7 @@ export async function toggleImportPreview(track: Track) {
     let url = '';
     let isHls = false;
     if (track.source === 'youtube') {
-      const videoId = track.nativeId || (track.id.startsWith('yt:') ? track.id.slice(3) : '');
+      const videoId = track.nativeId || (track.id.startsWith('yt:') ? track.id.slice(3).split('~')[0] : '');
       const res = await ytDlpTrackStream(videoId, { priority: true });
       url = res.url;
     } else {

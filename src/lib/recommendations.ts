@@ -16,7 +16,7 @@ function similarity(a: Set<string>, b: Set<string>) {
 }
 
 export function youtubeRadioId(track: Pick<RecommendationTrack, 'id'> & { nativeId?: string }): string | null {
-  const id = track.nativeId ?? (track.id.startsWith('yt:') ? track.id.slice(3) : '');
+  const id = track.nativeId ?? (track.id.startsWith('yt:') ? track.id.slice(3).split('~')[0] : '');
   return /^[\w-]{11}$/.test(id) ? id : null;
 }
 
