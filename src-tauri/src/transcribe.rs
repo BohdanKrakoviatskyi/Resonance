@@ -228,6 +228,9 @@ fn push_line(out: &mut Vec<WordLine>, mut words: Vec<Word>) {
 
 struct Job {
     id: u64,
+    app: Option<tauri::AppHandle>,
+    request_id: String,
+    track_id: String,
     model: PathBuf,
     threads: i32,
     /// ISO code ("en", "ru") or "auto".
@@ -313,6 +316,54 @@ struct AbortCtx {
     cancel_upto: Arc<AtomicU64>,
 }
 
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct SegmentUpdate {
+    request_id: String,
+    track_id: String,
+    text: String,
+}
+
+struct SegmentCallbackCtx {
+    app: Option<tauri::AppHandle>,
+    request_id: String,
+    track_id: String,
+    next_segment: i32,
+}
+
+/// Emits segments after whisper.cpp has finalized their timestamps, including DTW alignment.
+unsafe extern "C" fn segment_callback(
+    _ctx: *mut whisper_rs::WhisperSysContext,
+    state: *mut whisper_rs::WhisperSysState,
+    _n_new: i32,
+    user_data: *mut std::ffi::c_void,
+) {
+    use std::ffi::CStr;
+    let callback = unsafe { &mut *(user_data as *mut SegmentCallbackCtx) };
+    let count = unsafe { whisper_rs::whisper_rs_sys::whisper_full_n_segments_from_state(state) };
+    while callback.next_segment < count {
+        let index = callback.next_segment;
+        callback.next_segment += 1;
+        let text_ptr = unsafe {
+            whisper_rs::whisper_rs_sys::whisper_full_get_segment_text_from_state(state, index)
+        };
+        if text_ptr.is_null() {
+            continue;
+        }
+        let text = unsafe { CStr::from_ptr(text_ptr) }.to_string_lossy().trim().to_string();
+        if text.is_empty() {
+            continue;
+        }
+        if let Some(app) = &callback.app {
+            let _ = app.emit("whisper-segment", SegmentUpdate {
+                request_id: callback.request_id.clone(),
+                track_id: callback.track_id.clone(),
+                text,
+            });
+        }
+    }
+}
+
 /// whisper.cpp polls this during encode/decode; returning true aborts the job.
 unsafe extern "C" fn abort_cb(user_data: *mut std::ffi::c_void) -> bool {
     // SAFETY: user_data points at the AbortCtx owned by the worker for the duration of `full`.
@@ -378,11 +429,20 @@ fn worker(rx: Receiver<Msg>, cancel_upto: Arc<AtomicU64>) {
             // so the callback returns garbage and aborts at random. A plain C callback with an
             // explicit context is used instead; `abort_ctx` outlives `state.full`.
             let abort_ctx = AbortCtx { id: job.id, cancel_upto: cancel_upto.clone() };
+            let mut segment_ctx = SegmentCallbackCtx {
+                app: job.app.clone(),
+                request_id: job.request_id.clone(),
+                track_id: job.track_id.clone(),
+                next_segment: 0,
+            };
             unsafe {
                 params.set_abort_callback(Some(abort_cb));
                 params.set_abort_callback_user_data(&abort_ctx as *const AbortCtx as *mut std::ffi::c_void);
+                params.set_new_segment_callback(Some(segment_callback));
+                params.set_new_segment_callback_user_data(&mut segment_ctx as *mut SegmentCallbackCtx as *mut std::ffi::c_void);
             }
             let res = state.full(params, &job.pcm);
+            drop(segment_ctx);
             drop(abort_ctx);
             res.map_err(|e| {
                 if job.id <= cancel_upto.load(Ordering::SeqCst) { "cancelled".to_string() } else { format!("transcription failed: {e}") }
@@ -411,8 +471,13 @@ fn worker(rx: Receiver<Msg>, cancel_upto: Arc<AtomicU64>) {
 
 /// Body: raw little-endian f32 PCM, 16 kHz mono. Headers: `x-model`, `x-threads`, `x-lang`.
 #[tauri::command]
-pub async fn whisper_transcribe(state: tauri::State<'_, WhisperWorker>, request: tauri::ipc::Request<'_>) -> Result<Vec<WordLine>, String> {
+pub async fn whisper_transcribe(app: tauri::AppHandle, state: tauri::State<'_, WhisperWorker>, request: tauri::ipc::Request<'_>) -> Result<Vec<WordLine>, String> {
     let header = |k: &str| request.headers().get(k).and_then(|v| v.to_str().ok()).unwrap_or_default().to_string();
+    let request_id = header("x-request-id");
+    let track_id = header("x-track-id");
+    if request_id.is_empty() || track_id.is_empty() {
+        return Err("missing transcription request metadata".into());
+    }
     let model = model_path(&header("x-model")).filter(|p| p.is_file()).ok_or("model is not downloaded")?;
     let threads: i32 = header("x-threads").parse().unwrap_or(2);
     let lang = header("x-lang");
@@ -430,7 +495,7 @@ pub async fn whisper_transcribe(state: tauri::State<'_, WhisperWorker>, request:
         .tx
         .lock()
         .map_err(|e| e.to_string())?
-        .send(Msg::Run(Job { id, model, threads: threads.clamp(1, 64), lang, pcm, reply }))
+        .send(Msg::Run(Job { id, app: Some(app), request_id, track_id, model, threads: threads.clamp(1, 64), lang, pcm, reply }))
         .map_err(|e| e.to_string())?;
     rx.await.map_err(|_| "worker stopped".to_string())?
 }
@@ -512,7 +577,7 @@ mod tests {
         let (reply, rx) = tokio::sync::oneshot::channel();
         let threads: i32 = std::env::var("WHISPER_THREADS").ok().and_then(|s| s.parse().ok()).unwrap_or(2);
         let t = std::time::Instant::now();
-        w.tx.lock().unwrap().send(Msg::Run(Job { id: 1, model: model_path(&std::env::var("WHISPER_MODEL").unwrap_or_else(|_| "small".into())).unwrap(), threads, lang: std::env::var("WHISPER_LANG").unwrap_or_else(|_| "auto".into()), pcm, reply })).unwrap();
+        w.tx.lock().unwrap().send(Msg::Run(Job { id: 1, app: None, request_id: "test".into(), track_id: "test".into(), model: model_path(&std::env::var("WHISPER_MODEL").unwrap_or_else(|_| "small".into())).unwrap(), threads, lang: std::env::var("WHISPER_LANG").unwrap_or_else(|_| "auto".into()), pcm, reply })).unwrap();
         let lines = tauri::async_runtime::block_on(rx).unwrap().unwrap();
         println!("{} lines in {:?} with {threads} threads", lines.len(), t.elapsed());
         for l in &lines {

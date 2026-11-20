@@ -1335,6 +1335,8 @@ html[data-motion=reduced] *, html[data-motion=reduced] *::before, html[data-moti
   0% { transform: translate3d(-18%, -10%, 0) rotate(-6deg); }
   100% { transform: translate3d(18%, 10%, 0) rotate(6deg); }
 }
+@keyframes whisper-progress { from { transform: translateX(-120%); } to { transform: translateX(360%); } }
+.whisper-progress-indeterminate { width: 35%; animation: whisper-progress 1.4s ease-in-out infinite; }
 @keyframes splash-in {
   from { opacity: 0; transform: translateY(10px) scale(.96); }
 }

@@ -41,7 +41,9 @@ md-5 = "0.11.0"
 lofty = "0.25.5"
 tauri-plugin-dialog = "2"
 tauri-plugin-opener = "2"
-whisper-rs = "0.16.0"
+whisper-rs = { version = "0.16.0", features = ["raw-api"] }
+m3u8-rs = "6.0.1"
+symphonia = { version = "0.6.1", default-features = false, features = ["aac", "isomp4", "mp3"] }
 
 # whisper.cpp is built by CMake; an optimized build type is picked from this package's opt-level.
 # Without it dev builds transcribe several times slower.

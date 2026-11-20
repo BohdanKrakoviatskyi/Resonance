@@ -214,6 +214,8 @@ pub fn run() {
             transcribe::whisper_delete,
             transcribe::whisper_transcribe,
             transcribe::whisper_cancel,
+            backend::soundcloud_analysis_pcm_command,
+            backend::cancel_soundcloud_analysis_command,
             backend_rpc
         ])
         .run(tauri::generate_context!())
