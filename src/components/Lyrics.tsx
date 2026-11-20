@@ -7,6 +7,7 @@ import { t } from '../lib/i18n';
 import {
   getLyrics,
   hasManualLyricsChoice,
+  hasWhisperLyricsChoice,
   searchLyricsManual,
   setManualLyricsChoice,
   type LyricsData,
@@ -17,7 +18,7 @@ import { parseLrcFile } from '../lib/lrc-file';
 import { wordProgress } from '../lib/lyric-words';
 import { LYRICS_OFFSET_STEP, nudgeLyricsOffset, setLyricsOffset, useLyricsOffset } from '../state/lyrics-offset';
 import { currentTrack, onFrame, player, seek, toggle } from '../state/player';
-import { downloadWhisperModel, transcribeTrack, whisper } from '../state/whisper';
+import { cancelTranscription, cancelWhisperDownload, transcribeMoreAccurately, transcribeTrack, whisper } from '../state/whisper';
 import { useStore } from '../lib/util';
 import type { LyricLine, Track } from '../types';
 
@@ -321,6 +322,115 @@ function defaultManualQuery(track: Track): string {
   return `${track.artist} - ${cleanTitle || track.title}`;
 }
 
+function WhisperLyricsActions({
+  compact,
+  busy,
+  mediumInstalled,
+  mediumSizeMb,
+  onDelete,
+  onRetry,
+}: {
+  compact: boolean;
+  busy: boolean;
+  mediumInstalled: boolean;
+  mediumSizeMb: number;
+  onDelete: () => void;
+  onRetry: () => void;
+}) {
+  const downloading = useStore(whisper, (state) => state.downloading);
+  const stage = useStore(whisper, (state) => state.stage);
+  const progress = downloading?.total ? Math.min(100, Math.round((downloading.received / downloading.total) * 100)) : null;
+  return (
+    <div className={cx('rounded-2xl bg-primary/8 ring-1 ring-primary/15', compact ? 'mt-2 p-2' : 'mt-3 p-3')}>
+      <div className="flex items-center gap-2 text-xs font-semibold text-on-surface">
+        <span className="grid h-7 w-7 shrink-0 place-items-center rounded-xl bg-primary/14 text-primary">
+          <Icon name="auto_awesome" size={16} />
+        </span>
+        <span className="min-w-0 flex-1">{t('whisperGeneratedLyrics')}</span>
+      </div>
+      <p className={cx('text-on-surface-variant', compact ? 'mt-1 text-[10px]' : 'mt-1.5 text-[11px]')}>
+        {t('whisperRetryHint')}
+      </p>
+      {(downloading || busy) && (
+        <div className={cx('mt-2 rounded-xl bg-on-surface/6 p-2.5', compact ? 'text-[10px]' : 'text-xs')}>
+          <div className="flex items-center justify-between gap-2 text-on-surface-variant">
+            <span className="min-w-0 truncate">
+              {downloading ? t('whisperDownloadingModel', { pct: progress ?? '…' }) : stage === 'transcribing' ? t('whisperRunning') : t('whisperPreparing')}
+            </span>
+            {downloading && progress !== null && <span className="shrink-0 tabular-nums">{progress}%</span>}
+          </div>
+          {downloading && (
+            <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-on-surface/10" role="progressbar" aria-label={t('whisperDownloadProgress')} aria-valuenow={progress ?? undefined} aria-valuemin={0} aria-valuemax={100}>
+              <div className={cx('h-full rounded-full bg-primary transition-[width] duration-200', progress === null && 'whisper-progress-indeterminate')} style={progress === null ? undefined : { width: `${progress}%` }} />
+            </div>
+          )}
+          {downloading ? (
+            <button type="button" className="mt-2 text-[11px] font-semibold text-on-surface-variant hover:text-on-surface" onClick={() => void cancelWhisperDownload()}>{t('cancel')}</button>
+          ) : busy ? <button type="button" className="mt-2 text-[11px] font-semibold text-on-surface-variant hover:text-on-surface" onClick={cancelTranscription}>{t('cancel')}</button> : null}
+        </div>
+      )}
+      <div className="mt-2 flex flex-wrap items-center gap-2">
+        <button
+          type="button"
+          data-ripple
+          disabled={busy}
+          className="sl inline-flex items-center gap-1.5 rounded-full bg-primary px-3 py-1.5 text-[11px] font-semibold text-on-primary transition hover:brightness-110 disabled:opacity-55"
+          onClick={onRetry}
+        >
+          {busy ? <Loader size={14} /> : <Icon name="auto_awesome" size={15} />}
+          {busy ? (downloading?.model === 'medium' ? t('whisperDownloadingModel', { pct: progress ?? '…' }) : stage === 'transcribing' ? t('whisperRunning') : t('whisperPreparing')) : t(mediumInstalled ? 'whisperRetryBest' : 'whisperRetryBestDownload', { mb: mediumSizeMb })}
+        </button>
+        <button
+          type="button"
+          disabled={busy}
+          className="sl inline-flex items-center gap-1 rounded-full px-2.5 py-1.5 text-[11px] font-semibold text-on-surface-variant transition hover:bg-error/10 hover:text-error disabled:opacity-45"
+          onClick={onDelete}
+        >
+          <Icon name="delete" size={15} />
+          {t('whisperDeleteGenerated')}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function WhisperRecognitionControl({ track, compact = false }: { track: Track; compact?: boolean }) {
+  const busy = useStore(whisper, (state) => state.activeTrack === track.id);
+  const stage = useStore(whisper, (state) => state.stage);
+  const downloading = useStore(whisper, (state) => state.downloading);
+  const selectedModel = useStore(whisper, (state) => state.model);
+  const model = useStore(whisper, (state) => state.models.find((item) => item.id === state.model));
+  const error = useStore(whisper, (state) => state.error);
+  const progress = downloading?.total ? Math.min(100, Math.round((downloading.received / downloading.total) * 100)) : null;
+  return (
+    <div className={cx('rounded-2xl bg-on-surface/5', compact ? 'mt-2 p-2' : 'mt-3 p-3')}>
+      <div className="flex flex-wrap items-center gap-2">
+        <span className="min-w-0 flex-1 text-xs font-semibold text-on-surface">{t('whisperTryGenerated')}</span>
+        {busy ? (
+          <button type="button" data-ripple className="sl inline-flex items-center gap-1.5 rounded-full bg-error/10 px-3 py-1.5 text-[11px] font-semibold text-error" onClick={downloading ? () => void cancelWhisperDownload() : cancelTranscription}>{t('cancel')}</button>
+        ) : (
+          <button type="button" data-ripple disabled={!!downloading} className="sl inline-flex items-center gap-1.5 rounded-full bg-primary/18 px-3 py-1.5 text-[11px] font-semibold text-primary transition hover:bg-primary/26 disabled:opacity-55" onClick={() => void transcribeTrack(track)}>
+            <Icon name="auto_awesome" size={14} />{t('whisperRecognizeWithModel', { model: selectedModel })}
+          </button>
+        )}
+      </div>
+      {model && !model.installed && !busy && !downloading && <p className="mt-1 text-[10px] text-on-surface-variant">{t('whisperModelDownloadHint', { mb: model.sizeMb })}</p>}
+      {(busy || downloading) && (
+        <div className="mt-2 rounded-xl bg-on-surface/6 p-2.5">
+          <div className="flex items-center justify-between gap-2 text-[11px] text-on-surface-variant">
+            <span>{downloading ? t('whisperDownloadingModel', { pct: progress ?? '…' }) : stage === 'transcribing' ? t('whisperRunning') : t('whisperPreparing')}</span>
+            {downloading && progress !== null && <span className="tabular-nums">{progress}%</span>}
+          </div>
+          {downloading && <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-on-surface/10" role="progressbar" aria-label={t('whisperDownloadProgress')} aria-valuenow={progress ?? undefined} aria-valuemin={0} aria-valuemax={100}>
+            <div className={cx('h-full rounded-full bg-primary transition-[width] duration-200', progress === null && 'whisper-progress-indeterminate')} style={progress === null ? undefined : { width: `${progress}%` }} />
+          </div>}
+        </div>
+      )}
+      {error && <p className="mt-2 text-[11px] text-error">{error}</p>}
+    </div>
+  );
+}
+
 function ManualLyricsPicker({
   track,
   onSelect,
@@ -340,6 +450,7 @@ function ManualLyricsPicker({
   const [query, setQuery] = useState(() => defaultManualQuery(track));
   const [results, setResults] = useState<ManualLyricsChoice[]>([]);
   const [loading, setLoading] = useState(false);
+  const [retrying, setRetrying] = useState(false);
   const wrapRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
@@ -446,8 +557,26 @@ function ManualLyricsPicker({
   }, [open, query]);
 
   const hasCustom = hasManualLyricsChoice(track.id);
+  const hasWhisperLyrics = hasWhisperLyricsChoice(track.id);
+  const recognitionActive = useStore(whisper, (state) => state.activeTrack === track.id);
+  const mediumModel = useStore(whisper, (state) => state.models.find((model) => model.id === 'medium'));
   const wrapPortal = (node: ReactNode) => (host ? createPortal(node, host) : node);
   const isImm = variant === 'imm';
+  const removeGeneratedLyrics = () => {
+    setManualLyricsChoice(track.id, null);
+    onSelect();
+  };
+  const retryWithBetterModel = async () => {
+    if (retrying || recognitionActive) return;
+    setRetrying(true);
+    try {
+      if (await transcribeMoreAccurately(track)) {
+        onSelect();
+      }
+    } finally {
+      setRetrying(false);
+    }
+  };
 
   return (
     <div ref={wrapRef} className=" lyrics-picker-trigger pointer-events-none absolute inset-x-2.5 bottom-2.5 top-2.5 z-20 flex flex-col items-end gap-2">
@@ -500,7 +629,7 @@ function ManualLyricsPicker({
                 </div>
               </div>
 
-              {hasCustom && (
+              {hasCustom && !hasWhisperLyrics && (
                 <button
                   type="button"
                   data-ripple
@@ -533,6 +662,19 @@ function ManualLyricsPicker({
             </div>
 
             <LyricsTools track={track} onLoaded={() => (setOpen(false), onSelect())} />
+
+            <WhisperRecognitionControl track={track} />
+
+            {hasWhisperLyrics && (
+              <WhisperLyricsActions
+                compact={false}
+                busy={recognitionActive || retrying}
+                mediumInstalled={!!mediumModel?.installed}
+                mediumSizeMb={mediumModel?.sizeMb ?? 539}
+                onDelete={removeGeneratedLyrics}
+                onRetry={() => void retryWithBetterModel()}
+              />
+            )}
 
             <div className="mt-3 min-h-0 flex-1 space-y-1 overflow-y-auto pr-1">
               {results.length === 0 && !loading ? (
@@ -615,7 +757,7 @@ function ManualLyricsPicker({
               <IconButton icon="arrow_back" label={t('back')} size="sm" tip={false} onClick={() => setOpen(false)} />
               <span className="min-w-0 flex-1 truncate text-xs font-bold">{t('lyricsSearchTitle')}</span>
               <span className="flex items-center gap-1">
-                {hasCustom && (
+                {hasCustom && !hasWhisperLyrics && (
                   <button
                     type="button"
                     className="text-[11px] font-semibold text-primary hover:underline"
@@ -647,6 +789,19 @@ function ManualLyricsPicker({
             </div>
 
             <LyricsTools track={track} compact onLoaded={() => (setOpen(false), onSelect())} />
+
+            <WhisperRecognitionControl track={track} compact />
+
+            {hasWhisperLyrics && (
+              <WhisperLyricsActions
+                compact
+                busy={recognitionActive || retrying}
+                mediumInstalled={!!mediumModel?.installed}
+                mediumSizeMb={mediumModel?.sizeMb ?? 539}
+                onDelete={removeGeneratedLyrics}
+                onRetry={() => void retryWithBetterModel()}
+              />
+            )}
 
             <div className="mt-2 min-h-0 flex-1 overflow-y-auto pr-0.5">
               {results.length === 0 && !loading ? (
@@ -702,36 +857,46 @@ function RecognizeLyrics({ track }: { track: Track }) {
   const ready = useStore(whisper, (s) => s.models.some((m) => m.id === s.model && m.installed));
   const error = useStore(whisper, (s) => s.error);
   const dl = useStore(whisper, (s) => s.downloading);
-  const smallMb = useStore(whisper, (s) => s.models.find((m) => m.id === 'small')?.sizeMb ?? 190);
-  if (dl) {
-    const pct = dl.total ? Math.round((dl.received / dl.total) * 100) : 0;
+  const stage = useStore(whisper, (s) => s.stage);
+  const smallMb = useStore(whisper, (s) => s.models.find((m) => m.id === s.model)?.sizeMb ?? 190);
+  if (dl && busy) {
+    const pct = dl.total ? Math.min(100, Math.round((dl.received / dl.total) * 100)) : null;
     return (
-      <span className="mt-1 flex items-center gap-2 text-sm tabular-nums text-on-surface-variant">
-        <Loader size={18} />
-        {t('whisperDownloadingModel', { pct })}
-      </span>
+      <div className="mt-2 w-full max-w-[300px] rounded-2xl bg-on-surface/6 p-3 text-left">
+        <div className="flex items-center justify-between gap-2 text-sm text-on-surface-variant">
+          <span>{t('whisperDownloadingModel', { pct: pct ?? '…' })}</span>
+          {pct !== null && <span className="tabular-nums">{pct}%</span>}
+        </div>
+        <div className="mt-2 h-2 overflow-hidden rounded-full bg-on-surface/10" role="progressbar" aria-label={t('whisperDownloadProgress')} aria-valuenow={pct ?? undefined} aria-valuemin={0} aria-valuemax={100}>
+          <div className={cx('h-full rounded-full bg-primary transition-[width] duration-200', pct === null && 'whisper-progress-indeterminate')} style={pct === null ? undefined : { width: `${pct}%` }} />
+        </div>
+        <button type="button" className="mt-2 text-xs font-semibold text-on-surface-variant hover:text-on-surface" onClick={() => void cancelWhisperDownload()}>{t('cancel')}</button>
+      </div>
     );
   }
   if (!ready) {
-    // One click from "no lyrics" to a working recognizer: fetch the recommended model right here.
+    // One click starts the full flow: download the selected model, then immediately recognize.
     return (
-      <button
-        type="button"
-        data-ripple
-        className="sl mt-1 inline-flex items-center gap-2 rounded-full bg-primary/16 px-4 py-2 text-sm font-semibold text-primary transition hover:bg-primary/24"
-        onClick={() => void downloadWhisperModel('small')}
-      >
-        <Icon name="download" size={18} />
-        {t('whisperGetModel', { mb: smallMb })}
-      </button>
+      <div className="mt-1 flex flex-col items-center gap-1.5">
+        <button
+          type="button"
+          data-ripple
+          className="sl inline-flex items-center gap-2 rounded-full bg-primary/16 px-4 py-2 text-sm font-semibold text-primary transition hover:bg-primary/24"
+          onClick={() => void transcribeTrack(track)}
+        >
+          <Icon name="auto_awesome" size={18} />
+          {t('whisperGetModel', { mb: smallMb })}
+        </button>
+        {error && <span className="max-w-[260px] text-center text-xs text-error">{error}</span>}
+      </div>
     );
   }
   if (busy) {
     return (
-      <span className="mt-1 flex items-center gap-2 text-sm text-on-surface-variant">
-        <Loader size={18} />
-        {t('whisperRunning')}
-      </span>
+      <div className="mt-2 flex max-w-[300px] flex-col items-center gap-2 text-sm text-on-surface-variant">
+        <span className="flex items-center gap-2"><Loader size={18} />{stage === 'transcribing' ? t('whisperRunning') : t('whisperPreparing')}</span>
+        <button type="button" className="text-xs font-semibold text-on-surface-variant hover:text-on-surface" onClick={cancelTranscription}>{t('cancel')}</button>
+      </div>
     );
   }
   return (
@@ -752,9 +917,11 @@ function RecognizeLyrics({ track }: { track: Track }) {
 
 export function Lyrics({ track, variant, active = true }: { track: Track | null; variant: 'panel' | 'imm'; active?: boolean }) {
   const [rev, setRev] = useState(0);
+  const autoStartedTrack = useRef<string | null>(null);
   const st = useLyrics(track, rev);
   const offset = useLyricsOffset(track?.id ?? '');
   const completed = useStore(whisper, (s) => s.completed);
+  const activeTrack = useStore(whisper, (s) => s.activeTrack);
   const auto = useStore(whisper, (s) => s.auto);
   const modelReady = useStore(whisper, (s) => s.models.some((m) => m.id === s.model && m.installed));
 
@@ -763,15 +930,18 @@ export function Lyrics({ track, variant, active = true }: { track: Track | null;
     if (track && completed.startsWith(`${track.id}:`)) setRev((r) => r + 1);
   }, [completed, track]);
 
-  // Auto mode: after a few seconds of actual listening (skipped tracks never start a job).
+  // Start as soon as lyric lookup confirms there are no lyrics for the current track.
   const noLyrics = st.status === 'none' && !st.instrumental;
   useEffect(() => {
     if (!track || !noLyrics || !auto || !modelReady) return;
-    const timer = window.setTimeout(() => {
-      if (currentTrack()?.id === track.id && player.get().playing) void transcribeTrack(track);
-    }, 8000);
-    return () => clearTimeout(timer);
-  }, [track, noLyrics, auto, modelReady]);
+    if (activeTrack === track.id) {
+      autoStartedTrack.current = track.id;
+      return;
+    }
+    if (autoStartedTrack.current === track.id || currentTrack()?.id !== track.id) return;
+    autoStartedTrack.current = track.id;
+    void transcribeTrack(track);
+  }, [track, noLyrics, auto, modelReady, activeTrack]);
 
   if (!track) return null;
 
@@ -791,11 +961,20 @@ export function Lyrics({ track, variant, active = true }: { track: Track | null;
         )
       ) : st.status === 'none' ? (
         <div className="lyrics-state">
-          <Shape n={7} amp={0.1} className="spin-slow h-20 w-20 text-secondary-container">
-            <Icon name={st.instrumental ? 'piano' : 'lyrics'} size={34} className="text-on-secondary-container" />
-          </Shape>
-          <span>{st.instrumental ? t('instrumental') : t('noLyrics')}</span>
-          {!st.instrumental && <RecognizeLyrics track={track} />}
+          {activeTrack === track.id && !st.instrumental ? (
+            <>
+              <Loader size={64} />
+              <span>{t('whisperRunning')}</span>
+            </>
+          ) : (
+            <>
+              <Shape n={7} amp={0.1} className="spin-slow h-20 w-20 text-secondary-container">
+                <Icon name={st.instrumental ? 'piano' : 'lyrics'} size={34} className="text-on-secondary-container" />
+              </Shape>
+              <span>{st.instrumental ? t('instrumental') : t('noLyrics')}</span>
+              {!st.instrumental && <RecognizeLyrics track={track} />}
+            </>
+          )}
         </div>
       ) : st.status === 'plain' ? (
         <PlainLyrics key={`${track.id}:${rev}`} lines={st.lines} preview={st.preview} variant={variant} />

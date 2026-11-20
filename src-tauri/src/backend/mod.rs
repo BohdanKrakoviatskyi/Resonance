@@ -11,6 +11,7 @@ mod public;
 mod soundcloud;
 mod store;
 mod stream;
+mod transcode;
 mod types;
 mod util;
 
@@ -45,6 +46,7 @@ struct Inner {
     /// Lyrics live behind their own lock: the state lock is held across disk writes, and a cache
     /// that outlives an HTTP lookup must not queue unrelated work behind them.
     lyrics_cache: Mutex<HashMap<i64, CachedLyrics>>,
+    analysis_generation: Arc<std::sync::atomic::AtomicU64>,
 }
 
 /// Managed Tauri state. Cheap to clone; all clones share one backend.
@@ -76,7 +78,7 @@ impl Backend {
         let state = State::load(&paths);
         let api_base = std::env::var("BSC_SOUNDCLOUD_API_BASE").ok().map(|v| v.trim().to_string()).filter(|v| !v.is_empty()).unwrap_or_else(|| OFFICIAL_API_BASE.to_string());
         let http = reqwest::Client::builder().timeout(Duration::from_secs(15)).build().expect("http client");
-        Self { inner: Arc::new(Inner { http, state: RwLock::new(state), paths, api_base, public_client_id: Mutex::new(String::new()), lyrics_cache: Mutex::new(HashMap::new()) }) }
+        Self { inner: Arc::new(Inner { http, state: RwLock::new(state), paths, api_base, public_client_id: Mutex::new(String::new()), lyrics_cache: Mutex::new(HashMap::new()), analysis_generation: Arc::new(std::sync::atomic::AtomicU64::new(0)) }) }
     }
 
     /// Snapshot of what a request needs, taken under a short read lock so a slow network call
@@ -90,6 +92,34 @@ impl Backend {
             client_id: state.settings.client_id.clone(),
             user_id: state.auth.profile.id,
         }
+    }
+
+    async fn soundcloud_analysis_pcm(&self, track_urn: &str) -> Result<Vec<f32>, String> {
+        let generation = self.inner.analysis_generation.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
+        let sc = self.sc().await;
+        let stream = sc.track_analysis_stream(track_urn).await.map_err(|e| e.to_string())?;
+        let is_hls = stream.hls;
+        let url = url::Url::parse(&stream.url).map_err(|_| "SoundCloud returned an invalid audio stream".to_string())?;
+        let http = reqwest::Client::builder()
+            .timeout(Duration::from_secs(90))
+            .redirect(reqwest::redirect::Policy::custom(|attempt| {
+                let url = attempt.url();
+                if url.scheme() == "https"
+                    && url.host_str().is_some_and(stream::is_soundcloud_media_host)
+                {
+                    attempt.follow()
+                } else {
+                    attempt.stop()
+                }
+            }))
+            .build()
+            .map_err(|e| format!("could not initialize audio download: {e}"))?;
+        let current = self.inner.analysis_generation.clone();
+        transcode::analysis_audio_to_pcm(http, url, is_hls, current, generation).await
+    }
+
+    fn cancel_soundcloud_analysis(&self) {
+        self.inner.analysis_generation.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
     }
 
     // ---- dispatcher ---------------------------------------------------------------------------
@@ -155,7 +185,16 @@ impl Backend {
             }
             "track.stream" => {
                 let p: TrackStreamParams = parse(method, params)?;
-                to_value(self.sc().await.track_stream(&p.track_urn).await.map_err(s)?)
+                if p.analysis {
+                    self.cancel_soundcloud_analysis();
+                }
+                let sc = self.sc().await;
+                let stream = if p.analysis {
+                    sc.track_analysis_stream(&p.track_urn).await
+                } else {
+                    sc.track_stream(&p.track_urn).await
+                };
+                to_value(stream.map_err(s)?)
             }
             "track.like" | "track.unlike" => {
                 let p: TrackLikeParams = parse(method, params)?;
@@ -482,6 +521,7 @@ struct SearchParams {
 #[serde(default, rename_all = "camelCase")]
 struct TrackStreamParams {
     track_urn: String,
+    analysis: bool,
 }
 
 #[derive(Deserialize, Default)]
@@ -524,6 +564,18 @@ pub async fn backend_rpc(backend: TauriState<'_, Backend>, method: String, param
     backend.call(&method, params.unwrap_or(Value::Null)).await
 }
 
+#[tauri::command]
+pub async fn soundcloud_analysis_pcm_command(backend: TauriState<'_, Backend>, track_urn: String) -> Result<tauri::ipc::Response, String> {
+    let pcm = backend.soundcloud_analysis_pcm(&track_urn).await?;
+    let bytes: Vec<u8> = pcm.into_iter().flat_map(f32::to_le_bytes).collect();
+    Ok(tauri::ipc::Response::new(bytes))
+}
+
+#[tauri::command]
+pub fn cancel_soundcloud_analysis_command(backend: TauriState<'_, Backend>) {
+    backend.cancel_soundcloud_analysis();
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -550,6 +602,7 @@ mod tests {
                 api_base: OFFICIAL_API_BASE.into(),
                 public_client_id: Mutex::new(String::new()),
                 lyrics_cache: Mutex::new(HashMap::new()),
+                analysis_generation: Arc::new(std::sync::atomic::AtomicU64::new(0)),
             }),
         }
     }
@@ -652,6 +705,7 @@ mod live {
                 api_base: OFFICIAL_API_BASE.into(),
                 public_client_id: Mutex::new(String::new()),
                 lyrics_cache: Mutex::new(HashMap::new()),
+                analysis_generation: Arc::new(std::sync::atomic::AtomicU64::new(0)),
             }),
         };
         let params: Value = std::env::var("LIVE_PARAMS").ok().and_then(|raw| serde_json::from_str(&raw).ok()).unwrap_or_else(|| serde_json::json!({"trackId": 1, "title": "Blinding Lights", "artist": "The Weeknd", "durationMs": 200000}));
