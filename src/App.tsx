@@ -12,7 +12,7 @@ import { t, useLang } from './lib/i18n';
 import { loadSoundCloudLibrary, loadYtMusicLibrary } from './state/library';
 import { checkForUpdates, startInstallNewVersion } from './state/updater';
 import { handleWindowShortcut } from './state/shortcut-runtime';
-import { routeKey, snack, ui, type Route } from './state/ui';
+import { navigateRouteHistory, routeKey, snack, ui, type Route } from './state/ui';
 import Home from './pages/Home';
 import Collection from './pages/Collection';
 import Settings from './pages/Settings';
@@ -73,6 +73,54 @@ function useShortcuts() {
   }, []);
 }
 
+function useMacTrackpadNavigation() {
+  useEffect(() => {
+    if (!navigator.platform.startsWith('Mac')) return;
+
+    let deltaX = 0;
+    let deltaY = 0;
+    let gestureHandled = false;
+    let resetTimer = 0;
+
+    const resetGesture = () => {
+      deltaX = 0;
+      deltaY = 0;
+      gestureHandled = false;
+    };
+
+    const onWheel = (event: WheelEvent) => {
+      window.clearTimeout(resetTimer);
+      resetTimer = window.setTimeout(resetGesture, 180);
+
+      if (gestureHandled || event.deltaMode !== WheelEvent.DOM_DELTA_PIXEL) return;
+      const state = ui.get();
+      if (state.dialog || state.immersive || Math.abs(event.deltaX) <= Math.abs(event.deltaY) * 1.2) return;
+
+      let element = event.target instanceof Element ? event.target : null;
+      while (element) {
+        const style = getComputedStyle(element);
+        const canScrollX = element.scrollWidth > element.clientWidth + 1 && /auto|scroll/.test(style.overflowX);
+        if (canScrollX && (event.deltaX < 0 ? element.scrollLeft > 0 : element.scrollLeft + element.clientWidth < element.scrollWidth - 1)) return;
+        element = element.parentElement;
+      }
+
+      const direction = event.deltaX < 0 ? 'back' : 'forward';
+      event.preventDefault();
+      deltaX += event.deltaX;
+      deltaY += event.deltaY;
+      if (Math.abs(deltaX) < 70 || Math.abs(deltaX) < Math.abs(deltaY) * 1.2) return;
+      gestureHandled = true;
+      navigateRouteHistory(direction);
+    };
+
+    window.addEventListener('wheel', onWheel, { passive: false });
+    return () => {
+      window.removeEventListener('wheel', onWheel);
+      window.clearTimeout(resetTimer);
+    };
+  }, []);
+}
+
 export default function App() {
   const lang = useLang();
   const isMd = useMedia(MD);
@@ -83,6 +131,7 @@ export default function App() {
   const closeDrawer = useCallback(() => ui.set({ drawer: false }), []);
   const closeNp = useCallback(() => ui.set({ npDrawer: false }), []);
   useShortcuts();
+  useMacTrackpadNavigation();
 
   useEffect(() => {
     void loadSoundCloudLibrary();

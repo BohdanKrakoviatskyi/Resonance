@@ -103,15 +103,47 @@ if (ui.get().favProvider !== 'all' && ui.get().favProvider !== 'soundcloud' && u
   ui.set({ favProvider: 'all' });
 }
 
-window.addEventListener('hashchange', () => {
+const routeHistory = [location.hash || '#/'];
+let routeHistoryIndex = 0;
+
+function recordRouteHash(hash: string) {
+  if (hash === routeHistory[routeHistoryIndex]) return;
+  if (hash === routeHistory[routeHistoryIndex - 1]) {
+    routeHistoryIndex--;
+    return;
+  }
+  if (hash === routeHistory[routeHistoryIndex + 1]) {
+    routeHistoryIndex++;
+    return;
+  }
+  routeHistory.splice(routeHistoryIndex + 1);
+  routeHistory.push(hash);
+  routeHistoryIndex = routeHistory.length - 1;
+}
+
+window.addEventListener('hashchange', (event) => {
+  recordRouteHash(new URL(event.newURL).hash || '#/');
   const s = parseSearch();
   ui.set({ route: parse(), searchOpen: s.searchOpen, searchQ: s.searchQ, drawer: false });
 });
+
+export function navigateRouteHistory(direction: 'back' | 'forward') {
+  if (direction === 'back' && routeHistoryIndex > 0) {
+    history.back();
+    return true;
+  }
+  if (direction === 'forward' && routeHistoryIndex < routeHistory.length - 1) {
+    history.forward();
+    return true;
+  }
+  return false;
+}
 
 export function go(r: Route, replace = false) {
   const h = toHash(r);
   if (replace) {
     history.replaceState(null, '', h);
+    routeHistory[routeHistoryIndex] = h;
     ui.set({ route: r, searchOpen: false, searchQ: '', drawer: false });
   } else if (location.hash !== h) location.hash = h;
   else ui.set({ route: r, searchOpen: false, searchQ: '', drawer: false });
@@ -119,7 +151,10 @@ export function go(r: Route, replace = false) {
 
 /** Search is an element of the home page, not a separate route. */
 export function openSearch(q = '') {
-  if (location.hash !== '#/') history.replaceState(null, '', '#/');
+  if (location.hash !== '#/') {
+    history.replaceState(null, '', '#/');
+    routeHistory[routeHistoryIndex] = '#/';
+  }
   ui.set({ route: { name: 'home' }, searchOpen: true, searchQ: q, drawer: false });
 }
 

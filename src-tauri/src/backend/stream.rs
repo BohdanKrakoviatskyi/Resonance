@@ -87,6 +87,17 @@ pub fn transcoding_choices(transcodings: &[Transcoding], preview_url: &str) -> V
     choices
 }
 
+/// Prefer full progressive streams, with complete HLS streams as a local-decoding fallback.
+/// Short previews and encrypted streams are never used for recognition.
+fn analysis_transcoding_choices(transcodings: &[Transcoding]) -> Vec<TranscodingChoice> {
+    let choices = transcoding_choices(transcodings, "");
+    let mut progressive: Vec<_> = choices.iter().filter(|choice| !choice.hls && !choice.preview).cloned().collect();
+    progressive.extend(choices.into_iter().filter(|choice| {
+        choice.hls && !choice.preview && !choice.protocol.contains("encrypted")
+    }));
+    progressive
+}
+
 fn aac_bitrate_kbps(transcoding: &Transcoding) -> u32 {
     let value = format!("{} {}", transcoding.preset, transcoding.url).to_lowercase();
     let Some(start) = value.find("aac_") else { return 0 };
@@ -96,6 +107,14 @@ fn aac_bitrate_kbps(transcoding: &Transcoding) -> u32 {
 
 impl Sc {
     pub async fn track_stream(&self, track_urn: &str) -> BResult<TrackStreamResult> {
+        self.track_stream_inner(track_urn, false).await
+    }
+
+    pub async fn track_analysis_stream(&self, track_urn: &str) -> BResult<TrackStreamResult> {
+        self.track_stream_inner(track_urn, true).await
+    }
+
+    async fn track_stream_inner(&self, track_urn: &str, for_analysis: bool) -> BResult<TrackStreamResult> {
         self.require_token()?;
         let track_urn = track_urn.trim();
         if track_urn.is_empty() {
@@ -110,7 +129,11 @@ impl Sc {
             .and_then(|media| varr(media, "transcodings"))
             .map(|items| items.iter().map(parse_transcoding).collect())
             .unwrap_or_default();
-        let choices = transcoding_choices(&transcodings, &vs(&track, "preview_mp3_128_url"));
+        let choices = if for_analysis {
+            analysis_transcoding_choices(&transcodings)
+        } else {
+            transcoding_choices(&transcodings, &vs(&track, "preview_mp3_128_url"))
+        };
         if choices.is_empty() {
             log::warn!("track.stream stage=unavailable track_urn={track_urn:?} transcoding_count={}", transcodings.len());
             return Err(BErr::msg("SoundCloud не предоставил для этого трека AAC HLS-поток или превью"));
@@ -214,6 +237,22 @@ mod tests {
         let labels: Vec<_> = choices.iter().map(|c| c.quality.as_str()).collect();
         assert_eq!(labels, ["AAC 256 kbps", "AAC 96 kbps", "Progressive", "Превью MP3"]);
         assert!(choices[3].hls && choices[3].preview);
+    }
+
+    #[test]
+    fn analysis_uses_only_full_progressive_streams() {
+        let streams = [
+            transcoding("aac_160k", "hls", "audio/mp4", "https://x/full-hls"),
+            transcoding("mp3_standard", "progressive", "audio/mpeg", "https://x/full-mp3"),
+            transcoding("mp3_preview", "progressive", "audio/mpeg", "https://x/preview"),
+        ];
+        let choices = analysis_transcoding_choices(&streams);
+        assert_eq!(choices.len(), 2);
+        assert_eq!(choices[0].url, "https://x/full-mp3", "prefer progressive audio when available");
+        assert_eq!(choices[1].url, "https://x/full-hls", "keep a full HLS stream as fallback");
+        let hls_only = analysis_transcoding_choices(&streams[..1]);
+        assert_eq!(hls_only.len(), 1);
+        assert!(hls_only[0].hls, "full HLS stream is the fallback when no progressive stream exists");
     }
 
     #[test]

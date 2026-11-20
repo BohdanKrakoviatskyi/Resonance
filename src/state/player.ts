@@ -1210,6 +1210,7 @@ async function resolvePlayableStream(
   clickEpochMs?: number,
   priority = true,
   signal?: AbortSignal,
+  analysis = false,
 ): Promise<ResolvedPlayableStream> {
   const t0 = performance.now();
   const ytId = extractYtVideoId(tr);
@@ -1235,7 +1236,7 @@ async function resolvePlayableStream(
     };
   }
   if (tr.source === 'soundcloud' && tr.nativeId) {
-    const scRes = await trackStream(tr.nativeId);
+    const scRes = await trackStream(tr.nativeId, analysis);
     const scMs = Math.round(performance.now() - t0);
     return {
       ...scRes,
@@ -1254,7 +1255,7 @@ async function resolvePlayableStream(
 
 /** Stream URL for offline analysis (speech recognition). Uses the same resolver as playback. */
 export async function streamUrlForAnalysis(tr: Track): Promise<{ url: string; hls: boolean }> {
-  const s = await resolvePlayableStream(tr, undefined, undefined, false);
+  const s = await resolvePlayableStream(tr, undefined, undefined, false, undefined, true);
   return { url: s.url, hls: s.hls };
 }
 

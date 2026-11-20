@@ -16,7 +16,7 @@ commands.allow = ["lyrics_word_synced", "ytm_lyrics"]
 [[permission]]
 identifier = "allow-whisper"
 description = "Download/delete speech-recognition models and transcribe the current track's audio locally."
-commands.allow = ["whisper_models", "whisper_download", "whisper_cancel_download", "whisper_delete", "whisper_transcribe", "whisper_cancel"]
+commands.allow = ["whisper_models", "whisper_download", "whisper_cancel_download", "whisper_delete", "whisper_transcribe", "whisper_cancel", "soundcloud_analysis_pcm_command", "cancel_soundcloud_analysis_command"]
 
 [[permission]]
 identifier = "allow-offline"
