@@ -443,7 +443,7 @@ export function TrackList({
   const onPlayIndex = useRef((idx: number) => {
     if (radioOnPlayRef.current) {
       const id = idsRef.current[idx];
-      if (id) playQueue([id], 0, true);
+      if (id) playQueue([id], 0, true, { radio: true });
     } else {
       playQueue(idsRef.current, idx);
     }

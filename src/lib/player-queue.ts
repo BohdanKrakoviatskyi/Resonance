@@ -5,13 +5,15 @@
  */
 
 export type RepeatMode = 'off' | 'all' | 'one';
-export type QueueStepResult = number | 'repeat-one' | 'end-shuffle' | null;
+export type QueueStepResult = number | 'repeat-one' | 'end-shuffle' | 'end-cycle' | null;
 
 /**
  * Computes the next queue index for a step in `dir` direction.
  * - `repeat === 'one'` (auto step only) restarts the current track.
- * - At the end of the queue with shuffle on and `canExtendShuffle`, returns
- *   'end-shuffle' so the caller can append recommendations.
+ * - At the end of a shuffled queue, `radio` with `canExtendShuffle` returns
+ *   'end-shuffle' so the caller can append recommendations (infinite radio);
+ *   a closed shuffle cycle returns 'end-cycle' so the caller can lay out the
+ *   next permutation of the same pool instead of replaying the same order.
  * - At the end with repeat off (auto step), returns null (stop).
  * - Disliked tracks are skipped; if every track is disliked, returns null.
  */
@@ -24,8 +26,9 @@ export function stepQueueIndex(opts: {
   shuffle: boolean;
   isDisliked: (id: string) => boolean;
   canExtendShuffle: boolean;
+  radio?: boolean;
 }): QueueStepResult {
-  const { queue, dir, auto, repeat, shuffle, isDisliked, canExtendShuffle } = opts;
+  const { queue, dir, auto, repeat, shuffle, isDisliked, canExtendShuffle, radio } = opts;
   const n = queue.length;
   if (!n) return null;
   if (auto && repeat === 'one') return 'repeat-one';
@@ -33,7 +36,11 @@ export function stepQueueIndex(opts: {
   for (let k = 0; k < n; k++) {
     i += dir;
     if (i >= n) {
-      if (shuffle && canExtendShuffle) return 'end-shuffle';
+      if (shuffle) {
+        if (radio && canExtendShuffle) return 'end-shuffle';
+        if (auto && repeat === 'off') return null;
+        return 'end-cycle';
+      }
       if (auto && repeat === 'off') return null;
       i = 0;
     }
