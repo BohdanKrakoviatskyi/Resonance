@@ -12,6 +12,7 @@ import { playbackAccess } from '../lib/playback-access';
 import { createPendingAudioSeek, pendingAudioSeekFor, type PendingAudioSeek } from '../lib/pending-audio-seek';
 import { canFallbackToOutgoingDeck, evaluateAutoCrossfadeTrigger, planAutoCrossfade } from '../lib/crossfade-plan';
 import { stepQueueIndex, shouldAdvanceAfterError } from '../lib/player-queue';
+import { buildCycle, dedupePool, primaryArtist, trackIdentity } from '../lib/shuffle-plan';
 import { isLocalTrack, localStreamUrl } from './local-library';
 import { clampFx, FX_OFF, FX_PRESETS, makeImpulse, type FxPreset, type FxSettings } from '../lib/audio-fx';
 import { isWebKitPlaybackUserAgent, webkitDoubledDuration as detectWebkitDoubledDuration } from '../lib/webkit-playback';
@@ -149,6 +150,14 @@ export const player = createStore({
   muted: false,
   shuffle: false,
   repeat: 'off' as Repeat,
+  // Shuffle cycle state: the pool a shuffle pass draws from, the permutation's
+  // generation, and the tail of what was just played (cycle-boundary guard).
+  shufflePool: [] as string[],
+  shuffleCycle: 0,
+  shuffleSeed: 0,
+  shuffleRecent: [] as string[],
+  /** Shuffle runs as an endless recommendation radio instead of a closed playlist cycle. */
+  shuffleRadio: false,
   pos: 0,
   // Audio Normalization settings
   normalizationEnabled: false,
@@ -205,6 +214,12 @@ function clearAutoCrossfadeTimer() {
 }
 
 let original: string[] | null = null;
+/** How many just-played tracks a fresh cycle keeps away from its head. */
+const SHUFFLE_RECENT_WINDOW = 8;
+/** Queue length that triggers a trim of the already-played prefix between cycles. */
+const SHUFFLE_QUEUE_TRIM_AT = 400;
+/** Ceiling for the persisted pool, which radio mode keeps growing with every batch. */
+const SHUFFLE_POOL_LIMIT = 2000;
 let pendingSeek: PendingAudioSeek | null = null;
 let errors = 0;
 let currentRequestId = 0;
@@ -924,7 +939,7 @@ function effectiveAutoCrossfadeSeconds(trackDuration: number): number {
   return s.crossfadeDuration;
 }
 
-function resolveNextQueueIndex(dir: 1 | -1, auto: boolean): number | 'repeat-one' | 'end-shuffle' | null {
+function resolveNextQueueIndex(dir: 1 | -1, auto: boolean): number | 'repeat-one' | 'end-shuffle' | 'end-cycle' | null {
   const s = player.get();
   const track = currentTrack();
   const canExtendShuffle = Boolean(
@@ -939,7 +954,74 @@ function resolveNextQueueIndex(dir: 1 | -1, auto: boolean): number | 'repeat-one
     shuffle: s.shuffle,
     isDisliked,
     canExtendShuffle,
+    radio: s.shuffleRadio,
   });
+}
+
+const shuffleIdentity = (id: string) => {
+  const track = getTrack(id);
+  return track ? trackIdentity(track) : id;
+};
+
+const shuffleArtist = (id: string) => {
+  const track = getTrack(id);
+  return track ? primaryArtist(track.artist) : '';
+};
+
+const newShuffleSeed = () => Math.floor(Math.random() * 0xffffffff) || 1;
+
+/** Recently played tracks draw a smaller weight, so a fresh cycle starts away from them. */
+const shuffleWeight = (recent: string[]) => (id: string) => {
+  const rank = recent.lastIndexOf(id);
+  return rank < 0 ? 1 : 1 - 0.5 * ((rank + 1) / recent.length);
+};
+
+function planShuffleCycle(pool: string[], seed: number, cycle: number, recent: string[]): string[] {
+  return buildCycle({ pool, seed, cycle, recent, groupOf: shuffleArtist, weightOf: shuffleWeight(recent) });
+}
+
+/** The pool a shuffle pass draws from: every recording once, whatever surfaced it. */
+function shufflePoolFrom(ids: string[]): string[] {
+  return dedupePool(ids, shuffleIdentity);
+}
+
+/** Manual queue edits join the pool so later cycles keep playing them. */
+function poolWith(pool: string[], id: string, enabled: boolean): string[] {
+  if (!enabled || !pool.length || pool.length >= SHUFFLE_POOL_LIMIT || pool.includes(id)) return pool;
+  const key = shuffleIdentity(id);
+  if (pool.some((existing) => shuffleIdentity(existing) === key)) return pool;
+  return [...pool, id];
+}
+
+/**
+ * Lays out the next permutation of the shuffle pool and appends it to the queue,
+ * so a shuffled playlist loops over fresh orders instead of replaying one.
+ * Returns the queue index of its first track, or null when there is nothing to add.
+ */
+function appendNextShuffleCycle(): number | null {
+  const s = player.get();
+  const pool = s.shufflePool.length ? s.shufflePool : dedupePool(s.queue, shuffleIdentity);
+  if (pool.length < 2) return null;
+  const playedTail = s.queue.slice(Math.max(0, s.index + 1 - SHUFFLE_RECENT_WINDOW), s.index + 1);
+  const recent = [...new Set([...s.shuffleRecent, ...playedTail])].slice(-SHUFFLE_RECENT_WINDOW);
+  const cycle = s.shuffleCycle + 1;
+  const planned = planShuffleCycle(pool, s.shuffleSeed, cycle, recent);
+  if (!planned.length) return null;
+  // A disliked track is skipped by the step loop but not by a direct load, so the
+  // cycle is rotated to start on something playable.
+  const playableFrom = planned.findIndex((id) => !isDisliked(id));
+  const ordered = playableFrom > 0 ? [...planned.slice(playableFrom), ...planned.slice(0, playableFrom)] : planned;
+  const trim = !crossfadeSession && s.index > SHUFFLE_QUEUE_TRIM_AT ? s.index + 1 - SHUFFLE_RECENT_WINDOW : 0;
+  const queue = trim ? [...s.queue.slice(trim), ...ordered] : [...s.queue, ...ordered];
+  player.set({
+    queue,
+    index: s.index - trim,
+    shuffleCycle: cycle,
+    shuffleRecent: recent,
+    shufflePool: pool,
+  });
+  if (trim) invalidateUpcomingPreload();
+  return queue.length - ordered.length;
 }
 
 function prefetchYtStream(id?: string | null) {
@@ -1390,7 +1472,7 @@ async function preloadNextTrackIntoInactiveDeck() {
   if (!curTr || usesProviderPlayback(curTr)) return;
 
   const target = resolveNextQueueIndex(1, true);
-  if (target === null || target === 'end-shuffle') return;
+  if (target === null || target === 'end-shuffle' || target === 'end-cycle') return;
 
   const nextIdx = target === 'repeat-one' ? s.index : target;
   const nextId = s.queue[nextIdx];
@@ -1690,8 +1772,8 @@ async function load(i: number, autoplay: boolean, opts?: LoadOptions) {
 
     if (reqId !== currentRequestId) return;
     if (tr.source === 'soundcloud' || isYouTubeTrack(tr)) void prefetchRelated(tr);
-    maybeExtendShuffleQueue(tr);
-    scheduleLowPriorityUpcomingPrefetch(reqId, i);
+    topUpShuffleQueue(tr);
+    scheduleLowPriorityUpcomingPrefetch(reqId, player.get().index);
     pushRecent(id);
     mediaMeta(tr);
     emitFrame();
@@ -1831,8 +1913,8 @@ async function load(i: number, autoplay: boolean, opts?: LoadOptions) {
   }
   if (reqId !== currentRequestId) return;
   if (tr.source === 'soundcloud' || isYouTubeTrack(tr)) void prefetchRelated(tr);
-  maybeExtendShuffleQueue(tr);
-  scheduleLowPriorityUpcomingPrefetch(reqId, i);
+  topUpShuffleQueue(tr);
+  scheduleLowPriorityUpcomingPrefetch(reqId, player.get().index);
   pushRecent(id);
   mediaMeta(tr);
   emitFrame();
@@ -1862,7 +1944,7 @@ async function startAutoCrossfade() {
 
   const target = resolveNextQueueIndex(1, true);
   if (target === null) return; // End of playlist with repeat off — do not crossfade
-  if (target === 'end-shuffle') return; // Let ended handler append recommendations
+  if (target === 'end-shuffle' || target === 'end-cycle') return; // Let the ended handler extend the queue
 
   const nextIdx = target === 'repeat-one' ? s.index : target;
   const nextId = s.queue[nextIdx];
@@ -2019,20 +2101,27 @@ async function startAutoCrossfade() {
   }
 }
 
-export function playQueue(ids: string[], start = 0, shuffle?: boolean) {
+export function playQueue(ids: string[], start = 0, shuffle?: boolean, opts?: { radio?: boolean }) {
   if (!playbackAccess.canControl() || !ids.length) return;
   const sh = shuffle ?? player.get().shuffle;
+  const radio = Boolean(opts?.radio && sh);
   let q = ids.slice();
   let idx = clamp(start, 0, q.length - 1);
   if (sh) {
     original = q.slice();
-    const first = q[idx];
-    q = [first, ...shuffled(q.filter((_, k) => k !== idx))];
+    const pool = shufflePoolFrom(ids);
+    const seed = newShuffleSeed();
+    const recent = player.get().shuffleRecent;
+    const cycle = planShuffleCycle(pool, seed, 0, recent);
+    const requested = q[idx];
+    const first = requested && pool.includes(requested) ? requested : cycle[0];
+    q = first ? [first, ...cycle.filter((id) => id !== first)] : cycle;
     idx = 0;
+    player.set({ queue: q, shuffle: sh, shuffleRadio: radio, shufflePool: pool, shuffleCycle: 0, shuffleSeed: seed, shuffleRecent: recent });
   } else {
     original = null;
+    player.set({ queue: q, shuffle: sh, shuffleRadio: false, shufflePool: [], shuffleCycle: 0, shuffleRecent: [] });
   }
-  player.set({ queue: q, shuffle: sh });
   const manualFade = getCrossfadeDuration() > 0 ? MANUAL_CROSSFADE_SECONDS : 0;
   void load(idx, true, { crossfadeSec: manualFade });
 }
@@ -2103,7 +2192,10 @@ async function extendShuffleQueue(track: Track): Promise<number> {
     candidates.map((candidate) => candidate.id),
   );
   if (original) original.push(...candidates.map((candidate) => candidate.id));
-  player.set({ queue });
+  player.set({
+    queue,
+    shufflePool: candidates.reduce((pool, candidate) => poolWith(pool, candidate.id, true), player.get().shufflePool),
+  });
   return candidates.length;
 }
 
@@ -2118,14 +2210,31 @@ async function appendRelatedAndContinue(track: Track) {
   void load(nextIndex, true);
 }
 
-/** Keeps the queue topped up while shuffle is on so it behaves like an infinite radio. */
+/** Keeps the queue topped up in radio mode so shuffle behaves like an infinite radio. */
 function maybeExtendShuffleQueue(track: Track | null | undefined) {
   if (!track) return;
   const s = player.get();
-  if (!s.shuffle || currentTrack()?.id !== track.id) return;
+  if (!s.shuffle || !s.shuffleRadio || currentTrack()?.id !== track.id) return;
   const upcoming = s.queue.length - 1 - s.index;
   if (upcoming >= SHUFFLE_KEEP_AHEAD) return;
   void extendShuffleQueue(track).catch(() => {});
+}
+
+/**
+ * Entry point on every track start: radio appends recommendations, a playlist
+ * shuffle lays out its next cycle once the current one is spent.
+ */
+function topUpShuffleQueue(track: Track | null | undefined) {
+  if (!track) return;
+  const s = player.get();
+  if (!s.shuffle || currentTrack()?.id !== track.id) return;
+  if (s.shuffleRadio) {
+    maybeExtendShuffleQueue(track);
+    return;
+  }
+  if (s.repeat === 'one' || s.repeat === 'off') return;
+  if (s.queue.length - 1 - s.index > 0) return;
+  appendNextShuffleCycle();
 }
 
 export function toggle() {
@@ -2185,6 +2294,18 @@ function step(dir: 1 | -1, auto: boolean) {
   if (target === 'end-shuffle') {
     const track = currentTrack();
     if (track) void appendRelatedAndContinue(track);
+    return;
+  }
+  if (target === 'end-cycle') {
+    const cycleFade = !auto && activeFadeSec > 0 ? MANUAL_CROSSFADE_SECONDS : 0;
+    const nextIndex = appendNextShuffleCycle();
+    if (nextIndex === null) {
+      // A one-track pool has no new order to lay out; repeat-all still restarts it.
+      if (s.repeat === 'all') void load(s.index, true, { crossfadeSec: cycleFade });
+      else setPlayerMachineState('paused');
+      return;
+    }
+    void load(nextIndex, true, { crossfadeSec: cycleFade });
     return;
   }
   if (target === null || target === 'repeat-one') {
@@ -2316,11 +2437,36 @@ export function toggleShuffle() {
   const cur = s.queue[s.index];
   if (!s.shuffle) {
     original = s.queue.slice();
-    const rest = shuffled(s.queue.filter((_, k) => k !== s.index));
-    player.set({ shuffle: true, queue: cur ? [cur, ...rest] : rest, index: cur ? 0 : -1 });
+    const unplayed = s.queue.slice(Math.max(0, s.index + 1));
+    const pool = shufflePoolFrom(cur ? [cur, ...unplayed] : unplayed);
+    const seed = newShuffleSeed();
+    const played = s.queue.slice(0, Math.max(0, s.index + 1)).slice(-SHUFFLE_RECENT_WINDOW);
+    const recent = [...new Set([...s.shuffleRecent, ...played])].slice(-SHUFFLE_RECENT_WINDOW);
+    const cycle = planShuffleCycle(pool, seed, 0, recent);
+    const first = cur && pool.includes(cur) ? cur : cycle[0];
+    const queue = first ? [first, ...cycle.filter((id) => id !== first)] : cycle;
+    player.set({
+      shuffle: true,
+      queue,
+      index: first ? 0 : -1,
+      shuffleRadio: false,
+      shufflePool: pool,
+      shuffleCycle: 0,
+      shuffleSeed: seed,
+      shuffleRecent: recent,
+    });
   } else {
-    const q = original ?? s.queue;
-    player.set({ shuffle: false, queue: q, index: Math.max(0, q.indexOf(cur)) });
+    const restored = original;
+    const extras = restored ? s.queue.filter((id) => !restored.includes(id)) : [];
+    const unshuffled = restored ? [...restored, ...extras] : s.queue;
+    player.set({
+      shuffle: false,
+      queue: unshuffled,
+      index: Math.max(0, unshuffled.indexOf(cur)),
+      shuffleRadio: false,
+      shufflePool: [],
+      shuffleCycle: 0,
+    });
     original = null;
   }
   invalidateUpcomingPreload();
@@ -2342,7 +2488,7 @@ export function playNext(id: string) {
   const ci = q.indexOf(curId);
   q.splice(ci + 1, 0, id);
   if (original && !original.includes(id)) original.push(id);
-  player.set({ queue: q, index: ci });
+  player.set({ queue: q, index: ci, shufflePool: poolWith(s.shufflePool, id, s.shuffle) });
   invalidateUpcomingPreload();
   snack(t('playingNext'));
 }
@@ -2352,7 +2498,7 @@ export function addToQueue(id: string) {
   const s = player.get();
   if (s.index < 0) return playQueue([id]);
   if (!s.queue.includes(id)) {
-    player.set({ queue: [...s.queue, id] });
+    player.set({ queue: [...s.queue, id], shufflePool: poolWith(s.shufflePool, id, s.shuffle) });
     if (original) original.push(id);
     invalidateUpcomingPreload();
   }
@@ -2736,6 +2882,11 @@ export function initPlayer() {
     muted: s.muted,
     shuffle: s.shuffle,
     repeat: s.repeat,
+    shufflePool: s.shufflePool,
+    shuffleCycle: s.shuffleCycle,
+    shuffleSeed: s.shuffleSeed,
+    shuffleRecent: s.shuffleRecent,
+    shuffleRadio: s.shuffleRadio,
     normalizationEnabled: s.normalizationEnabled,
     normalizationTarget: s.normalizationTarget,
     crossfadeEnabled: s.crossfadeEnabled,
@@ -2746,6 +2897,13 @@ export function initPlayer() {
     fx: s.fx,
   }));
   player.set({ fx: clampFx(player.get().fx ?? FX_OFF) });
+  const restoredShuffle = player.get();
+  if (restoredShuffle.shuffle && (!restoredShuffle.shufflePool.length || !restoredShuffle.shuffleSeed)) {
+    player.set({
+      shufflePool: dedupePool(restoredShuffle.queue, shuffleIdentity),
+      shuffleSeed: restoredShuffle.shuffleSeed || newShuffleSeed(),
+    });
+  }
   applyPlaybackRate();
   const s = player.get();
   const curId = s.queue[s.index];

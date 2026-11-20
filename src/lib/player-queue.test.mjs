@@ -44,12 +44,20 @@ test('all tracks disliked returns null (no infinite loop)', () => {
   assert.equal(stepQueueIndex({ queue: ['a', 'b'], index: 0, dir: 1, auto: true, repeat: 'all', shuffle: false, isDisliked: () => true, canExtendShuffle: false }), null);
 });
 
-test('shuffle with recommendations at end returns end-shuffle', () => {
-  assert.equal(stepQueueIndex({ queue: ['a', 'b'], index: 1, dir: 1, auto: true, repeat: 'off', shuffle: true, isDisliked: noDislike, canExtendShuffle: true }), 'end-shuffle');
+test('shuffle in radio mode returns end-shuffle so recommendations can be appended', () => {
+  assert.equal(stepQueueIndex({ queue: ['a', 'b'], index: 1, dir: 1, auto: true, repeat: 'off', shuffle: true, isDisliked: noDislike, canExtendShuffle: true, radio: true }), 'end-shuffle');
 });
 
-test('shuffle without recommendations at end stops when repeat is off', () => {
+test('shuffle without radio starts a fresh cycle instead of replaying the same order', () => {
+  assert.equal(stepQueueIndex({ queue: ['a', 'b'], index: 1, dir: 1, auto: true, repeat: 'all', shuffle: true, isDisliked: noDislike, canExtendShuffle: true }), 'end-cycle');
+});
+
+test('shuffle with repeat off stops after one full pass', () => {
   assert.equal(stepQueueIndex({ queue: ['a', 'b'], index: 1, dir: 1, auto: true, repeat: 'off', shuffle: true, isDisliked: noDislike, canExtendShuffle: false }), null);
+});
+
+test('manual next at the end of a shuffled queue starts a new cycle even with repeat off', () => {
+  assert.equal(stepQueueIndex({ queue: ['a', 'b'], index: 1, dir: 1, auto: false, repeat: 'off', shuffle: true, isDisliked: noDislike, canExtendShuffle: false }), 'end-cycle');
 });
 
 test('error advance stops after the limit', () => {
