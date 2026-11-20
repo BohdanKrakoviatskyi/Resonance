@@ -5,7 +5,7 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use super::util::{is_empty_str, is_zero, normalize_artwork, track_urn_or_default, username_of, vi, vs, vo, varr};
+use super::util::{is_empty_str, is_false, is_zero, normalize_artwork, track_urn_or_default, username_of, vi, vs, vo, varr};
 
 pub const APP_NAME: &str = "Resonance";
 
@@ -86,6 +86,9 @@ pub struct AuthState {
     pub token: String,
     pub profile: Profile,
     pub saved_at: String,
+    /// SoundCloud stopped accepting the token. The session is kept so a silent re-pull (or the
+    /// user signing in again) can repair it; only an explicit logout deletes it.
+    pub rejected: bool,
 }
 
 #[derive(Debug, Clone, Default, Serialize)]
@@ -93,6 +96,9 @@ pub struct AuthStatus {
     pub authorized: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub profile: Option<Profile>,
+    /// The stored session exists but SoundCloud refuses it: the account needs signing in again.
+    #[serde(skip_serializing_if = "is_false")]
+    pub stale: bool,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]

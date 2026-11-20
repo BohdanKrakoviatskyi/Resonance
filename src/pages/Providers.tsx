@@ -28,7 +28,7 @@ import {
 } from '../state/library';
 
 type ProviderId = 'soundcloud' | 'ytmusic';
-type Connection = { connected: boolean; account?: string };
+type Connection = { connected: boolean; account?: string; stale?: boolean };
 type ProviderConfig = {
   id: ProviderId;
   name: string;
@@ -62,7 +62,7 @@ function errorMessage(error: unknown) {
 async function fetchConnection(id: ProviderId): Promise<Connection> {
   if (id === 'soundcloud') {
     const result: SoundCloudAuthStatus = await soundCloudAuthStatus();
-    return { connected: result.authorized, account: result.profile?.fullName || result.profile?.username };
+    return { connected: result.authorized, stale: result.stale, account: result.profile?.fullName || result.profile?.username };
   }
 
   const result: YtMusicAuthStatus = await ytMusicAuthStatus();
@@ -249,7 +249,7 @@ function ProviderCard({ provider, index }: { provider: ProviderConfig; index: nu
   }, t('providerDisconnectedMsg'));
 
   const connected = Boolean(connection?.connected);
-  const statusLabel = connected ? t('providerStatusConnected') : connection ? t('providerStatusNotConnected') : t('providerStatusChecking');
+  const statusLabel = connection?.stale ? t('providerStatusExpired') : connected ? t('providerStatusConnected') : connection ? t('providerStatusNotConnected') : t('providerStatusChecking');
 
   return (
     <section className="card anim-in min-w-0" style={{ '--i': index } as Vars} aria-labelledby={`${provider.id}-title`}>
@@ -259,12 +259,13 @@ function ProviderCard({ provider, index }: { provider: ProviderConfig; index: nu
           <p className="mt-1 text-sm text-on-surface-variant">{t(provider.descriptionKey)}</p>
         </div>
         <span className="inline-flex shrink-0 items-center gap-2 rounded-full bg-surface-container-high px-3 py-1.5 text-sm font-semibold" aria-label={statusLabel}>
-          <span className={`h-2 w-2 rounded-full ${connected ? 'bg-primary' : 'bg-on-surface-variant'}`} aria-hidden="true" />
+          <span className={`h-2 w-2 rounded-full ${connection?.stale ? 'bg-error' : connected ? 'bg-primary' : 'bg-on-surface-variant'}`} aria-hidden="true" />
           {statusLabel}
         </span>
       </div>
 
       {connection?.account && <p className="mt-3 text-sm">{t('providerAccount')}: <span className="font-semibold">{connection.account}</span></p>}
+      {connection?.stale && <p className="mt-3 rounded-2xl bg-error/10 p-3 text-sm text-error" role="alert">{t('scSessionStale')}</p>}
       <p className="mt-4 rounded-2xl bg-surface-container-low p-3 text-sm text-on-surface-variant">{t(provider.noteKey)}</p>
 
 

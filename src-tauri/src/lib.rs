@@ -1,3 +1,4 @@
+pub mod applog;
 pub mod auth_windows;
 pub mod backend;
 pub mod discord;
@@ -13,7 +14,7 @@ pub mod yt;
 use tauri::{AppHandle, Emitter, Manager};
 
 use backend::{Backend, backend_rpc};
-use auth_windows::{SoundCloudLoginState, YtMusicLoginState, soundcloud_auth_capture, start_soundcloud_login, start_ytmusic_login};
+use auth_windows::{SoundCloudLoginState, YtMusicLoginState, remember_app, soundcloud_auth_capture, start_soundcloud_login, start_ytmusic_login};
 use playlist_import::fetch_external_playlist;
 use yt::music_api::{search_yt_tracks, yt_radio_tracks, yt_search_suggestions};
 use yt::proxy::{YtStreamProxy, frontend_log, resolve_yt_stream_url};
@@ -127,6 +128,7 @@ async fn restart_app(app: AppHandle) -> Result<(), String> {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    applog::init();
     tauri::Builder::default()
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .plugin(tauri_plugin_updater::Builder::new().build())
@@ -142,10 +144,15 @@ pub fn run() {
         .manage(transcribe::WhisperWorker::default())
         .setup(|app| {
             purge_retired_spotify_storage(app.handle());
+            remember_app(app.handle());
             let app_handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
                 let proxy = app_handle.state::<YtStreamProxy>();
                 let _ = proxy.ensure_server_port().await;
+            });
+            let backend = app.state::<Backend>().inner().clone();
+            tauri::async_runtime::spawn(async move {
+                backend.restore_session_on_start().await;
             });
             Ok(())
         })
@@ -155,6 +162,13 @@ pub fn run() {
                     let _ = main_window.show();
                     let _ = main_window.set_focus();
                 }
+            if window.label() == "soundcloud-silent" && matches!(event, tauri::WindowEvent::CloseRequested { .. }) {
+                // A closed re-pull window can no longer deliver a session to anyone.
+                let login_state = window.app_handle().state::<SoundCloudLoginState>();
+                if let Ok(mut silent) = login_state.silent.lock() {
+                    silent.take();
+                }
+            }
             if window.label() == "soundcloud-login" && matches!(event, tauri::WindowEvent::CloseRequested { .. }) {
                 // Whether the user cancelled or capture succeeded, no capture
                 // can be pending for a closed window.

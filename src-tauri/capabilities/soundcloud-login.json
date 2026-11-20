@@ -1,8 +1,8 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "soundcloud-login",
-  "description": "Permissions for the embedded SoundCloud sign-in window.",
-  "windows": ["soundcloud-login"],
+  "description": "Permissions for the embedded SoundCloud sign-in window and the hidden window that re-pulls the session.",
+  "windows": ["soundcloud-login", "soundcloud-silent"],
   "remote": {
     "urls": ["https://soundcloud.com/*", "https://*.soundcloud.com/*"]
   },

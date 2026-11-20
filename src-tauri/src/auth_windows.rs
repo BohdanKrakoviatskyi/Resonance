@@ -62,14 +62,98 @@ pub struct YtMusicLoginState {
     pub nonce: Mutex<Option<String>>,
 }
 
+/// A SoundCloud session captured from a webview window.
+#[derive(Debug, Clone)]
+pub struct CapturedSession {
+    pub client_id: String,
+    pub token: String,
+}
+
 #[derive(Default)]
 pub struct SoundCloudLoginState {
     pub pending: Mutex<bool>,
+    /// A silent re-pull started by the backend; the hidden window hands its session back here.
+    pub silent: Mutex<Option<tokio::sync::oneshot::Sender<CapturedSession>>>,
+}
+
+/// Label of the hidden window used to re-pull the web session without the user's involvement.
+const SILENT_SESSION_WINDOW: &str = "soundcloud-silent";
+/// The same window the manual sign-in flow uses, so the injected capture script is identical.
+const LOGIN_WINDOW: &str = "soundcloud-login";
+/// How long a silent window may take to make one API call with the user's cookies.
+const SILENT_SESSION_TIMEOUT: Duration = Duration::from_secs(12);
+/// A catalogue page: it fires api-v2 requests on load, and sending a signed-out visitor to the
+/// sign-in page is exactly the answer we want from it (no token, so the attempt fails cleanly).
+const SOUNDCLOUD_SILENT_URL: &str = "https://soundcloud.com/discover";
+
+/// Set once in `run()`: the backend reaches the webview from a plain async task, not a command.
+static APP_HANDLE: std::sync::OnceLock<AppHandle> = std::sync::OnceLock::new();
+
+pub fn remember_app(app: &AppHandle) {
+    let _ = APP_HANDLE.set(app.clone());
+}
+
+/// Re-pulls the SoundCloud web session: a hidden window loads soundcloud.com, the very same
+/// capture script reads the token from the page's own API calls, and the window closes itself.
+/// Works without any interaction while the user's soundcloud.com cookies are still valid, which
+/// is how the session was first obtained.
+pub async fn pull_soundcloud_session() -> Result<CapturedSession, String> {
+    let app = APP_HANDLE
+        .get()
+        .cloned()
+        .ok_or_else(|| "SoundCloud session capture is not available yet".to_string())?;
+    if let Some(existing) = app.get_webview_window(SILENT_SESSION_WINDOW) {
+        let _ = existing.close();
+    }
+    let (sender, receiver) = tokio::sync::oneshot::channel();
+    {
+        let state = app.state::<SoundCloudLoginState>();
+        let mut slot = state.silent.lock().map_err(|_| "SoundCloud login state unavailable".to_string())?;
+        *slot = Some(sender);
+    }
+    let url = Url::parse(SOUNDCLOUD_SILENT_URL).map_err(|e| format!("invalid SoundCloud URL: {e}"))?;
+    let script = SOUNDCLOUD_LOGIN_SCRIPT.replace("__LOGIN_STATE__", &uuid::Uuid::new_v4().to_string());
+    let navigation_app = app.clone();
+    let built = WebviewWindowBuilder::new(&app, SILENT_SESSION_WINDOW, WebviewUrl::External(url))
+        .title("SoundCloud")
+        .inner_size(1000.0, 760.0)
+        .visible(false)
+        .skip_taskbar(true)
+        .initialization_script(&script)
+        .on_navigation(move |url| {
+            // The capture script closes the window by navigating to its own scheme, which the
+            // hidden window must never actually load.
+            if url.scheme() == "resonance" {
+                if let Some(window) = navigation_app.get_webview_window(SILENT_SESSION_WINDOW) {
+                    let _ = window.close();
+                }
+                return false;
+            }
+            true
+        })
+        .build();
+    let captured = match built {
+        Ok(_) => match tokio::time::timeout(SILENT_SESSION_TIMEOUT, receiver).await {
+            Ok(Ok(session)) => Ok(session),
+            Ok(Err(_)) => Err("SoundCloud session window closed without a session".to_string()),
+            Err(_) => Err("SoundCloud did not expose a session in time".to_string()),
+        },
+        Err(e) => Err(format!("could not open the SoundCloud session window: {e}")),
+    };
+    // Dropping the slot is what tells a late capture (if any) that nobody waits for it anymore.
+    if let Ok(mut slot) = app.state::<SoundCloudLoginState>().silent.lock() {
+        slot.take();
+    }
+    if let Some(window) = app.get_webview_window(SILENT_SESSION_WINDOW) {
+        let _ = window.close();
+    }
+    captured
 }
 
 /// Receives the SoundCloud token captured by the login window's init script
-/// over the IPC bridge. Only the `soundcloud-login` window may call this,
-/// and only while a login is pending; the token never travels in a URL.
+/// over the IPC bridge. Only the login window (or its hidden sibling used for a
+/// silent re-pull) may call this, and only while a sign-in or re-pull is pending;
+/// the token never travels in a URL.
 #[tauri::command]
 pub async fn soundcloud_auth_capture(
     app: AppHandle,
@@ -78,17 +162,33 @@ pub async fn soundcloud_auth_capture(
     client_id: String,
     token: String,
 ) -> Result<(), String> {
-    if window.label() != "soundcloud-login" {
+    let label = window.label();
+    if label != LOGIN_WINDOW && label != SILENT_SESSION_WINDOW {
         return Err("SoundCloud auth capture is only available from the sign-in window".to_string());
+    }
+    if client_id.trim().is_empty() || token.trim().is_empty() {
+        return Err("SoundCloud sign-in did not return a complete session".to_string());
+    }
+    if label == SILENT_SESSION_WINDOW {
+        let waiting = state
+            .silent
+            .lock()
+            .map_err(|_| "SoundCloud login state unavailable".to_string())?
+            .take();
+        let Some(sender) = waiting else {
+            return Err("No SoundCloud session re-pull is in progress".to_string());
+        };
+        let _ = sender.send(CapturedSession { client_id, token });
+        if let Some(hidden) = app.get_webview_window(SILENT_SESSION_WINDOW) {
+            let _ = hidden.close();
+        }
+        return Ok(());
     }
     {
         let pending = state.pending.lock().map_err(|_| "SoundCloud login state unavailable".to_string())?;
         if !*pending {
             return Err("No SoundCloud sign-in is in progress".to_string());
         }
-    }
-    if client_id.trim().is_empty() || token.trim().is_empty() {
-        return Err("SoundCloud sign-in did not return a complete session".to_string());
     }
     if let Ok(mut pending) = state.pending.lock() {
         *pending = false;
@@ -98,7 +198,7 @@ pub async fn soundcloud_auth_capture(
         serde_json::json!({ "clientId": client_id, "token": token }),
     )
     .map_err(|e| format!("Could not deliver SoundCloud session: {e}"))?;
-    if let Some(login_window) = app.get_webview_window("soundcloud-login") {
+    if let Some(login_window) = app.get_webview_window(LOGIN_WINDOW) {
         let _ = login_window.close();
     }
     Ok(())

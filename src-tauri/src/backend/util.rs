@@ -14,12 +14,19 @@ pub const TOKEN_REJECTED: &str = "SoundCloud отклонил токен, про
 
 pub const NOT_CONNECTED: &str = "сначала подключите аккаунт SoundCloud";
 
+/// The stored session is gone or refused and pulling it again did not help. The ASCII marker
+/// leads the message so the renderer can branch on the cause instead of on prose
+/// (`isSoundCloudAuthError` in `src/lib/soundcloud-auth.ts`); the rest is what a person reads.
+pub const SESSION_EXPIRED: &str = "soundcloud_session_expired: SoundCloud: сессия истекла — войдите заново";
+
 #[derive(Debug, Clone)]
 pub enum BErr {
     /// Equivalent of Go's `errTokenRejected` (possibly with a status suffix).
     Rejected(String),
     /// SoundCloud demands a captcha before a like can be changed.
     Captcha(String),
+    /// The session cannot be used and re-pulling it failed: only signing in again helps.
+    SessionExpired,
     Msg(String),
 }
 
@@ -35,12 +42,30 @@ impl BErr {
     pub fn is_rejected(&self) -> bool {
         matches!(self, BErr::Rejected(_))
     }
+
+    /// The request failed because of the session itself, so another attempt with a fresh token is
+    /// the only thing that can help — a different track or a fallback search cannot.
+    pub fn is_auth(&self) -> bool {
+        matches!(self, BErr::Rejected(_) | BErr::SessionExpired) || matches!(self, BErr::Msg(text) if text == NOT_CONNECTED)
+    }
+
+    /// The answer a SoundCloud call gives once the session could not be repaired.
+    pub fn session_failure(connected: bool) -> Self {
+        if connected { BErr::SessionExpired } else { BErr::msg(NOT_CONNECTED) }
+    }
+
+    /// Keeps a session failure as it is — the caller repairs the session and retries — while every
+    /// other failure gets the context this call wants to report.
+    pub fn context(self, describe: impl FnOnce(String) -> String) -> Self {
+        if self.is_auth() { self } else { BErr::msg(describe(self.to_string())) }
+    }
 }
 
 impl fmt::Display for BErr {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             BErr::Rejected(text) | BErr::Msg(text) => f.write_str(text),
+            BErr::SessionExpired => f.write_str(SESSION_EXPIRED),
             BErr::Captcha(_) => f.write_str("SoundCloud требует пройти проверку перед изменением лайка"),
         }
     }

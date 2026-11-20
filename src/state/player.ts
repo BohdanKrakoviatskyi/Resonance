@@ -3,7 +3,7 @@ import { invoke } from '@tauri-apps/api/core';
 import type Hls from 'hls.js';
 import { createStore, persist, clamp, shuffled, useStore } from '../lib/util';
 import { getTrack, library, pushRecent, isDisliked, ensureCached, registerTracks } from './library';
-import { snack, openSearch } from './ui';
+import { snack, openSearch, go } from './ui';
 import { t } from '../lib/i18n';
 import { findYouTubeFallback, relatedSoundCloudTracks, searchYouTubeRecommendations, trackStream, ytDlpTrackStream } from '../lib/api';
 import type { YtResolveAttemptTiming, YtStreamResolveResult } from '../lib/providers-api';
@@ -15,6 +15,7 @@ import { stepQueueIndex, shouldAdvanceAfterError } from '../lib/player-queue';
 import { isLocalTrack, localStreamUrl } from './local-library';
 import { clampFx, FX_OFF, FX_PRESETS, makeImpulse, type FxPreset, type FxSettings } from '../lib/audio-fx';
 import { isWebKitPlaybackUserAgent, webkitDoubledDuration as detectWebkitDoubledDuration } from '../lib/webkit-playback';
+import { isSoundCloudAuthError } from '../lib/soundcloud-auth';
 import { onProviderState, providerCommand } from '../lib/provider-player';
 import type { Track } from '../types';
 
@@ -1455,9 +1456,25 @@ function isConfirmedYtUnavailableError(err: unknown): boolean {
 }
 
 /* ---------------- controls ---------------- */
-async function fallbackSoundCloud(track: Track, index: number, reqId: number): Promise<boolean> {
+/**
+ * SoundCloud failed for the session, not for the track: no search can fix that, so the queue stays
+ * as it is and the user is sent to the provider page to sign in again. Returns true in every case —
+ * the caller has nothing left to do for this track.
+ */
+function reportSessionExpired(track: Track, reqId: number): true {
+  logTrackTiming(reqId, 'fallback_skipped', `track="${track.title}" reason=soundcloud_session_expired`);
+  setPlayerMachineState('error');
+  snack(t('scSessionExpired'), {
+    label: t('scSessionExpiredAction'),
+    run: () => go({ name: 'providers' }),
+  });
+  return true;
+}
+
+async function fallbackSoundCloud(track: Track, index: number, reqId: number, cause?: unknown): Promise<boolean> {
   if (reqId !== currentRequestId || fallbackAttemptedTrackId === track.id) return true;
   fallbackAttemptedTrackId = track.id;
+  if (isSoundCloudAuthError(cause)) return reportSessionExpired(track, reqId);
   logTrackTiming(reqId, 'fallback_start', `track="${track.title}" source=${track.source}`);
   const manualSearchQuery = `${track.artist ? `${track.artist} - ` : ''}${track.title}`.trim();
   const controller = new AbortController();
@@ -1663,7 +1680,7 @@ async function load(i: number, autoplay: boolean, opts?: LoadOptions) {
       toDeck.fadeMultiplier = 1;
       syncDeckVolumes();
       if (tr.source === 'soundcloud' || (isYouTubeTrack(tr) && isConfirmedYtUnavailableError(e))) {
-        await fallbackSoundCloud(tr, i, reqId);
+        await fallbackSoundCloud(tr, i, reqId, e);
         return;
       }
       setPlayerMachineState('error', { isCrossfading: false, fadeProgress: 0 });
@@ -1802,7 +1819,7 @@ async function load(i: number, autoplay: boolean, opts?: LoadOptions) {
       });
     }
     if (tr.source === 'soundcloud' || (isYouTubeTrack(tr) && isConfirmedYtUnavailableError(e))) {
-      await fallbackSoundCloud(tr, i, reqId);
+      await fallbackSoundCloud(tr, i, reqId, e);
       return;
     }
     stopAndResetDeck(deck);
