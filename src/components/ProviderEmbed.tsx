@@ -1,6 +1,6 @@
 import { useEffect, useRef } from 'react';
 import { publishProviderState, providerCommand, registerProviderControls } from '../lib/provider-player';
-import { player } from '../state/player';
+import { player as playback } from '../state/player';
 import type { Track } from '../types';
 
 type YouTubePlayer = {
@@ -113,7 +113,7 @@ export function ProviderEmbed({ track }: { track: Track }) {
                 seek: (seconds) => target.seekTo(seconds, true), setVolume: (volume) => target.setVolume(volume * 100),
                 destroy: destroyPlayer,
               });
-              const { volume, muted } = player.get();
+              const { volume, muted } = playback.get();
               providerCommand('setVolume', muted ? 0 : volume);
               syncTimer(sample(target));
             },
