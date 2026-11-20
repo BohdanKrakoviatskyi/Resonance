@@ -40,7 +40,7 @@ export const DEFAULTS: Appearance = {
   bgColor: '#000000',
   bgImage: null,
   bgDim: 10,
-  bgBlur: 0,
+  bgBlur: 10,
   accentMode: 'dynamic',
   /** Only the fallback before the first track: with `accentMode: dynamic` the cover decides. */
   accentColor: '#a0a8b8',
