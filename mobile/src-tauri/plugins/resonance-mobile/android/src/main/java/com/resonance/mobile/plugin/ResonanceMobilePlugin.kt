@@ -24,6 +24,34 @@ class ResonanceMobilePlugin(private val activity: Activity) : Plugin(activity) {
         }
     }
 
+    /**
+     * Downloads the APK for the pending update and opens the system installer. Runs off the main
+     * thread so a slow network never blocks the UI, and resolves once the installer was started.
+     */
+    @Command
+    fun installUpdate(invoke: Invoke) {
+        val url = invoke.getArgs().optString("url")
+        if (url.isBlank()) {
+            invoke.reject("Missing APK download URL")
+            return
+        }
+        Thread {
+            try {
+                val apk = ApkUpdater.download(activity.applicationContext, url)
+                activity.runOnUiThread {
+                    try {
+                        ApkUpdater.install(activity, apk)
+                        invoke.resolve(JSObject())
+                    } catch (ex: Exception) {
+                        invoke.reject("Could not open the system installer: ${ex.message}", ex)
+                    }
+                }
+            } catch (ex: Exception) {
+                invoke.reject("Update download failed: ${ex.message}", ex)
+            }
+        }.start()
+    }
+
     private fun maybeRequestNotificationPermission() {
         if (notificationPrompted) return
         notificationPrompted = true

@@ -657,6 +657,10 @@ class ResonanceMobilePlugin: Plugin {
         }
     }
 
+    @objc public func installUpdate(_ invoke: Invoke) {
+        invoke.reject("iOS installs app updates through the App Store")
+    }
+
     @objc public func play(_ invoke: Invoke) {
         DispatchQueue.main.async {
             self.configureAudioSession()

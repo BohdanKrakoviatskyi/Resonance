@@ -13,7 +13,8 @@ import { cx, useStore } from './lib/util';
 import { t, useLang } from './lib/i18n';
 import { loadSoundCloudLibrary, loadYtMusicLibrary } from './state/library';
 import { useCurrentTrack } from './state/player';
-import { consumeBackPress, go, routeKey, ui, type Route } from './state/ui';
+import { consumeBackPress, go, routeKey, snack, ui, type Route } from './state/ui';
+import { checkForUpdate, installUpdate } from './lib/update';
 import Home from './pages/Home';
 import Search from './pages/Search';
 import Library from './pages/Library';
@@ -95,6 +96,27 @@ export default function App() {
   useEffect(() => {
     void loadSoundCloudLibrary();
     void loadYtMusicLibrary();
+  }, []);
+
+  useEffect(() => {
+    if (!isTauri()) return;
+    let cancelled = false;
+    void checkForUpdate()
+      .then((update) => {
+        if (cancelled || !update) return;
+        snack(t('updateAvailableVer', { version: update.version }), {
+          label: t('updateInstallAction'),
+          run: () => {
+            void installUpdate(update).catch((e: unknown) =>
+              snack(t('updateFailed', { reason: e instanceof Error ? e.message : String(e) })),
+            );
+          },
+        });
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   useEffect(() => {

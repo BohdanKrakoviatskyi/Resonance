@@ -41,6 +41,13 @@ impl<R: Runtime> ResonanceMobile<R> {
             .map_err(|e| e.to_string())
     }
 
+    pub async fn install_update(&self, url: String) -> Result<(), String> {
+        self.0
+            .run_mobile_plugin_async("installUpdate", serde_json::json!({ "url": url }))
+            .await
+            .map_err(|e| e.to_string())
+    }
+
     pub async fn pause(&self) -> Result<MobileAudioState, String> {
         self.0
             .run_mobile_plugin_async("pause", serde_json::json!({}))

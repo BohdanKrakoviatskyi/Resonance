@@ -71,6 +71,11 @@ async fn mobile_clear_auth_cookies(app: AppHandle, provider: String) -> Result<(
 }
 
 #[tauri::command]
+async fn mobile_update_install(app: AppHandle, url: String) -> Result<(), String> {
+    app.resonance_mobile().install_update(url).await
+}
+
+#[tauri::command]
 async fn mobile_audio_set_queue(
     app: AppHandle,
     req: SetQueueRequest,
@@ -248,6 +253,7 @@ pub fn run() {
             mobile_audio_set_eq,
             mobile_audio_set_config,
             mobile_audio_set_repeat_shuffle,
+            mobile_update_install,
             mobile_cache_get_limit,
             mobile_cache_set_limit
         ])

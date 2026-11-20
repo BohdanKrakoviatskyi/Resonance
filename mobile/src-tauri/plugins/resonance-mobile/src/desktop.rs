@@ -40,6 +40,10 @@ impl<R: Runtime> ResonanceMobile<R> {
         Ok(st.clone())
     }
 
+    pub async fn install_update(&self, _url: String) -> Result<(), String> {
+        Err("in-app updates are only available in the Android build".into())
+    }
+
     pub async fn play(&self) -> Result<MobileAudioState, String> {
         let mut st = self.state.lock().map_err(|e| e.to_string())?;
         st.playing = true;
