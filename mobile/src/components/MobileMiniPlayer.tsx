@@ -1,7 +1,7 @@
 import { useEffect, useRef } from 'react';
 import { Icon } from './Icon';
 import { IconButton } from './ui';
-import { Cover } from './Cover';
+import { ArtCover } from './Cover';
 import { LikeButton, SourcePill } from './TrackList';
 import { clamp, cx, useStore } from '../lib/util';
 import { t } from '../lib/i18n';
@@ -54,7 +54,7 @@ export function MobileMiniPlayer() {
       className="mobile-mini panel pointer-events-auto relative flex items-center gap-3 px-2.5 py-2"
     >
       <div className="relative h-12 w-12 shrink-0 overflow-hidden rounded-[15px] shadow-md">
-        <Cover src={track.thumb || track.cover} className="h-full w-full rounded-[15px]" />
+        <ArtCover src={track.thumb || track.cover} className="h-full w-full rounded-[15px]" />
         {playing && !loading && (
           <span className="pointer-events-none absolute bottom-1 right-1 grid h-5 w-5 place-items-center rounded-full bg-black/55 backdrop-blur-sm">
             <span className="eq on !h-2.5 !w-3">

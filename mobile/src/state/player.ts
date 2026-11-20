@@ -242,6 +242,43 @@ function buildNativeQueuePayload(ids: string[], proxy: LocalProxyInfo | null): N
   return out;
 }
 
+/** Rebuilds the native player's queue from the queue the UI is showing and starts playing it. */
+async function restartNativePlayback(cur: ReturnType<typeof player.get>) {
+  const proxy = await ensureProxyInfo();
+  const items = buildNativeQueuePayload(cur.queue, proxy);
+  const startIndex = items.findIndex((item) => item.id === cur.queue[cur.index]);
+  if (startIndex < 0) throw new Error(t('cantPlay'));
+  applyNativeState(
+    await invoke<NativeAudioStateDto>('mobile_audio_set_queue', {
+      req: {
+        items,
+        startIndex,
+        autoPlay: true,
+        startPositionMs: Math.max(0, Math.round(cur.pos * 1000)),
+      },
+    }),
+  );
+}
+
+async function readNativeState(): Promise<NativeAudioStateDto | null> {
+  try {
+    return await invoke<NativeAudioStateDto>('mobile_audio_get_state');
+  } catch {
+    return null;
+  }
+}
+
+async function refreshNativeState() {
+  const dto = await readNativeState();
+  if (dto) applyNativeState(dto);
+}
+
+function reportAudioError(e: unknown) {
+  const msg = e instanceof Error ? e.message : String(e);
+  player.set({ errorMsg: msg });
+  snack(msg);
+}
+
 function applyNativeState(dto: NativeAudioStateDto) {
   const cur = player.get();
   let nextIdx = cur.index;
@@ -256,12 +293,15 @@ function applyNativeState(dto: NativeAudioStateDto) {
   const durSec = dto.durationMs > 0 ? dto.durationMs / 1000 : activeTrack?.duration ?? cur.duration;
   const posSec = dto.positionMs / 1000;
   const advancing = dto.playing && !dto.buffering;
+  // A paused player stays in BUFFERING / waitingToPlayAtSpecifiedRate; only a player that wants
+  // to play counts as loading, otherwise the control keeps showing "pause" while it does nothing.
+  const spinning = dto.buffering && dto.playing;
 
   syncClockAnchor(posSec, advancing);
 
   const playbackState: PlayerPlaybackState = dto.error
     ? 'error'
-    : dto.buffering
+    : spinning
       ? 'loading'
       : dto.playing
         ? 'playing'
@@ -272,7 +312,7 @@ function applyNativeState(dto: NativeAudioStateDto) {
   player.set({
     index: nextIdx,
     playing: dto.playing,
-    loading: dto.buffering,
+    loading: spinning,
     pos: posSec,
     duration: durSec,
     state: playbackState,
@@ -570,32 +610,76 @@ export const jumpTo = skipToIndex;
 
 export async function play() {
   const cur = player.get();
-  if (cur.queue.length === 0) return;
+  if (cur.queue.length === 0 || cur.index < 0) return;
   if (isNativeMobileRuntime()) {
-    const dto = await invoke<NativeAudioStateDto>('mobile_audio_play');
-    applyNativeState(dto);
-  } else if (fallbackAudio) {
+    await startNativePlayback();
+    return;
+  }
+  if (fallbackAudio) {
     await fallbackAudio.play().catch(() => {});
-  } else {
-    const tr = currentTrack();
-    if (tr) await playBrowserFallback(tr, true);
+    return;
+  }
+  const tr = currentTrack();
+  if (tr) await playBrowserFallback(tr, true);
+}
+
+async function startNativePlayback(known?: NativeAudioStateDto) {
+  const cur = player.get();
+  syncClockAnchor(getLivePosition(), true);
+  player.set({ playing: true, loading: false, state: 'playing' });
+  try {
+    // The native player only outlives the webview until the process dies: on a cold start, after
+    // an Android service restart or after a stream error it holds no queue, and mobile_audio_play
+    // then silently plays nothing. Detect that and re-arm it from the queue we are showing.
+    const native = known ?? (await readNativeState());
+    const unloaded = native ? native.currentIndex < 0 : false;
+    if (unloaded || cur.state === 'error') await restartNativePlayback(cur);
+    else applyNativeState(await invoke<NativeAudioStateDto>('mobile_audio_play'));
+  } catch (e) {
+    await refreshNativeState();
+    reportAudioError(e);
   }
 }
 
 export async function pause() {
   if (isNativeMobileRuntime()) {
-    const dto = await invoke<NativeAudioStateDto>('mobile_audio_pause');
-    applyNativeState(dto);
-  } else {
-    fallbackAudio?.pause();
-    syncClockAnchor(fallbackAudio?.currentTime || player.get().pos, false);
-    player.set({ playing: false, state: 'paused' });
+    syncClockAnchor(getLivePosition(), false);
+    player.set({ playing: false, loading: false, state: 'paused' });
+    try {
+      applyNativeState(await invoke<NativeAudioStateDto>('mobile_audio_pause'));
+    } catch (e) {
+      await refreshNativeState();
+      reportAudioError(e);
+    }
+    return;
   }
+  fallbackAudio?.pause();
+  syncClockAnchor(fallbackAudio?.currentTime || player.get().pos, false);
+  player.set({ playing: false, state: 'paused' });
 }
 
 export function toggle() {
-  if (player.get().playing) void pause();
-  else void play();
+  const cur = player.get();
+  if (cur.queue.length === 0 || cur.index < 0) return;
+  if (!isNativeMobileRuntime()) {
+    if (cur.playing || cur.loading) void pause();
+    else void play();
+    return;
+  }
+  // The store only mirrors the native player (450ms poll, commands, remote controls), so ask the
+  // player itself which way to flip: the notification or an interruption may have changed it while
+  // the webview was asleep, and acting on the stale mirror is a tap that does nothing.
+  void (async () => {
+    const native = await readNativeState();
+    if (!native) {
+      if (cur.playing || cur.loading) await pause();
+      else await startNativePlayback();
+      return;
+    }
+    applyNativeState(native);
+    if (native.playing) await pause();
+    else await startNativePlayback(native);
+  })();
 }
 
 export async function seek(seconds: number) {

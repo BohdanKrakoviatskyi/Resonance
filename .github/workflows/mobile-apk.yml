@@ -19,16 +19,20 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Assert zero changes to Desktop files
+      - name: Assert zero changes to Desktop sources
         run: |
           git fetch origin main:refs/remotes/origin/main
-          DIFF=$(git diff origin/main...HEAD -- src/ src-tauri/ package.json package-lock.json vite.config.ts tsconfig.json index.html scripts/ .github/workflows/release.yml)
+          DIFF=$(git diff origin/main...HEAD -- src/ src-tauri/ package.json package-lock.json vite.config.ts tsconfig.json index.html scripts/)
           if [ -n "$DIFF" ]; then
-            echo "ERROR: Desktop files were modified on mobile branch!"
+            echo "ERROR: Desktop sources were modified on mobile branch!"
+            echo "This guard covers desktop application sources only: src/, src-tauri/,"
+            echo "package.json, package-lock.json, vite.config.ts, tsconfig.json, index.html, scripts/."
+            echo "Workflow files such as .github/workflows/release.yml are intentionally NOT"
+            echo "guarded, so mobile release wiring can evolve inside them."
             echo "$DIFF"
             exit 1
           fi
-          echo "Verified: 0 bytes changed in Desktop files."
+          echo "Verified: 0 bytes changed in desktop sources."
 
       - uses: actions/setup-node@v4
         with:
@@ -185,9 +189,10 @@ jobs:
               -dname "CN=Resonance Mobile, OU=Mobile, O=Resonance, L=Internet, S=Internet, C=US"
           fi
 
+          MOBILE_VERSION=$(node -p "require('./package.json').version")
+          FINAL_APK="release-out/Resonance-Mobile-v${MOBILE_VERSION}-arm64-v8a.apk"
           mkdir -p release-out
           ALIGNED_APK="${RUNNER_TEMP}/aligned.apk"
-          FINAL_APK="release-out/Resonance-Mobile-v0.1.1-arm64-v8a.apk"
 
           "${BUILD_TOOLS}/zipalign" -f -p 4 "$UNSIGNED_APK" "$ALIGNED_APK"
           "${BUILD_TOOLS}/apksigner" sign \
@@ -209,6 +214,6 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: Resonance-Mobile-APK
-          path: mobile/release-out/Resonance-Mobile-v0.1.1-arm64-v8a.apk
+          path: mobile/release-out/*.apk
           if-no-files-found: error
           retention-days: 30

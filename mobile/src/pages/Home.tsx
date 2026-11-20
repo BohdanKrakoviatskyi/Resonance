@@ -45,9 +45,6 @@ export default function Home() {
     if (i < ytLiked.length) mixedFeed.push(ytLiked[i]);
   }
 
-  const heroTrack: Track | undefined = recentTracks[0] ?? mixedFeed[0];
-  const heroQueue = recentTracks.length > 0 ? recentTracks : mixedFeed;
-
   return (
     <div className="flex flex-col gap-6 px-4 pb-8 pt-3">
       {/* Clean Header — No hanging Providers badge */}
@@ -65,53 +62,9 @@ export default function Home() {
         />
       </header>
 
-      {/* Featured Track Hero Card (like Desktop Home) */}
-      {heroTrack && (
-        <section
-          className="anim-in relative flex items-center justify-between gap-4 overflow-hidden rounded-[32px] p-5 text-on-primary-container shadow-lg"
-          style={{
-            '--i': 1,
-            background:
-              'radial-gradient(125% 145% at 0% 0%, var(--md-primary-container), color-mix(in oklab, var(--md-tertiary-container) 84%, transparent))',
-          } as Vars}
-        >
-          <div className="relative z-10 min-w-0 flex-1">
-            <span className="inline-flex h-7 items-center gap-1.5 rounded-full bg-on-primary-container/12 px-3 text-xs font-bold">
-              <Icon name="auto_awesome" size={15} fill />
-              {t('featured')}
-            </span>
-            <h2 className="display mt-2.5 line-clamp-2 text-2xl leading-tight">{heroTrack.title}</h2>
-            <p className="mt-1 truncate text-sm font-medium opacity-80">{heroTrack.artist}</p>
-            <div className="mt-4 flex items-center gap-2">
-              <Button
-                variant="filled"
-                icon={curId === heroTrack.id && playing ? 'pause' : 'play_arrow'}
-                onClick={() =>
-                  curId === heroTrack.id ? toggle() : void playTrack(heroTrack, heroQueue)
-                }
-              >
-                {curId === heroTrack.id && playing ? t('pause') : t('play')}
-              </Button>
-            </div>
-          </div>
-
-          <div className="relative h-28 w-28 shrink-0">
-            <Shape
-              n={9}
-              amp={0.08}
-              className="spin-slow absolute -inset-3 h-[calc(100%+24px)] w-[calc(100%+24px)] text-primary/35"
-            />
-            <Cover
-              src={heroTrack.cover || heroTrack.thumb}
-              className="h-full w-full -rotate-3 rounded-[24px] shadow-2xl"
-            />
-          </div>
-        </section>
-      )}
-
       {/* Quick Recent Grid */}
       {recentTracks.length > 0 && (
-        <section className="anim-in" style={{ '--i': 2 } as Vars}>
+        <section className="anim-in" style={{ '--i': 1 } as Vars}>
           <div className="mb-2.5 flex items-center justify-between">
             <h2 className="headline text-lg">{t('recent')}</h2>
             <button
@@ -154,7 +107,7 @@ export default function Home() {
       )}
 
       {/* Playlists Shelf with Clean "+" Create / Import Trigger */}
-      <section className="anim-in" style={{ '--i': 3 } as Vars}>
+      <section className="anim-in" style={{ '--i': 2 } as Vars}>
         <div className="mb-2.5 flex items-center justify-between gap-2">
           <h2 className="headline text-lg">{t('yourPlaylists')}</h2>
           <button
@@ -255,7 +208,7 @@ export default function Home() {
       </section>
 
       {/* Moods with Organic M3 Shapes */}
-      <section className="anim-in" style={{ '--i': 4 } as Vars}>
+      <section className="anim-in" style={{ '--i': 3 } as Vars}>
         <h2 className="headline mb-2.5 text-lg">{t('moods')}</h2>
         <div className="flex gap-2 overflow-x-auto pb-1 no-scrollbar">
           {MOODS.map((m, i) => (
@@ -277,7 +230,7 @@ export default function Home() {
 
       {/* Library Feed or Clean Empty Prompt */}
       {mixedFeed.length > 0 ? (
-        <section className="anim-in" style={{ '--i': 5 } as Vars}>
+        <section className="anim-in" style={{ '--i': 4 } as Vars}>
           <div className="mb-2 flex items-center justify-between">
             <h2 className="headline text-lg">{t('inLibrary')}</h2>
             <Button variant="tonal" icon="shuffle" onClick={() => void playQueue(mixedFeed, 0, true)}>
@@ -287,7 +240,7 @@ export default function Home() {
           <MobileTrackList tracks={mixedFeed} />
         </section>
       ) : (
-        <section className="card anim-in !p-5 text-center" style={{ '--i': 5 } as Vars}>
+        <section className="card anim-in !p-5 text-center" style={{ '--i': 4 } as Vars}>
           <Shape n={8} amp={0.09} className="spin-slow mx-auto mb-2 h-16 w-16 text-secondary-container">
             <Icon name="music_note" fill size={28} className="text-on-secondary-container" />
           </Shape>

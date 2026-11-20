@@ -84,7 +84,6 @@ export default function Search() {
           onChange={(e) => setQuery(e.target.value)}
           placeholder={t('searchPlaceholder')}
           className="h-10 flex-1 bg-transparent text-base outline-none"
-          autoFocus={!query}
         />
         {query && <IconButton icon="close" label="Clear" size="sm" tip={false} onClick={() => setQuery('')} />}
       </div>

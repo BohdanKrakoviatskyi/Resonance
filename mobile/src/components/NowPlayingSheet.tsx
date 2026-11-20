@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { Icon } from './Icon';
 import { IconButton, Slider, usePresence, type Vars } from './ui';
-import { Cover } from './Cover';
+import { ArtCover, Cover } from './Cover';
 import { Controls, Seek, TimeNow, TimeTotal } from './Seek';
 import { Lyrics } from './Lyrics';
 import { EqPanel } from './EqSheet';
@@ -133,7 +133,7 @@ function MobileCoverStage({
           const isCenter = offset === 0;
           return (
             <div
-              key={`${queue[itemIdx]}:${itemIdx}`}
+              key={offset}
               data-offset={offset}
               role="button"
               tabIndex={0}
@@ -154,7 +154,7 @@ function MobileCoverStage({
                 isCenter && !playing && '!scale-[0.94]',
               )}
             >
-              <Cover src={tr.cover || tr.thumb} className="h-full w-full !rounded-[32px]" />
+              <ArtCover src={tr.cover || tr.thumb} className="h-full w-full !rounded-[32px]" />
             </div>
           );
         })}
@@ -164,10 +164,22 @@ function MobileCoverStage({
 }
 
 /**
+ * Aura textures are rasterised at 1/4 size and blown up 4× by `.np-aura-tex`, and their blur
+ * radius is scaled down by the same factor (see `auraBlur`). A 52px blur is far past the point
+ * where any detail survives, so a 13px blur of a quarter-size copy looks identical on screen —
+ * while the filtered raster is 16× smaller. That raster is what used to stall the frame the
+ * moment a new track started.
+ */
+const AURA_TEX = 0.25;
+const auraBlur = (px: number) => Math.max(0.5, Math.round(px * AURA_TEX * 10) / 10);
+
+/**
  * Rich multi-layered animated backdrop inside NowPlayingSheet:
  * - Lets custom uploaded Photo/GIF (`bgMode === 'image'`) from `<Background />` shine right through;
  * - Otherwise paints dual slow-drifting blurred artwork layers from the playing track's cover
  *   so the fullscreen player glows dynamically like Desktop Immersive mode.
+ * A cover change cross-fades the incoming pair of layers over the outgoing pair instead of tearing
+ * the whole backdrop down and rebuilding it, so the glow never blinks back to the flat base colour.
  */
 function ImmersivePlayerBackdrop({ coverUrl }: { coverUrl?: string }) {
   const bgMode = useStore(appearance, (s) => s.bgMode);
@@ -175,6 +187,17 @@ function ImmersivePlayerBackdrop({ coverUrl }: { coverUrl?: string }) {
   const bgBlur = useStore(appearance, (s) => s.bgBlur);
   const metallic = useStore(appearance, (s) => s.metallic);
   const dark = useStore(theme, (s) => s.dark);
+  const [auraLayers, setAuraLayers] = useState<string[]>(() => (coverUrl ? [coverUrl] : []));
+
+  useEffect(() => {
+    if (!coverUrl) {
+      setAuraLayers([]);
+      return;
+    }
+    setAuraLayers((ls) => (ls[ls.length - 1] === coverUrl ? ls : [...ls.slice(-1), coverUrl]));
+    const tm = window.setTimeout(() => setAuraLayers((ls) => ls.slice(-1)), 460);
+    return () => window.clearTimeout(tm);
+  }, [coverUrl]);
 
   const showCustomImageThrough = bgMode === 'image';
   const dimAlpha = clamp((showCustomImageThrough ? bgDim : Math.max(26, bgDim)) / 100, 0.18, 0.82);
@@ -189,32 +212,40 @@ function ImmersivePlayerBackdrop({ coverUrl }: { coverUrl?: string }) {
         />
       )}
 
-      {!showCustomImageThrough && coverUrl && (
-        <div key={coverUrl} className="np-aura-enter absolute inset-[-18%] overflow-hidden">
-          <img
-            src={coverUrl}
-            alt=""
-            decoding="async"
-            className="np-aura-drift-1 absolute inset-0 h-full w-full object-cover"
-            style={{
-              filter: metallic
-                ? `blur(${54 + extraBlur}px) saturate(0.28) contrast(1.15)`
-                : `blur(${52 + extraBlur}px) saturate(${dark ? 1.65 : 1.3}) brightness(${dark ? 0.82 : 1.08})`,
-              opacity: dark ? 0.88 : 0.55,
-            }}
-          />
-          <img
-            src={coverUrl}
-            alt=""
-            decoding="async"
-            className="np-aura-drift-2 absolute -bottom-[12%] -right-[10%] h-[78%] w-[78%] rounded-full object-cover mix-blend-screen"
-            style={{
-              filter: metallic
-                ? `blur(${64 + extraBlur}px) saturate(0.2)`
-                : `blur(${64 + extraBlur}px) saturate(1.85)`,
-              opacity: dark ? 0.5 : 0.28,
-            }}
-          />
+      {!showCustomImageThrough && auraLayers.length > 0 && (
+        <div className="np-aura-enter absolute inset-[-18%] overflow-hidden">
+          {auraLayers.map((src) => (
+            <div key={src} className="np-aura-layer">
+              <div className="np-aura-drift-1">
+                <img
+                  src={src}
+                  alt=""
+                  decoding="async"
+                  className="np-aura-tex"
+                  style={{
+                    filter: metallic
+                      ? `blur(${auraBlur(54 + extraBlur)}px) saturate(0.28) contrast(1.15)`
+                      : `blur(${auraBlur(52 + extraBlur)}px) saturate(${dark ? 1.65 : 1.3}) brightness(${dark ? 0.82 : 1.08})`,
+                    opacity: dark ? 0.88 : 0.55,
+                  }}
+                />
+              </div>
+              <div className="np-aura-drift-2">
+                <img
+                  src={src}
+                  alt=""
+                  decoding="async"
+                  className="np-aura-tex"
+                  style={{
+                    filter: metallic
+                      ? `blur(${auraBlur(64 + extraBlur)}px) saturate(0.2)`
+                      : `blur(${auraBlur(64 + extraBlur)}px) saturate(1.85)`,
+                    opacity: dark ? 0.5 : 0.28,
+                  }}
+                />
+              </div>
+            </div>
+          ))}
         </div>
       )}
 
@@ -233,7 +264,7 @@ function ImmersivePlayerBackdrop({ coverUrl }: { coverUrl?: string }) {
 
 export function NowPlayingSheet() {
   const open = useStore(ui, (s) => s.nowPlayingOpen);
-  const { mounted, visible } = usePresence(open, 420);
+  const { mounted, visible } = usePresence(open, 380);
   const storedTab = useStore(ui, (s) => s.nowPlayingTab);
   const [eqMode, setEqMode] = useState(false);
   const track = useCurrentTrack();
@@ -270,7 +301,7 @@ export function NowPlayingSheet() {
       <ImmersivePlayerBackdrop coverUrl={track.cover || track.thumb} />
 
       {/* Top pull handle + Controls bar */}
-      <header className="relative z-20 flex flex-col gap-2 px-4 pb-2 pt-[calc(env(safe-area-inset-top,0px)+8px)]">
+      <header className="np-top relative z-20 flex flex-col gap-2 px-4 pb-2 pt-[calc(env(safe-area-inset-top,0px)+8px)]">
         <div className="mx-auto h-1 w-9 rounded-full bg-on-surface/25" />
         <div className="flex items-center justify-between gap-2">
           <IconButton
@@ -332,11 +363,11 @@ export function NowPlayingSheet() {
       {/* Main Content Stage */}
       {mode === 'artwork' && (
         <div className="flex min-h-0 flex-1 flex-col justify-between px-6 pb-[calc(env(safe-area-inset-bottom,0px)+22px)] pt-1">
-          <div className="my-auto flex flex-col items-center py-2">
+          <div className="np-stage my-auto flex flex-col items-center py-2">
             <MobileCoverStage activeIndex={curIndex} queue={queue} playing={playing} />
           </div>
 
-          <div className="flex flex-col gap-3.5">
+          <div className="np-meta flex flex-col gap-3.5">
             <div key={track.id} className="meta-in flex items-center justify-between gap-3">
               <div className="min-w-0 flex-1">
                 <h1 className="display truncate text-[clamp(22px,6.2vw,28px)] leading-tight">{track.title}</h1>

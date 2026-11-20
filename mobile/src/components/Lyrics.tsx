@@ -235,19 +235,22 @@ function defaultManualQuery(track: Track): string {
   return `${track.artist} - ${cleanTitle || track.title}`;
 }
 
+const SEARCH_SETTLE_MS = 340;
+
 function ManualLyricsPicker({
   track,
+  open,
+  onOpenChange,
   onSelect,
 }: {
   track: Track;
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
   onSelect: () => void;
 }) {
-  const [open, setOpen] = useState(false);
-  const { mounted, visible } = usePresence(open, 460);
+  const { mounted, visible } = usePresence(open, 300);
   const [host, setHost] = useState<HTMLElement | null>(null);
-  const [origin, setOrigin] = useState({ by: 0, bx: 0 });
-  const popRef = useRef<HTMLDivElement>(null);
-  const btnRef = useRef<HTMLButtonElement>(null);
+  const [settled, setSettled] = useState(false);
   const [query, setQuery] = useState(() => defaultManualQuery(track));
   const [results, setResults] = useState<ManualLyricsChoice[]>([]);
   const [loading, setLoading] = useState(false);
@@ -256,27 +259,12 @@ function ManualLyricsPicker({
 
   useEffect(() => {
     setQuery(defaultManualQuery(track));
-    setOpen(false);
+    onOpenChange(false);
   }, [track.id]);
 
   useLayoutEffect(() => {
-    const inner = wrapRef.current?.closest('.lyrics-stage') as HTMLElement | null;
-    setHost(inner);
-    if (!inner || !open) return;
-    const measure = () => {
-      const ir = inner.getBoundingClientRect();
-      const br = btnRef.current?.getBoundingClientRect();
-      if (br) {
-        const by = Math.max(0, br.top - ir.top);
-        const bx = Math.max(0, ir.right - br.right);
-        setOrigin((o) => (o.by === by && o.bx === bx ? o : { by, bx }));
-      }
-    };
-    measure();
-    const ro = new ResizeObserver(measure);
-    ro.observe(inner);
-    return () => ro.disconnect();
-  }, [track.id, open]);
+    setHost((wrapRef.current?.closest('.lyrics-stage') as HTMLElement | null) ?? null);
+  }, []);
 
   useEffect(() => {
     if (!host || !visible) return;
@@ -287,13 +275,19 @@ function ManualLyricsPicker({
   }, [host, visible]);
 
   useEffect(() => {
-    if (!open) return;
-    const tm = window.setTimeout(() => inputRef.current?.focus(), 140);
+    if (!open) {
+      setSettled(false);
+      return;
+    }
+    const tm = window.setTimeout(() => {
+      setSettled(true);
+      inputRef.current?.focus();
+    }, SEARCH_SETTLE_MS);
     return () => window.clearTimeout(tm);
   }, [open]);
 
   useEffect(() => {
-    if (!open) return;
+    if (!settled) return;
     const q = query.trim();
     if (!q) {
       setResults([]);
@@ -318,7 +312,7 @@ function ManualLyricsPicker({
       window.clearTimeout(tm);
       ac.abort();
     };
-  }, [open, query]);
+  }, [settled, query]);
 
   const hasCustom = hasManualLyricsChoice(track.id);
   const wrapPortal = (node: ReactNode) => (host ? createPortal(node, host) : node);
@@ -328,37 +322,27 @@ function ManualLyricsPicker({
       ref={wrapRef}
       className="lyrics-picker-trigger pointer-events-none absolute inset-x-4 bottom-2 top-1 z-20 flex flex-col items-end"
     >
-      <button
-        ref={btnRef}
-        type="button"
-        data-ripple
-        title={t('wrongLyricsBtn')}
-        aria-label={t('wrongLyricsBtn')}
+      <IconButton
+        icon="search"
+        label={t('search')}
+        variant="glass"
+        size="sm"
+        tip={false}
+        selected={hasCustom}
         aria-expanded={open}
-        className={cx(
-          'sl pointer-events-auto inline-flex h-9 shrink-0 items-center gap-1.5 rounded-full px-3.5 text-xs font-semibold backdrop-blur-md transition duration-200',
-          open && 'pointer-events-none scale-75 opacity-0',
-          hasCustom
-            ? 'bg-primary/24 text-primary ring-1 ring-primary/40'
-            : 'bg-on-surface/10 text-on-surface-variant ring-1 ring-white/10',
-        )}
-        onClick={() => setOpen((v) => !v)}
-      >
-        <Icon name="search" size={16} />
-        <span>{t('wrongLyricsBtn')}</span>
-      </button>
+        className={open ? 'pointer-events-none' : 'pointer-events-auto'}
+        onClick={() => onOpenChange(!open)}
+      />
 
       {mounted &&
         wrapPortal(
           <div
-            ref={popRef}
-            className="lyrics-pop lyrics-pop-fill imm-lyrics-card pointer-events-auto absolute inset-x-3 inset-y-1 z-30 flex min-h-0 flex-col rounded-[28px] bg-sc-high/88 !p-4 shadow-2xl ring-1 ring-white/12 backdrop-blur-2xl"
-            style={{ '--by': `${origin.by}px`, '--bx': `${origin.bx}px` } as Vars}
+            className="lyrics-pop pointer-events-auto absolute inset-x-3 inset-y-1 z-30 flex min-h-0 flex-col overflow-hidden rounded-[28px] bg-sc-high/92 p-4 shadow-2xl ring-1 ring-white/12"
             data-open={visible}
           >
             <div className="flex items-center justify-between gap-2">
               <div className="flex min-w-0 items-center gap-2">
-                <IconButton icon="arrow_back" label={t('back')} variant="glass" size="sm" tip={false} onClick={() => setOpen(false)} />
+                <IconButton icon="arrow_back" label={t('back')} variant="glass" size="sm" tip={false} onClick={() => onOpenChange(false)} />
                 <div className="min-w-0">
                   <h2 className="headline truncate text-base leading-tight">{t('lyricsSearchTitle')}</h2>
                   <p className="truncate text-[11px] text-on-surface-variant">
@@ -374,7 +358,7 @@ function ManualLyricsPicker({
                   className="sl inline-flex shrink-0 items-center gap-1 rounded-full bg-primary/18 px-3 py-1.5 text-[11px] font-bold text-primary"
                   onClick={() => {
                     setManualLyricsChoice(track.id, null);
-                    setOpen(false);
+                    onOpenChange(false);
                     onSelect();
                   }}
                 >
@@ -416,7 +400,7 @@ function ManualLyricsPicker({
                       style={{ '--i': Math.min(i, 12) } as Vars}
                       onClick={() => {
                         setManualLyricsChoice(track.id, item);
-                        setOpen(false);
+                        onOpenChange(false);
                         onSelect();
                       }}
                     >
@@ -466,12 +450,18 @@ function ManualLyricsPicker({
 export function Lyrics({ track, active = true }: { track: Track | null; active?: boolean }) {
   useLang();
   const [rev, setRev] = useState(0);
+  const [searchOpen, setSearchOpen] = useState(false);
   const st = useLyrics(track, rev, active);
   if (!track) return null;
 
   return (
     <div className="lyrics-stage relative h-full min-h-0 w-full flex-1">
-      <ManualLyricsPicker track={track} onSelect={() => setRev((r) => r + 1)} />
+      <ManualLyricsPicker
+        track={track}
+        open={searchOpen}
+        onOpenChange={setSearchOpen}
+        onSelect={() => setRev((r) => r + 1)}
+      />
       {st.status === 'loading' ? (
         <div className="lyrics-state">
           <Loader size={56} />
@@ -487,7 +477,7 @@ export function Lyrics({ track, active = true }: { track: Track | null; active?:
       ) : st.status === 'plain' ? (
         <PlainLyrics key={`${track.id}:${rev}`} lines={st.lines} preview={st.preview} />
       ) : (
-        <SyncedLyrics key={`${track.id}:${rev}`} lines={st.lines} activeSurface={active} />
+        <SyncedLyrics key={`${track.id}:${rev}`} lines={st.lines} activeSurface={active && !searchOpen} />
       )}
     </div>
   );
