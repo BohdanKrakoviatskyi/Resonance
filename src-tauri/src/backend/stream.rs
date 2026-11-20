@@ -123,7 +123,7 @@ impl Sc {
         let endpoint = self
             .v2_url(&format!("/tracks/{}", path_escape(track_urn)), &[])
             .map_err(|e| BErr::msg(format!("не удалось сформировать запрос метаданных трека: {e}")))?;
-        let track = self.get_json(&endpoint).await.map_err(|e| BErr::msg(format!("не удалось получить потоки трека из SoundCloud: {e}")))?;
+        let track = self.get_json(&endpoint).await.map_err(|e| e.context(|d| format!("не удалось получить потоки трека из SoundCloud: {d}")))?;
         let transcodings: Vec<Transcoding> = track
             .get("media")
             .and_then(|media| varr(media, "transcodings"))
@@ -175,6 +175,10 @@ impl Sc {
         if has_unsupported_drm {
             return Err(BErr::msg("этот трек доступен только в DRM-защищённом потоке SoundCloud, который текущий плеер не поддерживает"));
         }
+        // A refused session is not a property of this track: report it as itself.
+        if let Some(e) = last_err.clone().filter(|e| e.is_auth()) {
+            return Err(e);
+        }
         let cause = last_err.map(|e| e.to_string()).unwrap_or_else(|| "<nil>".into());
         Err(BErr::msg(format!("не удалось получить ни один доступный поток SoundCloud: {cause}")))
     }
@@ -184,7 +188,7 @@ impl Sc {
         let host = parsed.host_str().unwrap_or("");
         if host.eq_ignore_ascii_case("api-v2.soundcloud.com") {
             let endpoint = self.v2_from_absolute(transcoding_url).map_err(|e| BErr::msg(format!("SoundCloud вернул некорректную ссылку транскодирования: {e}")))?;
-            let resolved = self.get_json(&endpoint).await.map_err(|e| BErr::msg(format!("не удалось получить CDN-ссылку SoundCloud: {e}")))?;
+            let resolved = self.get_json(&endpoint).await.map_err(|e| e.context(|d| format!("не удалось получить CDN-ссылку SoundCloud: {d}")))?;
             return Ok(vs(&resolved, "url"));
         }
         if is_soundcloud_media_host(host) {

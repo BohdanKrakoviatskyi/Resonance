@@ -108,6 +108,11 @@ impl Sc {
                     log::warn!("soundcloud.api stage=error_body host={host} body={:?}", scrub_token(&detail, &self.token));
                 }
             }
+            if matches!(status, StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN) && !self.token.trim().is_empty() {
+                // Every endpoint reached from here needs the session, so a 401/403 is the token
+                // being refused, not this particular request: let the backend repair and retry.
+                return Err(BErr::Rejected(format!("{TOKEN_REJECTED} (HTTP {})", status.as_u16())));
+            }
             return Err(BErr::msg(format!("SoundCloud вернул ошибку HTTP {}", status.as_u16())));
         }
         let body = read_limited(response, max_bytes)
@@ -468,7 +473,7 @@ impl Sc {
         let endpoint = self.v2_url("/search/tracks", &[("q", query), ("limit", "5")]).map_err(|e| BErr::msg(format!("не удалось сформировать запрос поиска: {e}")))?;
         let response = self.get_json(&endpoint).await.map_err(|e| {
             log::warn!("tracks.search stage=failed error={e}");
-            BErr::msg(format!("поиск SoundCloud не выполнен: {e}"))
+            e.context(|d| format!("поиск SoundCloud не выполнен: {d}"))
         })?;
         let mut results = Vec::new();
         for item in varr(&response, "collection").into_iter().flatten() {
@@ -503,7 +508,7 @@ impl Sc {
         let endpoint = self.v2_url(&format!("/tracks/{track_id}/related"), &[("limit", "10")]).map_err(|e| BErr::msg(format!("не удалось сформировать запрос похожих треков: {e}")))?;
         let response = self.get_json(&endpoint).await.map_err(|e| {
             log::warn!("track.related stage=failed track_id={track_id} error={e}");
-            BErr::msg(format!("не удалось загрузить похожие треки: {e}"))
+            e.context(|d| format!("не удалось загрузить похожие треки: {d}"))
         })?;
         Ok(varr(&response, "collection")
             .into_iter()

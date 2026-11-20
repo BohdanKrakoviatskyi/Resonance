@@ -32,7 +32,7 @@ export type SoundCloudProfile = {
   likesCount?: number;
 };
 
-export type SoundCloudAuthStatus = { authorized: boolean; profile?: SoundCloudProfile };
+export type SoundCloudAuthStatus = { authorized: boolean; profile?: SoundCloudProfile; /** The session exists but SoundCloud refuses it: signing in again repairs it. */ stale?: boolean };
 export type SoundCloudSearchTrack = {
   id: number;
   urn: string;
