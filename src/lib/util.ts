@@ -172,9 +172,15 @@ export function persist<T extends object>(key: string, store: Store<T>, pick: (s
     })
     .catch(() => {});
   let tm = 0;
+  // The store fires on fields that are not persisted too (playhead, fade progress), so a save whose
+  // payload is byte-identical must not rewrite the key or push the whole state to the backend again.
+  let lastWritten: string | null = null;
   const save = () => {
     try {
-      localStorage.setItem(key, JSON.stringify(pick(store.get())));
+      const serialized = JSON.stringify(pick(store.get()));
+      if (serialized === lastWritten) return;
+      lastWritten = serialized;
+      localStorage.setItem(key, serialized);
       clearTimeout(backupTimer);
       backupTimer = window.setTimeout(syncBackupToBackend, 1000);
     } catch {

@@ -11,6 +11,7 @@ use super::stream_cache::parse_byte_range;
 const PROXY_CHUNK_BYTES: u64 = 2 * 1024 * 1024;
 const PREFETCH_HEAD_BYTES: u64 = 262_144;
 const STALL_TIMEOUT: Duration = Duration::from_secs(4);
+const MAX_STALL_RESUMES: u32 = 3;
 
 fn allowed_cors_origin(origin: &str) -> Option<&str> {
     if matches!(
@@ -124,8 +125,8 @@ pub async fn handle_proxy_connection(
     }
 
     // 1. Complete disk cache hit -> instant zero-network local file serving.
-    if !is_prefetch {
-        if let Some(cached) = proxy.audio_cache.lookup_complete(video_id) {
+    if !is_prefetch
+        && let Some(cached) = proxy.audio_cache.lookup_complete(video_id) {
             return serve_local_file(
                 &mut socket,
                 &method,
@@ -137,7 +138,6 @@ pub async fn handle_proxy_connection(
             )
             .await;
         }
-    }
 
     let (mut resolved, _, _, _) = match proxy
         .get_or_resolve_stream(video_id, false, !is_prefetch, None)
@@ -162,8 +162,8 @@ pub async fn handle_proxy_connection(
                 .map_or(PREFETCH_HEAD_BYTES - 1, |t| {
                     t.saturating_sub(1).min(PREFETCH_HEAD_BYTES - 1)
                 });
-            if let Ok(resp) = fetch_with_swap(&proxy, video_id, &mut resolved, 0, end).await {
-                if resp.status().as_u16() == 206 || resp.status().as_u16() == 200 {
+            if let Ok(resp) = fetch_with_swap(&proxy, video_id, &mut resolved, 0, end).await
+                && (resp.status().as_u16() == 206 || resp.status().as_u16() == 200) {
                     let mime = resp
                         .headers()
                         .get("content-type")
@@ -180,18 +180,19 @@ pub async fn handle_proxy_connection(
                         );
                     }
                 }
-            }
         }
         let resp = format!("HTTP/1.1 202 Accepted\r\n{cors_origin}Content-Length: 0\r\n\r\n");
         let _ = socket.write_all(resp.as_bytes()).await;
         return Ok(());
     }
-    let (req_start, req_end_opt) = parse_byte_range(range_header.as_deref());
+    let Some((req_start, req_end_opt)) = parse_byte_range(range_header.as_deref()) else {
+        return respond_status(&mut socket, "416 Range Not Satisfiable").await;
+    };
     let head_hit = proxy.audio_cache.head_bytes(video_id);
-    if method != "HEAD" && req_start == 0 {
-        if let Some((ref ctype, ref head_bytes, head_total)) = head_hit {
-            if let Some(req_end) = req_end_opt {
-                if (req_end as usize) < head_bytes.len() && head_total > 0 {
+    if method != "HEAD" && req_start == 0
+        && let Some((ref ctype, ref head_bytes, head_total)) = head_hit
+            && let Some(req_end) = req_end_opt
+                && (req_end as usize) < head_bytes.len() && head_total > 0 {
                     let slice_end = (req_end as usize) + 1;
                     return write_memory_range(
                         &mut socket,
@@ -204,9 +205,6 @@ pub async fn handle_proxy_connection(
                     )
                     .await;
                 }
-            }
-        }
-    }
 
     // 3. Open-ended or large requests use bounded 2 MiB chunking to bypass YouTube's 2x realtime throttle.
     let known_total = resolved
@@ -302,6 +300,7 @@ pub async fn handle_proxy_connection(
     };
 
     let mut streamed_ok = true;
+    let mut stall_resumes = 0u32;
     loop {
         let mut chunk_written = 0u64;
         loop {
@@ -325,14 +324,22 @@ pub async fn handle_proxy_connection(
                             total_len.unwrap_or(0),
                         );
                     }
+                    stall_resumes = 0;
                     chunk_written += bytes.len() as u64;
                 }
                 Ok(Ok(None)) => break,
                 Ok(Err(_)) | Err(_) => {
                     // Stalled mid-chunk: resume from cur_start + chunk_written via swap.
                     cur_start += chunk_written;
+                    stall_resumes = if chunk_written == 0 { stall_resumes + 1 } else { 0 };
                     if let Some(end) = target_end {
                         if cur_start > end {
+                            break;
+                        }
+                        // An upstream that answers headers and then errors instantly never
+                        // moves cur_start; give up instead of resuming forever.
+                        if stall_resumes > MAX_STALL_RESUMES {
+                            streamed_ok = false;
                             break;
                         }
                         let next_end = end.min(cur_start + PROXY_CHUNK_BYTES - 1);
@@ -373,7 +380,8 @@ pub async fn handle_proxy_connection(
     if let Some(ref w) = disk_writer {
         proxy
             .audio_cache
-            .finalize_download(video_id, w, streamed_ok);
+            .finalize_download(video_id, w, streamed_ok)
+            .await;
     }
     Ok(())
 }
@@ -464,13 +472,11 @@ fn parse_total_from_headers(
     headers: &reqwest::header::HeaderMap,
     fallback: Option<u64>,
 ) -> Option<u64> {
-    if let Some(cr) = headers.get("content-range").and_then(|v| v.to_str().ok()) {
-        if let Some((_, total_str)) = cr.rsplit_once('/') {
-            if let Ok(total) = total_str.trim().parse::<u64>() {
+    if let Some(cr) = headers.get("content-range").and_then(|v| v.to_str().ok())
+        && let Some((_, total_str)) = cr.rsplit_once('/')
+            && let Ok(total) = total_str.trim().parse::<u64>() {
                 return Some(total);
             }
-        }
-    }
     headers
         .get("content-length")
         .and_then(|v| v.to_str().ok())
@@ -554,7 +560,17 @@ async fn serve_local_file(
     content_type: &str,
     cors_origin: &str,
 ) -> Result<(), String> {
-    let (start, end_opt) = parse_byte_range(range_header);
+    let Some((start, end_opt)) = parse_byte_range(range_header) else {
+        let _ = socket
+            .write_all(
+                format!(
+                    "HTTP/1.1 416 Range Not Satisfiable\r\nContent-Range: bytes */{total}\r\n\r\n"
+                )
+                .as_bytes(),
+            )
+            .await;
+        return Ok(());
+    };
     let end = end_opt.map_or_else(
         || total.saturating_sub(1),
         |e| e.min(total.saturating_sub(1)),

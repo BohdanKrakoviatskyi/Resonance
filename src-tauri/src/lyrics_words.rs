@@ -168,18 +168,27 @@ fn scale_lines(lines: &mut [WordLine], scale: f64) {
     }
 }
 
-async fn get(http: &reqwest::Client, url: &str, query: &[(&str, String)]) -> Result<Value, String> {
-    http.get(url)
+/// Answers are small; anything past this is not a NetEase payload.
+const MAX_BODY: usize = 2 << 20;
+
+/// One client for both requests: a fresh one would pay a pool and a TLS handshake per lookup.
+fn http() -> &'static reqwest::Client {
+    static CLIENT: std::sync::OnceLock<reqwest::Client> = std::sync::OnceLock::new();
+    CLIENT.get_or_init(reqwest::Client::new)
+}
+
+async fn get(url: &str, query: &[(&str, String)]) -> Result<Value, String> {
+    let response = http()
+        .get(url)
         .query(query)
         .header("User-Agent", UA)
         .header("Referer", "https://music.163.com/")
         .timeout(std::time::Duration::from_secs(6))
         .send()
         .await
-        .map_err(|e| e.to_string())?
-        .json::<Value>()
-        .await
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string())?;
+    let body = crate::playlist_import::read_limited(response, MAX_BODY).await?;
+    serde_json::from_slice(&body).map_err(|e| e.to_string())
 }
 
 /// Plain LRC (`[mm:ss.xx]text`) → one "word" per line spanning until the next line.
@@ -226,14 +235,13 @@ pub struct NeteaseLyrics {
 /// Word-timed lines when available, otherwise NetEase's line-synced lyrics; empty when no trustworthy match.
 #[tauri::command]
 pub async fn lyrics_word_synced(title: String, artist: String, duration_ms: i64, speed: Option<String>) -> Result<NeteaseLyrics, String> {
-    let http = reqwest::Client::new();
     let q = format!("{artist} {title}");
-    let found = get(&http, SEARCH, &[("s", q), ("type", "1".into()), ("limit", "15".into())]).await?;
+    let found = get(SEARCH, &[("s", q), ("type", "1".into()), ("limit", "15".into())]).await?;
     let songs = found.pointer("/result/songs").and_then(Value::as_array).cloned().unwrap_or_default();
     let Some((id, scale)) = pick_song(&songs, &title, &artist, duration_ms, speed.as_deref()) else {
         return Ok(NeteaseLyrics { word_level: false, lines: Vec::new() });
     };
-    let lyr = get(&http, LYRIC, &[("id", id.to_string()), ("lv", "1".into()), ("yv", "1".into()), ("tv", "-1".into())]).await?;
+    let lyr = get(LYRIC, &[("id", id.to_string()), ("lv", "1".into()), ("yv", "1".into()), ("tv", "-1".into())]).await?;
     let mut words = parse_yrc(lyr.pointer("/yrc/lyric").and_then(Value::as_str).unwrap_or_default());
     if !words.is_empty() {
         scale_lines(&mut words, scale);

@@ -55,20 +55,17 @@ pub async fn post_music(
         .header("X-Youtube-Client-Name", &remix.client_id)
         .header("X-Youtube-Client-Version", &remix.client_version);
 
-    if authenticated {
-        if let Some(creds) = tokio::task::spawn_blocking(read_ytmusic_credentials)
+    if authenticated
+        && let Some(creds) = tokio::task::spawn_blocking(read_ytmusic_credentials)
             .await
             .ok()
             .flatten()
-        {
-            if let Some(sapisid) = extract_cookie_value(&creds.cookie, "__Secure-3PAPISID") {
+            && let Some(sapisid) = extract_cookie_value(&creds.cookie, "__Secure-3PAPISID") {
                 req = req
                     .header("Authorization", compute_sapisidhash(&sapisid, ORIGIN))
                     .header("Cookie", creds.cookie)
                     .header("X-Goog-AuthUser", creds.auth_user);
             }
-        }
-    }
 
     let resp = req
         .json(&body)
@@ -297,14 +294,13 @@ pub async fn search_music_tracks(http: &Client, query: &str) -> Result<Vec<YtSea
     let mut tracks = Vec::new();
     let mut seen = HashSet::new();
     for r in renderers {
-        if let Some(t) = parse_responsive_track(r) {
-            if seen.insert(t.video_id.clone()) {
+        if let Some(t) = parse_responsive_track(r)
+            && seen.insert(t.video_id.clone()) {
                 tracks.push(to_search_dto(t));
                 if tracks.len() >= 15 {
                     break;
                 }
             }
-        }
     }
     Ok(tracks)
 }

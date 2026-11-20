@@ -163,9 +163,19 @@ export const TrackRow = memo(function TrackRow({ id, index, isCurrent, isPlaying
 
   const tr = getTrack(id);
   if (!tr) return null;
+  const play = () => {
+    if (isCurrent) {
+      const st = player.get();
+      if (st.state === 'error' || st.state === 'loading' || st.loading) onPlayIndex(index);
+      else toggle();
+    } else {
+      onPlayIndex(index);
+    }
+  };
   return (
     <div
-      role="listitem"
+      role="button"
+      tabIndex={0}
       className={cx('track-row sl', animateRow && 'anim-in')}
       data-ripple
       data-current={isCurrent}
@@ -192,12 +202,14 @@ export const TrackRow = memo(function TrackRow({ id, index, isCurrent, isPlaying
         }
         e.preventDefault();
         e.stopPropagation();
-        if (isCurrent) {
-          const st = player.get();
-          if (st.state === 'error' || st.state === 'loading' || st.loading) onPlayIndex(index);
-          else toggle();
-        } else {
-          onPlayIndex(index);
+        play();
+      }}
+      onKeyDown={(e) => {
+        if (e.target !== e.currentTarget) return;
+        if (e.key === 'Enter' || e.key === ' ') {
+          e.preventDefault();
+          e.stopPropagation();
+          play();
         }
       }}
     >
@@ -406,7 +418,6 @@ export function TrackList({
     <div>
       <div
         ref={listRef}
-        role="list"
         className={cx('flex flex-col gap-0.5', !animateRows && 'track-list-no-anim')}
         style={
           shouldVirtualize

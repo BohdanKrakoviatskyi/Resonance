@@ -56,7 +56,7 @@ function errorMessage(error: unknown) {
   if (error instanceof Error) return error.message;
   if (typeof error === 'string' && error.trim()) return error;
   if (error && typeof error === 'object' && 'message' in error && typeof error.message === 'string') return error.message;
-  return 'The provider request failed. Check the settings and try again.';
+  return t('providerRequestFailed');
 }
 
 async function fetchConnection(id: ProviderId): Promise<Connection> {
@@ -91,7 +91,6 @@ function ProviderCard({ provider, index }: { provider: ProviderConfig; index: nu
   useEffect(() => {
     void loadStatus();
     // This card is scoped to one provider for its lifetime.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [provider.id]);
 
   const run = async (action: () => Promise<void>, success: string) => {
@@ -110,7 +109,7 @@ function ProviderCard({ provider, index }: { provider: ProviderConfig; index: nu
   };
 
   const login = () => run(async () => {
-    if (!token.trim()) throw new Error('Enter a SoundCloud access token.');
+    if (!token.trim()) throw new Error(t('scTokenRequired'));
     await soundCloudAuthLogin(token.trim());
     await loadSoundCloudLibrary(true);
     setToken('');
@@ -135,16 +134,16 @@ function ProviderCard({ provider, index }: { provider: ProviderConfig; index: nu
       settled = true;
       cleanup();
       try {
-        if (!payload) throw new Error('SoundCloud sign-in was cancelled or timed out.');
+        if (!payload) throw new Error(t('scLoginCancelled'));
         try {
           await soundCloudSetClientId(payload.clientId);
         } catch (requestError) {
-          throw new Error(`Could not save the SoundCloud client ID: ${errorMessage(requestError)}`);
+          throw new Error(t('scClientIdSaveError', { reason: errorMessage(requestError) }));
         }
         try {
           await soundCloudAuthLogin(payload.token);
         } catch (requestError) {
-          throw new Error(`SoundCloud rejected the captured session: ${errorMessage(requestError)}`);
+          throw new Error(t('scSessionRejected', { reason: errorMessage(requestError) }));
         }
         await loadSoundCloudLibrary(true);
         await loadStatus();
@@ -193,11 +192,11 @@ function ProviderCard({ provider, index }: { provider: ProviderConfig; index: nu
       settled = true;
       cleanup();
       try {
-        if (!payload?.headers) throw new Error('YouTube Music sign-in was cancelled or timed out.');
+        if (!payload?.headers) throw new Error(t('ytLoginCancelled'));
         try {
           await ytMusicAuthSave(payload.headers);
         } catch (requestError) {
-          throw new Error(`YouTube Music rejected the captured session: ${errorMessage(requestError)}`);
+          throw new Error(t('ytSessionRejected', { reason: errorMessage(requestError) }));
         }
         await loadYtMusicLibrary(true);
         await loadStatus();

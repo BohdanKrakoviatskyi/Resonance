@@ -89,9 +89,6 @@ pub fn vi(v: &Value, key: &str) -> i64 {
     }
 }
 
-pub fn vb(v: &Value, key: &str) -> bool {
-    v.get(key).and_then(Value::as_bool).unwrap_or(false)
-}
 
 /// Nested object member that is neither missing nor `null`.
 pub fn vo<'a>(v: &'a Value, key: &str) -> Option<&'a Value> {

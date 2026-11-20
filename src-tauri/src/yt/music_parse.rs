@@ -72,7 +72,7 @@ pub fn collect_by_key<'a>(node: &'a Value, key: &str, out: &mut Vec<&'a Value>) 
 /// own `nextContinuationData` tokens and must never be used to page through
 /// the playlist's tracks — ytmusicapi pages playlists exclusively through
 /// the last item of this shelf (`get_continuations_2025`).
-pub fn playlist_shelf_contents<'a>(data: &'a Value) -> Option<&'a Vec<Value>> {
+pub fn playlist_shelf_contents(data: &Value) -> Option<&Vec<Value>> {
     if let Some(contents) = data
         .pointer("/contents/twoColumnBrowseResultsRenderer/secondaryContents/sectionListRenderer/contents/0/musicPlaylistShelfRenderer/contents")
         .and_then(|v| v.as_array())
@@ -89,7 +89,7 @@ pub fn playlist_shelf_contents<'a>(data: &'a Value) -> Option<&'a Vec<Value>> {
 
 /// Items appended by a continuation request:
 /// `onResponseReceivedActions[0].appendContinuationItemsAction.continuationItems`
-pub fn continuation_items<'a>(data: &'a Value) -> Option<&'a Vec<Value>> {
+pub fn continuation_items(data: &Value) -> Option<&Vec<Value>> {
     data.pointer("/onResponseReceivedActions/0/appendContinuationItemsAction/continuationItems")
         .and_then(|v| v.as_array())
 }
@@ -129,7 +129,7 @@ pub fn continuation_token_from_items(items: &[Value]) -> Option<String> {
 /// Track renderers belonging to the playlist shelf (or to a continuation
 /// page). Falls back to a whole-document search for non-playlist browse
 /// responses (search, library grids) that have no playlist shelf.
-pub fn track_renderers<'a>(data: &'a Value) -> Vec<&'a Value> {
+pub fn track_renderers(data: &Value) -> Vec<&Value> {
     let scoped = playlist_shelf_contents(data)
         .or_else(|| continuation_items(data))
         .map(|items| track_renderers_from_items(items));
@@ -141,7 +141,7 @@ pub fn track_renderers<'a>(data: &'a Value) -> Vec<&'a Value> {
     items
 }
 
-pub fn track_renderers_from_items<'a>(items: &'a [Value]) -> Vec<&'a Value> {
+pub fn track_renderers_from_items(items: &[Value]) -> Vec<&Value> {
     items
         .iter()
         .filter_map(|item| item.get("musicResponsiveListItemRenderer"))
@@ -208,11 +208,10 @@ pub fn extract_header_artwork(data: &Value) -> Option<String> {
     ] {
         let mut found = Vec::new();
         collect_by_key(data, key, &mut found);
-        if let Some(hdr) = found.first() {
-            if let Some(u) = best_thumbnail(hdr.pointer("/thumbnail/musicThumbnailRenderer/thumbnail/thumbnails")) {
+        if let Some(hdr) = found.first()
+            && let Some(u) = best_thumbnail(hdr.pointer("/thumbnail/musicThumbnailRenderer/thumbnail/thumbnails")) {
                 return Some(u);
             }
-        }
     }
     None
 }
@@ -252,15 +251,14 @@ pub fn parse_responsive_track(r: &Value) -> Option<YtMusicTrackDto> {
                 .pointer("/navigationEndpoint/browseEndpoint/browseEndpointContextSupportedConfigs/browseEndpointContextMusicConfig/pageType")
                 .and_then(|v| v.as_str())
                 .unwrap_or("");
-            if page_type.contains("ARTIST") || artists.is_empty() {
-                if !artists.iter().any(|a| a == txt) {
+            if (page_type.contains("ARTIST") || artists.is_empty())
+                && !artists.iter().any(|a| a == txt) {
                     artists.push(txt.to_string());
                 }
-            }
         }
     }
-    if duration_seconds.is_none() {
-        if let Some(fixed) = r.get("fixedColumns").and_then(|v| v.as_array()) {
+    if duration_seconds.is_none()
+        && let Some(fixed) = r.get("fixedColumns").and_then(|v| v.as_array()) {
             for col in fixed {
                 let txt = runs_text(col.pointer("/musicResponsiveListItemFixedColumnRenderer/text/runs"));
                 if let Some(d) = parse_duration_secs(&txt) {
@@ -269,7 +267,6 @@ pub fn parse_responsive_track(r: &Value) -> Option<YtMusicTrackDto> {
                 }
             }
         }
-    }
 
     let artwork_url = best_thumbnail(r.pointer("/thumbnail/musicThumbnailRenderer/thumbnail/thumbnails"))
         .or_else(|| Some(format!("https://i.ytimg.com/vi/{video_id}/hqdefault.jpg")));
@@ -405,7 +402,7 @@ pub fn parse_duration_secs(text: &str) -> Option<f64> {
     }
     let mut total = 0u64;
     for part in trimmed.split(':') {
-        total = total * 60 + part.parse::<u64>().ok()?;
+        total = total.checked_mul(60)?.checked_add(part.parse::<u64>().ok()?)?;
     }
     Some(total as f64)
 }

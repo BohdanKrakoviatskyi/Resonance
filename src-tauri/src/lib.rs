@@ -15,7 +15,7 @@ use tauri::{AppHandle, Emitter, Manager};
 use backend::{Backend, backend_rpc};
 use auth_windows::{SoundCloudLoginState, YtMusicLoginState, soundcloud_auth_capture, start_soundcloud_login, start_ytmusic_login};
 use playlist_import::fetch_external_playlist;
-use yt::music_api::{fetch_yt_playlist_tracks, search_yt_tracks, yt_radio_tracks, yt_search_suggestions};
+use yt::music_api::{search_yt_tracks, yt_radio_tracks, yt_search_suggestions};
 use yt::proxy::{YtStreamProxy, frontend_log, resolve_yt_stream_url};
 use yt::store::{
     YtStore, yt_auth_logout, yt_auth_save, yt_auth_status, yt_clear_cache, yt_library_cached,
@@ -149,12 +149,11 @@ pub fn run() {
             Ok(())
         })
         .on_window_event(|window, event| {
-            if window.label() == "splash" && matches!(event, tauri::WindowEvent::CloseRequested { .. }) {
-                if let Some(main_window) = window.app_handle().get_webview_window("main") {
+            if window.label() == "splash" && matches!(event, tauri::WindowEvent::CloseRequested { .. })
+                && let Some(main_window) = window.app_handle().get_webview_window("main") {
                     let _ = main_window.show();
                     let _ = main_window.set_focus();
                 }
-            }
             if window.label() == "soundcloud-login" && matches!(event, tauri::WindowEvent::CloseRequested { .. }) {
                 // Whether the user cancelled or capture succeeded, no capture
                 // can be pending for a closed window.
@@ -184,7 +183,6 @@ pub fn run() {
             search_yt_tracks,
             yt_search_suggestions,
             yt_radio_tracks,
-            fetch_yt_playlist_tracks,
             yt_auth_status,
             yt_auth_save,
             yt_auth_logout,

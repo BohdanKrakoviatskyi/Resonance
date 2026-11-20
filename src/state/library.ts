@@ -647,7 +647,8 @@ export function toggleLike(id: string): boolean {
   const on = !currentlyLiked;
   library.set({
     liked: on ? [id, ...s.liked.filter((x) => x !== id)] : s.liked.filter((x) => x !== id),
-    disliked: !on ? [id, ...s.disliked.filter((x) => x !== id)] : s.disliked.filter((x) => x !== id),
+    // Снятие лайка не трогает `disliked`: этим списком владеет только toggleDislike.
+    disliked: on ? s.disliked.filter((x) => x !== id) : s.disliked,
     soundcloudLiked: on ? s.soundcloudLiked : s.soundcloudLiked.filter((t) => t.id !== id),
     ytmusicLiked: on ? s.ytmusicLiked : s.ytmusicLiked.filter((t) => t.id !== id),
   });

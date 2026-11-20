@@ -176,7 +176,7 @@ export default function Home() {
         </div>
       )}
 
-      <div className="home-pane home-pane-main" data-open={!searchOpen} aria-hidden={searchOpen}>
+      <div className="home-pane home-pane-main" data-open={!searchOpen} aria-hidden={searchOpen} inert={searchOpen}>
         <div className="home-top">
           <header className="min-w-0">
             <h1 className="display text-[clamp(34px,6cqw,60px)]">{t(greet)}</h1>

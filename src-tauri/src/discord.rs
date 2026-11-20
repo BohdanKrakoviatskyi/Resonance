@@ -71,11 +71,10 @@ fn build(track: &PresenceTrack) -> Activity<'_> {
         }
     }
     a = a.assets(assets);
-    if track.playing {
-        if let (Some(start), Some(end)) = (track.start_ms, track.end_ms) {
+    if track.playing
+        && let (Some(start), Some(end)) = (track.start_ms, track.end_ms) {
             a = a.timestamps(Timestamps::new().start(start).end(end));
         }
-    }
     a = a.buttons(vec![Button::new(
         "Get Resonance",
         "https://github.com/BohdanKrakoviatskyi/Resonance/releases/latest",
@@ -119,11 +118,10 @@ fn worker(rx: Receiver<Msg>) {
             continue;
         };
 
-        if client.as_ref().is_some_and(|(cid, _)| cid != id) {
-            if let Some((_, mut c)) = client.take() {
+        if client.as_ref().is_some_and(|(cid, _)| cid != id)
+            && let Some((_, mut c)) = client.take() {
                 let _ = c.close();
             }
-        }
         if client.is_none() {
             let mut c = DiscordIpcClient::new(id);
             if c.connect().is_err() {

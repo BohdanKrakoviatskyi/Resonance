@@ -486,7 +486,7 @@ pub async fn whisper_transcribe(app: tauri::AppHandle, state: tauri::State<'_, W
     if bytes.len() % 4 != 0 || bytes.len() < 16_000 * 4 {
         return Err("audio too short".into());
     }
-    let pcm: Vec<f32> = bytes.chunks_exact(4).map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]])).collect();
+    let pcm: Vec<f32> = bytes.as_chunks::<4>().0.iter().map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]])).collect();
     let id = state.next_id.fetch_add(1, Ordering::SeqCst);
     // One job at a time: a new request supersedes whatever is running or queued.
     state.cancel_upto.store(id - 1, Ordering::SeqCst);
@@ -572,7 +572,7 @@ mod tests {
     fn live_whisper() {
         let wav = std::fs::read(std::env::var("WHISPER_TEST_WAV").expect("WHISPER_TEST_WAV")).unwrap();
         let data = &wav[44..];
-        let pcm: Vec<f32> = data.chunks_exact(2).map(|b| i16::from_le_bytes([b[0], b[1]]) as f32 / 32768.0).collect();
+        let pcm: Vec<f32> = data.as_chunks::<2>().0.iter().map(|b| i16::from_le_bytes([b[0], b[1]]) as f32 / 32768.0).collect();
         let w = WhisperWorker::default();
         let (reply, rx) = tokio::sync::oneshot::channel();
         let threads: i32 = std::env::var("WHISPER_THREADS").ok().and_then(|s| s.parse().ok()).unwrap_or(2);

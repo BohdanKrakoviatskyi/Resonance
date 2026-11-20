@@ -202,11 +202,10 @@ fn extract_meta_content(html: &str, name: &str) -> Option<String> {
                 if let Some(c_pos) = slice.find("content=") {
                     let after = &slice[c_pos + 8..];
                     let q = after.chars().next()?;
-                    if q == '"' || q == '\'' {
-                        if let Some(end) = after[1..].find(q) {
+                    if (q == '"' || q == '\'')
+                        && let Some(end) = after[1..].find(q) {
                             return Some(html_unescape(&after[1..1 + end]));
                         }
-                    }
                 }
             }
         }
@@ -570,8 +569,8 @@ async fn fetch_apple_music_playlist(
     let mut artwork_url = extract_meta_content(&html, "og:image");
     let mut tracks = Vec::new();
 
-    if let Some(raw_json) = extract_script_by_id(&html, "serialized-server-data") {
-        if let Ok(parsed) = serde_json::from_str::<Value>(raw_json) {
+    if let Some(raw_json) = extract_script_by_id(&html, "serialized-server-data")
+        && let Ok(parsed) = serde_json::from_str::<Value>(raw_json) {
             let mut headers = Vec::new();
             collect_by_key(&parsed, "containerDetailHeaderLockup", &mut headers);
             if let Some(hdr) = headers.first() {
@@ -596,8 +595,8 @@ async fn fetch_apple_music_playlist(
             let mut lockups = Vec::new();
             collect_by_key(&parsed, "trackLockup", &mut lockups);
             // serialized-server-data stores sections[].items for trackLockup; if trackLockup is itemKind rather than key:
-            if lockups.is_empty() {
-                if let Some(sections) = parsed
+            if lockups.is_empty()
+                && let Some(sections) = parsed
                     .pointer("/data/0/data/sections")
                     .or_else(|| parsed.pointer("/0/data/sections"))
                     .and_then(|v| v.as_array())
@@ -621,14 +620,12 @@ async fn fetch_apple_music_playlist(
                                     artwork_url = Some(format_apple_artwork(art_tpl, 500));
                                 }
                             }
-                        } else if kind == "trackLockup" {
-                            if let Some(items) = sec.get("items").and_then(|v| v.as_array()) {
+                        } else if kind == "trackLockup"
+                            && let Some(items) = sec.get("items").and_then(|v| v.as_array()) {
                                 lockups.extend(items.iter());
                             }
-                        }
                     }
                 }
-            }
 
             let mut seen = HashSet::new();
             for item in lockups {
@@ -688,7 +685,6 @@ async fn fetch_apple_music_playlist(
                 });
             }
         }
-    }
 
     if tracks.is_empty() {
         return Err("Apple Music playlist is empty or could not be parsed.".to_string());

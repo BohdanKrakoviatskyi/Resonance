@@ -75,11 +75,10 @@ impl AudioCache {
             return;
         }
         if let Ok(mut map) = self.head_cache.lock() {
-            if map.len() >= 32 && !map.contains_key(video_id) {
-                if let Some(k) = map.keys().next().cloned() {
+            if map.len() >= 32 && !map.contains_key(video_id)
+                && let Some(k) = map.keys().next().cloned() {
                     map.remove(&k);
                 }
-            }
             map.insert(
                 video_id.to_string(),
                 (content_type.to_string(), bytes.to_vec(), total),
@@ -103,8 +102,8 @@ impl AudioCache {
             if !done.is_file() {
                 continue;
             }
-            if let Ok(meta) = std::fs::metadata(&path) {
-                if meta.is_file() && meta.len() > 64 * 1024 {
+            if let Ok(meta) = std::fs::metadata(&path)
+                && meta.is_file() && meta.len() > 64 * 1024 {
                     touch_if_old(&path);
                     return Some(CachedAudioMeta {
                         path,
@@ -112,7 +111,6 @@ impl AudioCache {
                         content_type: mime.to_string(),
                     });
                 }
-            }
         }
         None
     }
@@ -168,45 +166,25 @@ impl AudioCache {
             .write(true)
             .open(&entry.temp_path)
             .await
-        {
-            if file.seek(std::io::SeekFrom::Start(offset)).await.is_ok()
+            && file.seek(std::io::SeekFrom::Start(offset)).await.is_ok()
                 && file.write_all(data).await.is_ok()
             {
                 let end = offset + data.len() as u64;
-                if let Ok(mut w) = entry.written.lock() {
-                    if end > *w {
+                if let Ok(mut w) = entry.written.lock()
+                    && end > *w {
                         *w = end;
                     }
-                }
                 entry.notify.notify_waiters();
             }
-        }
     }
 
-    pub fn finalize_download(&self, video_id: &str, entry: &Arc<ActiveCacheWrite>, ok: bool) {
+    pub async fn finalize_download(&self, video_id: &str, entry: &Arc<ActiveCacheWrite>, ok: bool) {
         if let Ok(mut active) = self.active.lock() {
             active.remove(video_id);
         }
-        if ok {
-            if let Ok(meta) = std::fs::metadata(&entry.temp_path) {
-                if meta.len() >= entry.total_bytes {
-                    let _ = std::fs::rename(&entry.temp_path, &entry.path);
-                    let done = PathBuf::from(format!("{}.done", entry.path.display()));
-                    let _ = std::fs::write(done, b"ok");
-                    enforce_disk_limit(&self.dir, MAX_DISK_CACHE_BYTES);
-                    if let Ok(mut f) = entry.finished.lock() {
-                        *f = Some(Ok(()));
-                    }
-                    entry.notify.notify_waiters();
-                    return;
-                }
-            }
-        }
-        let _ = std::fs::remove_file(&entry.temp_path);
-        if let Ok(mut f) = entry.finished.lock() {
-            *f = Some(Err("incomplete".to_string()));
-        }
-        entry.notify.notify_waiters();
+        let entry = entry.clone();
+        let dir = self.dir.clone();
+        let _ = tokio::task::spawn_blocking(move || finish_cache_write(&dir, &entry, ok)).await;
     }
 
     pub fn clear_all(&self) -> (usize, u64) {
@@ -269,6 +247,12 @@ impl AudioCache {
     }
 }
 
+impl Default for AudioCache {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 fn is_pinned(dir: &Path, file_name: &str) -> bool {
     let id = file_name.split('.').next().unwrap_or("");
     !id.is_empty() && dir.join(format!("{id}.pin")).is_file()
@@ -288,13 +272,11 @@ pub fn ext_for_mime(mime: &str) -> &'static str {
 }
 
 fn touch_if_old(path: &Path) {
-    if let Ok(meta) = std::fs::metadata(path) {
-        if let Ok(mod_time) = meta.modified() {
-            if mod_time.elapsed().unwrap_or_default() >= Duration::from_secs(3600) {
+    if let Ok(meta) = std::fs::metadata(path)
+        && let Ok(mod_time) = meta.modified()
+            && mod_time.elapsed().unwrap_or_default() >= Duration::from_secs(3600) {
                 let _ = filetime_touch(path);
             }
-        }
-    }
 }
 
 fn filetime_touch(path: &Path) -> std::io::Result<()> {
@@ -322,6 +304,66 @@ fn prune_orphans(dir: &Path) {
             if !has_file {
                 let _ = std::fs::remove_file(&path);
             }
+        }
+    }
+}
+
+/// Blocking half of `AudioCache::finalize_download`: rename, `.done` marker, eviction.
+fn finish_cache_write(dir: &Path, entry: &ActiveCacheWrite, ok: bool) {
+    if ok
+        && let Ok(meta) = std::fs::metadata(&entry.temp_path)
+            && meta.len() >= entry.total_bytes && std::fs::rename(&entry.temp_path, &entry.path).is_ok() {
+                let done = PathBuf::from(format!("{}.done", entry.path.display()));
+                let _ = std::fs::write(done, b"ok");
+                enforce_disk_limit(dir, MAX_DISK_CACHE_BYTES);
+                if let Ok(mut f) = entry.finished.lock() {
+                    *f = Some(Ok(()));
+                }
+                entry.notify.notify_waiters();
+                return;
+            }
+    let _ = std::fs::remove_file(&entry.temp_path);
+    if let Ok(mut f) = entry.finished.lock() {
+        *f = Some(Err("incomplete".to_string()));
+    }
+    entry.notify.notify_waiters();
+}
+
+fn enforce_disk_limit(dir: &Path, max_bytes: u64) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    let mut files: Vec<(PathBuf, u64, SystemTime)> = Vec::new();
+    let mut total = 0u64;
+    for e in entries.flatten() {
+        let name = e.file_name().to_string_lossy().to_string();
+        if name.ends_with(".part") || name.ends_with(".done") || name.ends_with(".meta") || name.ends_with(".pin") {
+            continue;
+        }
+        // Offline downloads neither count toward nor get evicted by the cache limit.
+        if is_pinned(dir, &name) {
+            continue;
+        }
+        if let Ok(meta) = e.metadata()
+            && meta.is_file() {
+                let len = meta.len();
+                let mtime = meta.modified().unwrap_or(SystemTime::UNIX_EPOCH);
+                total += len;
+                files.push((e.path(), len, mtime));
+            }
+    }
+    if total <= max_bytes {
+        return;
+    }
+    files.sort_by_key(|(_, _, m)| *m);
+    for (path, len, _) in files {
+        if total <= max_bytes {
+            break;
+        }
+        if std::fs::remove_file(&path).is_ok() {
+            let done = PathBuf::from(format!("{}.done", path.display()));
+            let _ = std::fs::remove_file(done);
+            total = total.saturating_sub(len);
         }
     }
 }
@@ -357,45 +399,5 @@ mod pin_tests {
         assert!(pinned_kept, "pinned file must survive eviction");
         assert!(old_removed, "unpinned file over the limit is evicted");
         assert!(pin_kept, "pin with a finished file is not an orphan");
-    }
-}
-
-fn enforce_disk_limit(dir: &Path, max_bytes: u64) {
-    let Ok(entries) = std::fs::read_dir(dir) else {
-        return;
-    };
-    let mut files: Vec<(PathBuf, u64, SystemTime)> = Vec::new();
-    let mut total = 0u64;
-    for e in entries.flatten() {
-        let name = e.file_name().to_string_lossy().to_string();
-        if name.ends_with(".part") || name.ends_with(".done") || name.ends_with(".meta") || name.ends_with(".pin") {
-            continue;
-        }
-        // Offline downloads neither count toward nor get evicted by the cache limit.
-        if is_pinned(dir, &name) {
-            continue;
-        }
-        if let Ok(meta) = e.metadata() {
-            if meta.is_file() {
-                let len = meta.len();
-                let mtime = meta.modified().unwrap_or(SystemTime::UNIX_EPOCH);
-                total += len;
-                files.push((e.path(), len, mtime));
-            }
-        }
-    }
-    if total <= max_bytes {
-        return;
-    }
-    files.sort_by_key(|(_, _, m)| *m);
-    for (path, len, _) in files {
-        if total <= max_bytes {
-            break;
-        }
-        if std::fs::remove_file(&path).is_ok() {
-            let done = PathBuf::from(format!("{}.done", path.display()));
-            let _ = std::fs::remove_file(done);
-            total = total.saturating_sub(len);
-        }
     }
 }

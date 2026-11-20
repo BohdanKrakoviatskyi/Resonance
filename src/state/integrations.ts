@@ -90,10 +90,16 @@ export async function flushScrobbles() {
   flushing = true;
   const batch = queue.slice(0, 50);
   try {
-    await invoke<number>('lastfm_scrobble', { items: batch });
+    const accepted = await invoke<number>('lastfm_scrobble', { items: batch });
+    // Last.fm принимает подряд с начала пачки; остаток остаётся в очереди до следующей попытки.
+    const sent = batch.slice(0, accepted);
+    if (!sent.length) {
+      integrations.set({ lastfmError: 'Last.fm accepted 0 scrobbles' });
+      return;
+    }
     integrations.set((s) => ({
-      lastfmQueue: s.lastfmQueue.filter((q) => !batch.includes(q)),
-      lastfmScrobbled: s.lastfmScrobbled + batch.length,
+      lastfmQueue: s.lastfmQueue.filter((q) => !sent.includes(q)),
+      lastfmScrobbled: s.lastfmScrobbled + sent.length,
       lastfmError: '',
     }));
   } catch (e) {

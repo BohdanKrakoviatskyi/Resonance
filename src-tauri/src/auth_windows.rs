@@ -271,11 +271,10 @@ fn watch_ytmusic_login(app: AppHandle, nonce: String) {
             if capture_ytmusic_session(&app, &window, &nonce) {
                 return;
             }
-        } else if is_music_youtube_url(&url) {
-            if let Ok(target) = library_url() {
+        } else if is_music_youtube_url(&url)
+            && let Ok(target) = library_url() {
                 let _ = window.navigate(target);
             }
-        }
     }
 }
 

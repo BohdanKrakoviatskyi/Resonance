@@ -1,5 +1,6 @@
 import { invoke } from '@tauri-apps/api/core';
 import { createStore, persist } from '../lib/util';
+import { t } from '../lib/i18n';
 import { setManualLyricsChoice } from '../lib/api';
 import { guessLanguage, pcmToBytes, threadsFor, toEnhancedLrc, type TranscriptLine } from '../lib/transcript-lrc';
 import type { Track } from '../types';
@@ -144,15 +145,15 @@ export async function transcribeTrack(
     }
     if (signal.aborted || whisper.get().activeTrack !== track.id) return false;
     const stream = await streamUrlForAnalysis(track);
-    if (!stream.url) throw new Error('Аудиопоток для распознавания не найден.');
+    if (!stream.url) throw new Error(t('whisperNoStream'));
     if (signal.aborted || whisper.get().activeTrack !== track.id) return false;
     let pcm: Float32Array;
     if (stream.hls && track.source === 'soundcloud' && track.nativeId) {
       const raw = await invoke<ArrayBuffer>('soundcloud_analysis_pcm_command', { trackUrn: track.nativeId });
-      if (raw.byteLength % Float32Array.BYTES_PER_ELEMENT !== 0) throw new Error('Некорректные аудиоданные от распознавателя.');
+      if (raw.byteLength % Float32Array.BYTES_PER_ELEMENT !== 0) throw new Error(t('whisperBadAudio'));
       pcm = new Float32Array(raw);
     } else {
-      if (stream.hls) throw new Error('Этот формат аудиопотока пока не поддерживается для распознавания.');
+      if (stream.hls) throw new Error(t('whisperUnsupportedStream'));
       pcm = await decodeTo16kMono(stream.url, signal);
     }
     if (signal.aborted || whisper.get().activeTrack !== track.id) return false;
@@ -169,7 +170,7 @@ export async function transcribeTrack(
     });
     if (whisper.get().activeTrack !== track.id) return false;
     if (lines.length < 2) {
-      whisper.set({ error: 'Не удалось распознать достаточно текста для сохранения.' });
+      whisper.set({ error: t('whisperTooShort') });
       return false;
     }
     setManualLyricsChoice(track.id, {

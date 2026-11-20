@@ -28,12 +28,9 @@ use tokio::sync::RwLock;
 
 use lyrics::CachedLyrics;
 use soundcloud::{OFFICIAL_API_BASE, Sc};
-use store::{MAX_RECENT_TRACKS, Paths, State, remove_file_if_exists, to_pretty_json, valid_accent, valid_background_image, valid_client_id, write_secret_file};
+use store::{Paths, State, remove_file_if_exists, to_pretty_json, valid_accent, valid_background_image, valid_client_id, write_secret_file};
 use types::*;
 use util::*;
-
-/// The version the renderer shows; kept in step with `Cargo.toml`.
-const APP_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 struct Inner {
     http: reqwest::Client,
@@ -138,18 +135,7 @@ impl Backend {
     async fn dispatch(&self, method: &str, params: Value) -> Result<Value, String> {
         let params = if params.is_null() { Value::Object(Default::default()) } else { params };
         match method {
-            "app.info" => to_value(AppInfo { name: APP_NAME, version: APP_VERSION, backend: "rust-native" }),
-
-            "settings.get" => to_value(self.inner.state.read().await.settings.clone()),
             "settings.update" => to_value(self.settings_update(parse(method, params)?).await?),
-            "settings.clear" => to_value(self.settings_clear().await?),
-
-            "history.list" => to_value(self.inner.state.read().await.history.clone()),
-            "history.record" => {
-                let p: HistoryTrackParams = parse(method, params)?;
-                to_value(self.history_record(p.track).await?)
-            }
-            "history.clear" => to_value(self.history_clear().await?),
 
             "frontend.backup" => {
                 let p: FrontendBackupParams = parse(method, params)?;
@@ -170,10 +156,6 @@ impl Backend {
             "playlist.tracks" => {
                 let p: PlaylistTracksParams = parse(method, params)?;
                 to_value(self.sc().await.playlist_tracks(&p.playlist_urn).await.map_err(s)?)
-            }
-            "track.details" => {
-                let p: TrackIdParams = parse(method, params)?;
-                to_value(self.sc().await.track_details(p.track_id).await.map_err(s)?)
             }
             "search.tracks" => {
                 let p: SearchParams = parse(method, params)?;
@@ -196,35 +178,7 @@ impl Backend {
                 };
                 to_value(stream.map_err(s)?)
             }
-            "track.like" | "track.unlike" => {
-                let p: TrackLikeParams = parse(method, params)?;
-                let liked = method == "track.like";
-                to_value(self.sc().await.set_track_liked(p.track_id, &p.track_urn, liked, &p.datadome_cookie).await.map_err(s)?)
-            }
             "track.lyrics" => to_value(self.track_lyrics(parse(method, params)?).await.map_err(s)?),
-
-            "user.profile" => {
-                let p: UserParams = parse(method, params)?;
-                to_value(self.sc().await.user_profile(p.user_id).await.map_err(s)?)
-            }
-            "user.tracks" => {
-                let p: UserParams = parse(method, params)?;
-                to_value(self.sc().await.user_tracks(p.user_id).await.map_err(s)?)
-            }
-            "user.playlists" => {
-                let p: UserParams = parse(method, params)?;
-                to_value(self.sc().await.user_playlists(p.user_id).await.map_err(s)?)
-            }
-            "user.likes" => {
-                let p: UserPageParams = parse(method, params)?;
-                to_value(self.sc().await.user_likes(p.user_id, &p.next).await.map_err(s)?)
-            }
-            "user.followers" | "user.followings" => {
-                let p: UserPageParams = parse(method, params)?;
-                let relation = if method == "user.followers" { "followers" } else { "followings" };
-                to_value(self.sc().await.user_social(p.user_id, &p.next, relation).await.map_err(s)?)
-            }
-            "mixed.selections" => to_value(self.sc().await.mixed_selections().await.map_err(s)?),
 
             "resolve.playlist" => {
                 let p: ResolvePlaylistParams = parse(method, params)?;
@@ -283,67 +237,28 @@ impl Backend {
         Ok(updated)
     }
 
-    /// Clears locally persisted account credentials and preferences.
-    async fn settings_clear(&self) -> Result<Settings, String> {
-        let mut state = self.inner.state.write().await;
-        let paths = &self.inner.paths;
-        remove_file_if_exists(&paths.auth).map_err(|e| format!("clear auth: {e}"))?;
-        remove_file_if_exists(&paths.settings).map_err(|e| format!("clear settings: {e}"))?;
-        remove_file_if_exists(&paths.history).map_err(|e| format!("clear history: {e}"))?;
-        remove_file_if_exists(&paths.frontend_backup).map_err(|e| format!("clear frontend backup: {e}"))?;
-        state.auth = AuthState::default();
-        state.settings = Settings::default();
-        state.history = Vec::new();
-        state.frontend_backup = HashMap::new();
-        Ok(state.settings.clone())
-    }
+    // ---- frontend state -----------------------------------------------------------------------
 
-    // ---- history ------------------------------------------------------------------------------
-
-    async fn history_record(&self, mut track: TrackCard) -> Result<Vec<TrackCard>, String> {
-        let mut state = self.inner.state.write().await;
-        if track.id <= 0 || track.title.trim().is_empty() {
-            return Err("для записи истории нужны корректные ID и название трека".into());
-        }
-        if track.track_urn.is_empty() {
-            track.track_urn = format!("soundcloud:tracks:{}", track.id);
-        }
-        let mut updated = Vec::with_capacity(MAX_RECENT_TRACKS);
-        let id = track.id;
-        updated.push(track);
-        for existing in &state.history {
-            if existing.id == id {
-                continue;
-            }
-            updated.push(existing.clone());
-            if updated.len() == MAX_RECENT_TRACKS {
-                break;
-            }
-        }
-        write_secret_file(&self.inner.paths.history, to_pretty_json(&updated)?).await.map_err(|e| format!("save playback history: {e}"))?;
-        state.history = updated.clone();
-        Ok(updated)
-    }
-
-    async fn history_clear(&self) -> Result<Vec<TrackCard>, String> {
-        let mut state = self.inner.state.write().await;
-        remove_file_if_exists(&self.inner.paths.history).map_err(|e| format!("clear playback history: {e}"))?;
-        state.history = Vec::new();
-        Ok(Vec::new())
-    }
-
+    /// Merges the keys and snapshots the map under a short write lock, then writes the file outside
+    /// it: the fsync must not queue concurrent SoundCloud requests behind it. Only the keys that were
+    /// just stored come back, because echoing the whole map means shipping the entire app state over
+    /// IPC on every save (the renderer ignores the answer either way; `frontend.restore` is the read).
     async fn frontend_backup(&self, entries: HashMap<String, String>) -> HashMap<String, String> {
-        let mut state = self.inner.state.write().await;
-        for (key, value) in entries {
-            if !key.is_empty() {
-                state.frontend_backup.insert(key, value);
+        let accepted: HashMap<String, String> = entries.iter().filter(|(key, _)| !key.is_empty()).map(|(k, v)| (k.clone(), v.clone())).collect();
+        let merged = {
+            let mut state = self.inner.state.write().await;
+            for (key, value) in entries {
+                if !key.is_empty() {
+                    state.frontend_backup.insert(key, value);
+                }
             }
-        }
-        // Best effort, like the original: the in-memory copy is still returned if the write fails.
-        if let Ok(data) = serde_json::to_vec(&state.frontend_backup) {
+            state.frontend_backup.clone()
+        };
+        // Best effort, like the original: the in-memory copy is still there if the write fails.
+        if let Ok(data) = serde_json::to_vec(&merged) {
             let _ = write_secret_file(&self.inner.paths.frontend_backup, data).await;
         }
-        state.frontend_backup.clone()
+        accepted
     }
 
     // ---- auth ---------------------------------------------------------------------------------
@@ -482,12 +397,6 @@ fn chrono_like_rfc3339() -> String {
 // ---- request params ---------------------------------------------------------------------------
 
 #[derive(Deserialize, Default)]
-#[serde(default, rename_all = "camelCase")]
-struct HistoryTrackParams {
-    track: TrackCard,
-}
-
-#[derive(Deserialize, Default)]
 #[serde(default)]
 struct FrontendBackupParams {
     entries: HashMap<String, String>,
@@ -522,28 +431,6 @@ struct SearchParams {
 struct TrackStreamParams {
     track_urn: String,
     analysis: bool,
-}
-
-#[derive(Deserialize, Default)]
-#[serde(default, rename_all = "camelCase")]
-struct TrackLikeParams {
-    track_id: i64,
-    track_urn: String,
-    #[serde(rename = "datadomeCookie")]
-    datadome_cookie: String,
-}
-
-#[derive(Deserialize, Default)]
-#[serde(default, rename_all = "camelCase")]
-struct UserParams {
-    user_id: i64,
-}
-
-#[derive(Deserialize, Default)]
-#[serde(default, rename_all = "camelCase")]
-struct UserPageParams {
-    user_id: i64,
-    next: String,
 }
 
 #[derive(Deserialize, Default)]
@@ -582,11 +469,9 @@ mod tests {
 
     /// The renderer calls these by name; a typo or a dropped arm would only surface at runtime as
     /// "unknown method". This mirrors the table the Go sidecar pinned in `TestRPCMethodNames`.
-    const METHODS: [&str; 33] = [
-        "app.info", "auth.login", "auth.logout", "auth.refresh", "auth.status", "cache.clear", "frontend.backup", "frontend.restore", "history.clear", "history.list",
-        "history.record", "mixed.selections", "playlist.tracks", "playlists.mine", "resolve.playlist", "search.tracks", "settings.clear", "settings.get", "settings.update",
-        "track.details", "track.like", "track.lyrics", "track.related", "track.stream", "track.unlike", "tracks.mine", "user.followers", "user.followings", "user.likes",
-        "user.likes.by.input", "user.playlists", "user.profile", "user.tracks",
+    const METHODS: [&str; 17] = [
+        "auth.login", "auth.logout", "auth.refresh", "auth.status", "cache.clear", "frontend.backup", "frontend.restore", "playlist.tracks", "playlists.mine",
+        "resolve.playlist", "search.tracks", "settings.update", "track.lyrics", "track.related", "track.stream", "tracks.mine", "user.likes.by.input",
     ];
 
     fn temp_backend() -> Backend {
@@ -631,33 +516,15 @@ mod tests {
         // Settings survive a restart.
         let reloaded = State::load(&backend.inner.paths);
         assert_eq!(reloaded.settings.volume, 40);
-        let cleared = backend.call("settings.clear", Value::Null).await.unwrap();
-        assert_eq!(cleared["volume"], 70);
-    }
-
-    #[tokio::test]
-    async fn history_is_deduplicated_newest_first_and_capped() {
-        let backend = temp_backend();
-        for id in 1..=25 {
-            backend.call("history.record", serde_json::json!({"track": {"id": id, "title": format!("T{id}")}})).await.unwrap();
-        }
-        let again = backend.call("history.record", serde_json::json!({"track": {"id": 20, "title": "T20"}})).await.unwrap();
-        let ids: Vec<i64> = again.as_array().unwrap().iter().map(|t| t["id"].as_i64().unwrap()).collect();
-        assert_eq!(ids.len(), MAX_RECENT_TRACKS);
-        assert_eq!(ids[0], 20);
-        assert_eq!(ids.iter().filter(|id| **id == 20).count(), 1);
-        assert_eq!(again[0]["trackUrn"], "soundcloud:tracks:20");
-        assert!(backend.call("history.record", serde_json::json!({"track": {"id": 0, "title": "x"}})).await.is_err());
-        assert_eq!(backend.call("history.clear", Value::Null).await.unwrap(), serde_json::json!([]));
     }
 
     #[tokio::test]
     async fn frontend_backup_merges_and_persists() {
         let backend = temp_backend();
         backend.call("frontend.backup", serde_json::json!({"entries": {"a": "1", "": "ignored"}})).await.unwrap();
-        let merged = backend.call("frontend.backup", serde_json::json!({"entries": {"b": "2"}})).await.unwrap();
-        assert_eq!(merged, serde_json::json!({"a": "1", "b": "2"}));
-        assert_eq!(backend.call("frontend.restore", Value::Null).await.unwrap(), merged);
+        let accepted = backend.call("frontend.backup", serde_json::json!({"entries": {"b": "2"}})).await.unwrap();
+        assert_eq!(accepted, serde_json::json!({"b": "2"}));
+        assert_eq!(backend.call("frontend.restore", Value::Null).await.unwrap(), serde_json::json!({"a": "1", "b": "2"}));
         assert_eq!(State::load(&backend.inner.paths).frontend_backup.len(), 2);
     }
 
@@ -665,7 +532,7 @@ mod tests {
     async fn account_calls_require_a_connected_account() {
         let backend = temp_backend();
         assert_eq!(backend.call("auth.status", Value::Null).await.unwrap(), serde_json::json!({"authorized": false}));
-        for method in ["tracks.mine", "playlists.mine", "mixed.selections"] {
+        for method in ["tracks.mine", "playlists.mine"] {
             assert_eq!(backend.call(method, Value::Null).await.unwrap_err(), NOT_CONNECTED, "{method}");
         }
         assert_eq!(backend.call("search.tracks", serde_json::json!({"query": "  "})).await.unwrap(), serde_json::json!([]));

@@ -117,7 +117,21 @@ function startBroadcast(channel: DataConnection) {
     last = key;
     void channel.send(snapshot);
   };
-  const unsubscribe = player.subscribe(() => send());
+  // Стор плеера тикает каждый кадр во время кроссфейда, поэтому снапшот собираем
+  // только на смену транспорта (трек / play-pause / позиция), а не на каждое изменение.
+  let lastTrack = '';
+  let lastPlaying = false;
+  let lastPos = -1;
+  const unsubscribe = player.subscribe(() => {
+    const s = player.get();
+    const id = s.queue[s.index] ?? '';
+    const pos = Math.round(s.pos);
+    if (id === lastTrack && s.playing === lastPlaying && pos === lastPos) return;
+    lastTrack = id;
+    lastPlaying = s.playing;
+    lastPos = pos;
+    send();
+  });
   const interval = window.setInterval(() => send(true), 2000);
   cleanup.push(unsubscribe, () => clearInterval(interval));
   send(true);
@@ -133,17 +147,23 @@ function applyHostState(remote: HostState) {
       withRemotePlayback(() => playQueue([action.track.id], 0));
       // Seek after the stream has loaded, then mirror the host's play/pause state.
       let unsubscribe = () => {};
+      // Ожидание убирает свою запись из cleanup, как только сработает или истечёт.
+      const drop = () => {
+        clearTimeout(timeout);
+        unsubscribe();
+        cleanup = cleanup.filter((fn) => fn !== drop);
+      };
       unsubscribe = player.subscribe(() => {
         const next = player.get();
         if (next.state !== 'playing' && next.state !== 'paused') return;
-        unsubscribe();
+        drop();
         withRemotePlayback(() => {
           if (action.pos > 2) seek(action.pos);
           if (!action.playing && next.playing) toggle();
         });
       });
-      const timeout = window.setTimeout(unsubscribe, 20000);
-      cleanup.push(() => { clearTimeout(timeout); unsubscribe(); });
+      const timeout = window.setTimeout(drop, 20000);
+      cleanup.push(drop);
     } else if (action.kind === 'seek') withRemotePlayback(() => seek(action.pos));
     else if (action.kind === 'play' || action.kind === 'pause') withRemotePlayback(() => toggle());
     else if (action.kind === 'unsupported' && unsupportedWarned !== action.track.id) {

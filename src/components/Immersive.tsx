@@ -170,8 +170,23 @@ function TopBarCrossfadePill() {
   const crossfadeDuration = useStore(player, (s) => s.crossfadeDuration);
   const [open, setOpen] = useState(false);
   const popRef = useRef<HTMLDivElement>(null);
+  const pillRef = useRef<HTMLButtonElement>(null);
 
   const effectiveVal = crossfadeEnabled ? crossfadeDuration : 0;
+
+  // React's wheel listener is passive, so the scroll-blocking preventDefault needs a native one.
+  useEffect(() => {
+    const pill = pillRef.current;
+    if (!pill) return;
+    const onWheel = (event: WheelEvent) => {
+      event.preventDefault();
+      const st = player.get();
+      const current = st.crossfadeEnabled ? st.crossfadeDuration : 0;
+      setCrossfadeDuration(clamp(current + (event.deltaY < 0 ? 0.5 : -0.5), 0, 12));
+    };
+    pill.addEventListener('wheel', onWheel, { passive: false });
+    return () => pill.removeEventListener('wheel', onWheel);
+  }, []);
 
   useEffect(() => {
     if (!open) return;
@@ -186,6 +201,7 @@ function TopBarCrossfadePill() {
     <div ref={popRef} className="relative z-20">
       <button
         type="button"
+        ref={pillRef}
         data-ripple
         aria-expanded={open}
         title={t('crossfade')}
@@ -196,12 +212,6 @@ function TopBarCrossfadePill() {
             : 'bg-on-surface/9 text-on-surface-variant ring-1 ring-white/10 hover:text-on-surface',
         )}
         onClick={() => setOpen((v) => !v)}
-        onWheel={(e) => {
-          e.preventDefault();
-          const delta = e.deltaY < 0 ? 0.5 : -0.5;
-          const nextVal = clamp(effectiveVal + delta, 0, 12);
-          setCrossfadeDuration(nextVal);
-        }}
       >
         <Icon name="tune" size={17} />
         <span>{t('crossfade')}</span>
@@ -245,16 +255,26 @@ function ImmersiveVolumeControl() {
   const p = volumeToPos(m ? 0 : v);
   const icon = m || v === 0 ? 'volume_off' : v < 0.25 ? 'volume_down' : 'volume_up';
   const pct = Math.round((m ? 0 : v) * 100);
+  const boxRef = useRef<HTMLDivElement>(null);
+
+  // React's wheel listener is passive, so the scroll-blocking preventDefault needs a native one.
+  useEffect(() => {
+    const box = boxRef.current;
+    if (!box) return;
+    const onWheel = (event: WheelEvent) => {
+      event.preventDefault();
+      const lines = event.deltaMode === 1 ? 33 : 1;
+      const step = clamp((-event.deltaY * lines) / 100, -1, 1) * (event.shiftKey ? 0.005 : 0.025);
+      if (step) adjustVolumePos(step);
+    };
+    box.addEventListener('wheel', onWheel, { passive: false });
+    return () => box.removeEventListener('wheel', onWheel);
+  }, []);
 
   return (
     <div
+      ref={boxRef}
       className="flex min-w-[140px] max-w-[210px] flex-1 items-center gap-1.5 rounded-full bg-on-surface/8 py-1 pl-1 pr-3.5 ring-1 ring-white/8"
-      onWheel={(e) => {
-        e.preventDefault();
-        const lines = e.deltaMode === 1 ? 33 : 1;
-        const step = clamp((-e.deltaY * lines) / 100, -1, 1) * (e.shiftKey ? 0.005 : 0.025);
-        if (step) adjustVolumePos(step);
-      }}
     >
       <IconButton icon={icon} label={t('mute')} onClick={toggleMute} size="sm" fill />
       <Slider

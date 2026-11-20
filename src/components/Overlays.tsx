@@ -41,6 +41,8 @@ export function Drawer({ open, onClose, side, children }: { open: boolean; onClo
 }
 
 const closeDialog = () => ui.set({ dialog: null });
+// Every dialog body renders its title <h2> with this id, so the host can name the dialog.
+const dialogTitleId = 'dialog-title';
 
 function ListenJoinDialog() {
   const [code, setCode] = useState('');
@@ -59,7 +61,7 @@ function ListenJoinDialog() {
         void joinSession(normalized);
       }}
     >
-      <h2 className="headline mb-5 text-2xl">{t('listenJoin')}</h2>
+      <h2 id={dialogTitleId} className="headline mb-5 text-2xl">{t('listenJoin')}</h2>
       <label className="field">
         <input
           autoFocus
@@ -152,7 +154,7 @@ function NameDialog({ d }: { d: Extract<Dialog, { kind: 'create' | 'rename' }> }
           submitScratch();
         }}
       >
-        <h2 className="headline mb-5 text-2xl">{t('rename')}</h2>
+        <h2 id={dialogTitleId} className="headline mb-5 text-2xl">{t('rename')}</h2>
         <label className="field">
           <input ref={input} value={name} onChange={(e) => setName(e.target.value)} placeholder=" " maxLength={60} autoFocus />
           <span>{t('playlistName')}</span>
@@ -177,7 +179,7 @@ function NameDialog({ d }: { d: Extract<Dialog, { kind: 'create' | 'rename' }> }
         else submitImport();
       }}
     >
-      <h2 className="headline mb-4 text-2xl">{t('newPlaylist')}</h2>
+      <h2 id={dialogTitleId} className="headline mb-4 text-2xl">{t('newPlaylist')}</h2>
       <Segmented
         size="sm"
         className="mb-4"
@@ -277,7 +279,7 @@ function DeleteDialog({ id }: { id: string }) {
   const name = useStore(library, (s) => s.playlists.find((p) => p.id === id)?.name ?? '');
   return (
     <div>
-      <h2 className="headline mb-3 text-2xl">{t('deletePlaylistQ')}</h2>
+      <h2 id={dialogTitleId} className="headline mb-3 text-2xl">{t('deletePlaylistQ')}</h2>
       <p className="text-on-surface-variant">{t('deletePlaylistText', { name })}</p>
       <div className="mt-6 flex justify-end gap-2">
         <Button variant="text" onClick={closeDialog}>
@@ -320,7 +322,7 @@ function UpdateDialog() {
 
   return (
     <div>
-      <h2 className="headline mb-3 text-2xl">{st.available ? t('updateAvailable') : t('updates')}</h2>
+      <h2 id={dialogTitleId} className="headline mb-3 text-2xl">{st.available ? t('updateAvailable') : t('updates')}</h2>
       {st.checking ? (
         <div className="my-6 flex items-center gap-3 text-on-surface-variant">
           <Loader size={28} />
@@ -380,7 +382,7 @@ function UpdateUninstallDialog() {
   const [busy, setBusy] = useState(false);
   return (
     <div>
-      <h2 className="headline mb-3 text-2xl">{t('updateStartedTitle')}</h2>
+      <h2 id={dialogTitleId} className="headline mb-3 text-2xl">{t('updateStartedTitle')}</h2>
       <p className="text-sm leading-relaxed text-on-surface-variant">{t('updateStartedText')}</p>
       <div className="mt-6 flex flex-wrap justify-end gap-2">
         <Button variant="text" onClick={closeDialog}>
@@ -392,7 +394,9 @@ function UpdateUninstallDialog() {
           className="!bg-error !text-[#fff]"
           onClick={() => {
             setBusy(true);
-            void runAppUninstall().finally(() => setBusy(false));
+            void runAppUninstall()
+              .catch((e) => snack(t('uninstallError', { reason: e instanceof Error ? e.message : String(e) })))
+              .finally(() => setBusy(false));
           }}
         >
           {t('uninstallBtn')}
@@ -407,7 +411,7 @@ function UninstallDialog() {
   const [busy, setBusy] = useState(false);
   return (
     <div>
-      <h2 className="headline mb-3 text-2xl">{t('uninstallTitle')}</h2>
+      <h2 id={dialogTitleId} className="headline mb-3 text-2xl">{t('uninstallTitle')}</h2>
       <p className="text-sm leading-relaxed text-on-surface-variant">{t('uninstallText')}</p>
       <button
         type="button"
@@ -430,7 +434,9 @@ function UninstallDialog() {
           className="!bg-error !text-[#fff]"
           onClick={() => {
             setBusy(true);
-            void runAppUninstall().finally(() => setBusy(false));
+            void runAppUninstall()
+              .catch((e) => snack(t('uninstallError', { reason: e instanceof Error ? e.message : String(e) })))
+              .finally(() => setBusy(false));
           }}
         >
           {t('uninstallBtn')}
@@ -446,7 +452,7 @@ function ClearCacheDialog() {
   const [error, setError] = useState('');
   return (
     <div>
-      <h2 className="headline mb-3 text-2xl">{t('clearCacheTitle')}</h2>
+      <h2 id={dialogTitleId} className="headline mb-3 text-2xl">{t('clearCacheTitle')}</h2>
       <p className="text-sm leading-relaxed text-on-surface-variant">{t('clearCacheText')}</p>
       <button
         type="button"
@@ -502,7 +508,13 @@ function DialogHost() {
   return createPortal(
     <div className="dialog-root" data-open={visible}>
       <div className="scrim" onClick={closeDialog} />
-      <div className={cx('dialog', last.kind === 'import-review' && 'dialog-wide')} role="dialog" aria-modal="true">
+      <div
+        className={cx('dialog', last.kind === 'import-review' && 'dialog-wide')}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby={last.kind === 'import-review' ? undefined : dialogTitleId}
+        aria-label={last.kind === 'import-review' ? t('importReviewTitle') : undefined}
+      >
         {last.kind === 'delete' ? (
           <DeleteDialog id={last.id} />
         ) : last.kind === 'import-review' ? (
@@ -556,7 +568,7 @@ function SnackHost() {
           {last.action.label}
         </button>
       )}
-      <IconButton icon="close" label={t('exitFullscreen')} size="sm" tip={false} onClick={() => ui.set({ snack: null })} />
+      <IconButton icon="close" label={t('closeBtn')} size="sm" tip={false} onClick={() => ui.set({ snack: null })} />
     </div>,
     document.body,
   );

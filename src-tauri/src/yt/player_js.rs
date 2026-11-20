@@ -1,5 +1,6 @@
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, mpsc};
 use std::time::{Duration, Instant};
 
@@ -16,6 +17,9 @@ const LIB_MIN_JS: &str = include_str!("ejs/lib.min.js");
 const CORE_MIN_JS: &str = include_str!("ejs/core.min.js");
 const IFRAME_API_URL: &str = "https://www.youtube.com/iframe_api";
 const PLAYER_CACHE_TTL: Duration = Duration::from_secs(6 * 3600);
+const SOLVE_TIMEOUT: Duration = Duration::from_secs(10);
+const QJS_EVAL_DEADLINE: Duration = Duration::from_secs(8);
+const QJS_PREPROCESS_DEADLINE: Duration = Duration::from_secs(30);
 
 #[cfg(target_os = "windows")]
 const CREATE_NO_WINDOW: u32 = 0x08000000;
@@ -45,8 +49,45 @@ enum WorkerMsg {
 
 struct LoadedQjsSolver {
     player_id: String,
+    deadline: Arc<EvalDeadline>,
     _rt: QjsRuntime,
     ctx: QjsContext,
+}
+
+/// Runs a QuickJS interrupt handler deadline: armed before an eval, disarm after it.
+struct EvalDeadline {
+    base: Instant,
+    armed_until_ms: AtomicU64,
+}
+
+impl EvalDeadline {
+    fn new() -> Arc<Self> {
+        Arc::new(Self {
+            base: Instant::now(),
+            armed_until_ms: AtomicU64::new(0),
+        })
+    }
+
+    fn attach(rt: &QjsRuntime) -> Arc<Self> {
+        let deadline = Self::new();
+        let watch = deadline.clone();
+        rt.set_interrupt_handler(Some(Box::new(move || watch.expired())));
+        deadline
+    }
+
+    fn arm(&self, limit: Duration) {
+        let until = (self.base.elapsed() + limit).as_millis() as u64;
+        self.armed_until_ms.store(until, Ordering::Relaxed);
+    }
+
+    fn disarm(&self) {
+        self.armed_until_ms.store(0, Ordering::Relaxed);
+    }
+
+    fn expired(&self) -> bool {
+        let until = self.armed_until_ms.load(Ordering::Relaxed);
+        until != 0 && self.base.elapsed().as_millis() as u64 >= until
+    }
 }
 
 pub struct PlayerJsSolver {
@@ -132,11 +173,10 @@ impl PlayerJsSolver {
         if let Ok(mut g) = self.bundle.lock() {
             *g = None;
         }
-        if let Ok(guard) = self.worker_tx.lock() {
-            if let Some(tx) = guard.as_ref() {
+        if let Ok(guard) = self.worker_tx.lock()
+            && let Some(tx) = guard.as_ref() {
                 let _ = tx.send(WorkerMsg::Invalidate);
             }
-        }
     }
 
     pub async fn solve_sig_and_n(
@@ -159,18 +199,37 @@ impl PlayerJsSolver {
 
         let tx = self.ensure_worker()?;
         let (reply_tx, reply_rx) = oneshot::channel();
-        tx.send(WorkerMsg::Solve {
-            player_id,
-            preprocessed_js,
-            sig: sig.map(ToOwned::to_owned),
-            n: n.map(ToOwned::to_owned),
-            reply: reply_tx,
-        })
-        .map_err(|_| "QuickJS solver worker stopped".to_string())?;
+        if tx
+            .send(WorkerMsg::Solve {
+                player_id,
+                preprocessed_js,
+                sig: sig.map(ToOwned::to_owned),
+                n: n.map(ToOwned::to_owned),
+                reply: reply_tx,
+            })
+            .is_err()
+        {
+            self.reset_worker();
+            return Err("QuickJS solver worker stopped".to_string());
+        }
 
-        reply_rx
-            .await
-            .map_err(|_| "QuickJS solver worker dropped reply".to_string())?
+        match tokio::time::timeout(SOLVE_TIMEOUT, reply_rx).await {
+            Ok(Ok(res)) => res,
+            Ok(Err(_)) => {
+                self.reset_worker();
+                Err("QuickJS solver worker dropped reply".to_string())
+            }
+            Err(_) => {
+                self.reset_worker();
+                Err("QuickJS solver timed out".to_string())
+            }
+        }
+    }
+
+    fn reset_worker(&self) {
+        if let Ok(mut guard) = self.worker_tx.lock() {
+            *guard = None;
+        }
     }
 
     fn ensure_worker(&self) -> Result<mpsc::Sender<WorkerMsg>, String> {
@@ -240,8 +299,10 @@ fn ensure_loaded_qjs<'a>(
         .is_none_or(|state| state.player_id != player_id)
     {
         let rt = QjsRuntime::new().map_err(|e| format!("QuickJS runtime failed: {e}"))?;
+        let deadline = EvalDeadline::attach(&rt);
         let ctx = QjsContext::full(&rt).map_err(|e| format!("QuickJS context failed: {e}"))?;
-        ctx.with(|ctx| -> Result<(), String> {
+        deadline.arm(QJS_EVAL_DEADLINE);
+        let init = ctx.with(|ctx| -> Result<(), String> {
             ctx.globals()
                 .set("__PRE", preprocessed_js)
                 .map_err(|e| format!("QuickJS set __PRE failed: {e}"))?;
@@ -250,9 +311,12 @@ fn ensure_loaded_qjs<'a>(
             )
             .map_err(|e| format!("QuickJS init solver failed: {e}"))?;
             Ok(())
-        })?;
+        });
+        deadline.disarm();
+        init?;
         *loaded = Some(LoadedQjsSolver {
             player_id: player_id.to_string(),
+            deadline,
             _rt: rt,
             ctx,
         });
@@ -271,7 +335,8 @@ fn solve_on_worker_thread(
 ) -> Result<(Option<String>, Option<String>), String> {
     let state = ensure_loaded_qjs(loaded, player_id, preprocessed_js)?;
 
-    state.ctx.with(|ctx| {
+    state.deadline.arm(QJS_EVAL_DEADLINE);
+    let solved = state.ctx.with(|ctx| {
         let solved_sig = if let Some(s) = sig {
             ctx.globals()
                 .set("__IN_SIG", s)
@@ -303,7 +368,9 @@ fn solve_on_worker_thread(
         };
 
         Ok((solved_sig, solved_n))
-    })
+    });
+    state.deadline.disarm();
+    solved
 }
 
 async fn fetch_current_player_js(http: &Client) -> Result<(String, u64, String), String> {
@@ -400,6 +467,7 @@ async fn try_external_js_preprocess(base_js: &str) -> Option<String> {
         };
         let mut cmd = Command::new(exe);
         cmd.args(&args)
+            .kill_on_drop(true)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::null());
@@ -419,13 +487,11 @@ async fn try_external_js_preprocess(base_js: &str) -> Option<String> {
         if !out.status.success() {
             continue;
         }
-        if let Ok(parsed) = serde_json::from_slice::<PreprocessResult>(&out.stdout) {
-            if parsed.kind == "result" {
-                if let Some(pre) = parsed.preprocessed_player.filter(|s| !s.is_empty()) {
+        if let Ok(parsed) = serde_json::from_slice::<PreprocessResult>(&out.stdout)
+            && parsed.kind == "result"
+                && let Some(pre) = parsed.preprocessed_player.filter(|s| !s.is_empty()) {
                     return Some(pre);
                 }
-            }
-        }
     }
     None
 }
@@ -451,8 +517,10 @@ fn find_bin_in_path(name: &str) -> Option<PathBuf> {
 
 fn preprocess_via_quickjs(base_js: &str) -> Result<String, String> {
     let rt = QjsRuntime::new().map_err(|e| format!("QuickJS runtime error: {e}"))?;
+    let deadline = EvalDeadline::attach(&rt);
     let ctx = QjsContext::full(&rt).map_err(|e| format!("QuickJS context error: {e}"))?;
-    ctx.with(|ctx| {
+    deadline.arm(QJS_PREPROCESS_DEADLINE);
+    let out = ctx.with(|ctx| {
         ctx.eval::<(), _>(LIB_MIN_JS)
             .map_err(|e| format!("QuickJS lib eval error: {e}"))?;
         ctx.eval::<(), _>("const { meriyah, astring } = lib;")
@@ -476,7 +544,9 @@ fn preprocess_via_quickjs(base_js: &str) -> Result<String, String> {
             .preprocessed_player
             .filter(|s| !s.is_empty())
             .ok_or_else(|| "QuickJS preprocess returned empty output".to_string())
-    })
+    });
+    deadline.disarm();
+    out
 }
 
 fn bundle_paths(cache_dir: &Path, player_id: &str) -> (PathBuf, PathBuf) {
