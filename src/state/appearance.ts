@@ -29,24 +29,22 @@ export interface Appearance {
 
 export const DEFAULTS: Appearance = {
   theme: 'dark',
-  // Liquid glass is the signature look, and index.html already boots into it, so a fresh install
-  // should not start frosted and then switch.
-  glass: 'liquid',
-  blur: 45,
-  opacity: 34,
+  glass: 'frosted',
+  blur: 10,
+  opacity: 20,
   refraction: 45,
-  // Dynamic follows the artwork, which is the point of the player: an empty library falls back to
-  // the accent, so the first run already has a tinted backdrop instead of a flat black one.
+  // Artwork drives both the player background and the accent, falling back to the accent colour
+  // until something plays.
   bgMode: 'dynamic',
-  bgStyle: 'palette',
+  bgStyle: 'artwork',
   bgColor: '#000000',
   bgImage: null,
-  bgDim: 30,
+  bgDim: 10,
   bgBlur: 0,
-  accentMode: 'custom',
-  // Material 3's violet seed: neutral grey gave a fresh install a monochrome, lifeless surface.
-  accentColor: '#6750a4',
-  variant: 'expressive',
+  accentMode: 'dynamic',
+  /** Only the fallback before the first track: with `accentMode: dynamic` the cover decides. */
+  accentColor: '#a0a8b8',
+  variant: 'neutral',
   metallic: false,
   metallicNeon: true,
   metallicNeonIntensity: 45,
