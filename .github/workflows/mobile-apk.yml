@@ -19,12 +19,23 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Assert zero changes to Desktop sources
+      # The invariant is about the commits this workflow builds, not about how far the branch has
+      # drifted from main: the branch carries desktop work of its own, and main was rewritten, so a
+      # merge-base diff reports thousands of files that this push never touched.
+      - name: Assert this push left Desktop sources alone
+        env:
+          BEFORE: ${{ github.event.before || '' }}
+          AFTER: ${{ github.sha }}
         run: |
-          git fetch origin main:refs/remotes/origin/main
-          DIFF=$(git diff origin/main...HEAD -- src/ src-tauri/ package.json package-lock.json vite.config.ts tsconfig.json index.html scripts/)
+          RANGE="$BEFORE..$AFTER"
+          if [ -z "$BEFORE" ] || [ "$BEFORE" = "0000000000000000000000000000000000000000" ]; then
+            RANGE="$AFTER~1..$AFTER"
+          fi
+          echo "Checking $RANGE"
+          git rev-parse --verify "$AFTER" >/dev/null
+          DIFF=$(git diff "$RANGE" -- src/ src-tauri/ package.json package-lock.json vite.config.ts tsconfig.json index.html scripts/)
           if [ -n "$DIFF" ]; then
-            echo "ERROR: Desktop sources were modified on mobile branch!"
+            echo "ERROR: Desktop sources were modified by this push!"
             echo "This guard covers desktop application sources only: src/, src-tauri/,"
             echo "package.json, package-lock.json, vite.config.ts, tsconfig.json, index.html, scripts/."
             echo "Workflow files such as .github/workflows/release.yml are intentionally NOT"
@@ -32,7 +43,7 @@ jobs:
             echo "$DIFF"
             exit 1
           fi
-          echo "Verified: 0 bytes changed in desktop sources."
+          echo "Verified: desktop sources untouched by $RANGE."
 
       - uses: actions/setup-node@v4
         with:
