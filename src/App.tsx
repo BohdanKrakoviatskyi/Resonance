@@ -9,6 +9,7 @@ import { Drawer, Overlays } from './components/Overlays';
 import { IconButton } from './components/ui';
 import { MD, useMedia, useStore, XL } from './lib/util';
 import { t, useLang } from './lib/i18n';
+import { player } from './state/player';
 import { loadSoundCloudLibrary, loadYtMusicLibrary } from './state/library';
 import { checkForUpdates, startInstallNewVersion } from './state/updater';
 import { handleWindowShortcut } from './state/shortcut-runtime';
@@ -121,6 +122,82 @@ function useMacTrackpadNavigation() {
   }, []);
 }
 
+const IDLE_AFTER_PAUSE_MS = 20_000;
+
+type BatteryLike = {
+  level: number;
+  charging: boolean;
+  addEventListener(type: string, listener: () => void): void;
+  removeEventListener(type: string, listener: () => void): void;
+};
+
+/** Freezes ambient motion (html[data-idle]) once playback stays paused, the window is hidden, or the battery is nearly flat. */
+function useAmbientIdle() {
+  useEffect(() => {
+    const root = document.documentElement;
+    let battery: BatteryLike | null = null;
+    let timer = 0;
+    let idle = false;
+    let wasPlaying = player.get().playing;
+    let pausedAt = wasPlaying ? 0 : Date.now();
+
+    const lowPower = () => !!battery && !battery.charging && battery.level < 0.2;
+
+    const apply = (next: boolean) => {
+      if (next === idle) return;
+      idle = next;
+      if (next) root.dataset.idle = '';
+      else delete root.dataset.idle;
+    };
+
+    const evaluate = () => {
+      window.clearTimeout(timer);
+      timer = 0;
+      if (document.hidden || lowPower()) return apply(true);
+      if (wasPlaying) return apply(false);
+      const left = IDLE_AFTER_PAUSE_MS - (Date.now() - pausedAt);
+      if (left <= 0) return apply(true);
+      timer = window.setTimeout(evaluate, left);
+    };
+
+    const onPlayer = () => {
+      const playing = player.get().playing;
+      if (playing === wasPlaying) return;
+      wasPlaying = playing;
+      pausedAt = playing ? 0 : Date.now();
+      evaluate();
+    };
+    const onVisibility = () => evaluate();
+
+    const unsubscribe = player.subscribe(onPlayer);
+    document.addEventListener('visibilitychange', onVisibility);
+
+    const api = (navigator as Navigator & { getBattery?: () => Promise<BatteryLike> }).getBattery;
+    let cancelled = false;
+    void api
+      ?.call(navigator)
+      .then((b) => {
+        if (cancelled) return;
+        battery = b;
+        b.addEventListener('levelchange', evaluate);
+        b.addEventListener('chargingchange', evaluate);
+        evaluate();
+      })
+      .catch(() => {});
+
+    evaluate();
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+      unsubscribe();
+      document.removeEventListener('visibilitychange', onVisibility);
+      battery?.removeEventListener('levelchange', evaluate);
+      battery?.removeEventListener('chargingchange', evaluate);
+      apply(false);
+    };
+  }, []);
+}
+
 export default function App() {
   const lang = useLang();
   const isMd = useMedia(MD);
@@ -132,6 +209,7 @@ export default function App() {
   const closeNp = useCallback(() => ui.set({ npDrawer: false }), []);
   useShortcuts();
   useMacTrackpadNavigation();
+  useAmbientIdle();
 
   useEffect(() => {
     void loadSoundCloudLibrary();
