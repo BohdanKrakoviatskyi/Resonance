@@ -118,9 +118,9 @@ fn migrate_legacy_data_dir(dir: PathBuf, legacy: &Path) -> PathBuf {
 
 // ---- files ------------------------------------------------------------------------------------
 
-/// Atomically writes a file that may hold a token: temp file in the same directory, 0600 on Unix
-/// (on Windows the protection is the profile ACL behind %APPDATA%), fsync, rename into place.
-pub fn write_secret_file_sync(path: &Path, data: &[u8]) -> std::io::Result<()> {
+/// Atomically writes a file: temp file in the same directory, 0600 on Unix (on Windows the
+/// protection is the profile ACL behind %APPDATA%), optional fsync, rename into place.
+fn write_atomic_file(path: &Path, data: &[u8], fsync: bool) -> std::io::Result<()> {
     use std::io::Write;
     let dir = path.parent().unwrap_or_else(|| Path::new("."));
     let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
@@ -136,7 +136,9 @@ pub fn write_secret_file_sync(path: &Path, data: &[u8]) -> std::io::Result<()> {
         }
         let mut file = options.open(&tmp)?;
         file.write_all(data)?;
-        file.sync_all()?;
+        if fsync {
+            file.sync_all()?;
+        }
         drop(file);
         std::fs::rename(&tmp, path)
     })();
@@ -146,10 +148,31 @@ pub fn write_secret_file_sync(path: &Path, data: &[u8]) -> std::io::Result<()> {
     result
 }
 
+/// Atomically writes a file that may hold a token, with the fsync that makes the rename survive a
+/// power cut.
+pub fn write_secret_file_sync(path: &Path, data: &[u8]) -> std::io::Result<()> {
+    write_atomic_file(path, data, true)
+}
+
+/// Atomic write without the fsync: for state that holds no credentials (the frontend backup is
+/// megabytes and is written on every save, and a rename alone leaves no partial file behind).
+pub fn write_state_file_sync(path: &Path, data: &[u8]) -> std::io::Result<()> {
+    write_atomic_file(path, data, false)
+}
+
 /// Same as [`write_secret_file_sync`] but off the async executor (backgrounds are megabytes).
 pub async fn write_secret_file(path: &Path, data: Vec<u8>) -> std::io::Result<()> {
     let path = path.to_path_buf();
     match tokio::task::spawn_blocking(move || write_secret_file_sync(&path, &data)).await {
+        Ok(result) => result,
+        Err(e) => Err(std::io::Error::other(e.to_string())),
+    }
+}
+
+/// Same as [`write_state_file_sync`] but off the async executor.
+pub async fn write_state_file(path: &Path, data: Vec<u8>) -> std::io::Result<()> {
+    let path = path.to_path_buf();
+    match tokio::task::spawn_blocking(move || write_state_file_sync(&path, &data)).await {
         Ok(result) => result,
         Err(e) => Err(std::io::Error::other(e.to_string())),
     }

@@ -28,7 +28,7 @@ use tokio::sync::RwLock;
 
 use lyrics::CachedLyrics;
 use soundcloud::{OFFICIAL_API_BASE, Sc};
-use store::{Paths, State, remove_file_if_exists, to_pretty_json, valid_accent, valid_background_image, valid_client_id, write_secret_file};
+use store::{Paths, State, remove_file_if_exists, to_pretty_json, valid_accent, valid_background_image, valid_client_id, write_secret_file, write_state_file};
 use types::*;
 use util::*;
 
@@ -243,24 +243,24 @@ impl Backend {
 
     // ---- frontend state -----------------------------------------------------------------------
 
-    /// Merges the keys and snapshots the map under a short write lock, then writes the file outside
-    /// it: the fsync must not queue concurrent SoundCloud requests behind it. Only the keys that were
-    /// just stored come back, because echoing the whole map means shipping the entire app state over
-    /// IPC on every save (the renderer ignores the answer either way; `frontend.restore` is the read).
+    /// Merges the keys and serialises the map under a short write lock, then writes the file outside
+    /// it. Only the keys that were just stored come back, because echoing the whole map means
+    /// shipping the entire app state over IPC on every save (the renderer ignores the answer either
+    /// way; `frontend.restore` is the read).
     async fn frontend_backup(&self, entries: HashMap<String, String>) -> HashMap<String, String> {
         let accepted: HashMap<String, String> = entries.iter().filter(|(key, _)| !key.is_empty()).map(|(k, v)| (k.clone(), v.clone())).collect();
-        let merged = {
+        let data = {
             let mut state = self.inner.state.write().await;
             for (key, value) in entries {
                 if !key.is_empty() {
                     state.frontend_backup.insert(key, value);
                 }
             }
-            state.frontend_backup.clone()
+            serde_json::to_vec(&state.frontend_backup).ok()
         };
         // Best effort, like the original: the in-memory copy is still there if the write fails.
-        if let Ok(data) = serde_json::to_vec(&merged) {
-            let _ = write_secret_file(&self.inner.paths.frontend_backup, data).await;
+        if let Some(data) = data {
+            let _ = write_state_file(&self.inner.paths.frontend_backup, data).await;
         }
         accepted
     }
