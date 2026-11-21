@@ -859,10 +859,22 @@ export function setCrossfadeCurve(curve: CrossfadeCurve) {
 
 let pollTimer: number | null = null;
 
+/** The store only mirrors the native player, so it is polled while audio is actually moving.
+ *  A paused or idle app issues no bridge calls at all; becoming visible syncs once, which is
+ *  enough to pick up a resume from the notification or a resume after the process was asleep. */
+const STATE_POLL_MS = 1000;
+/** A paused queue still polls, but slowly: the notification and the lock screen can resume it behind our back. */
+const STATE_POLL_IDLE_MS = 3000;
+
 function startStatePolling() {
   if (!isNativeMobileRuntime()) return;
+  let tick = 0;
   const pollOnce = () => {
     if (document.hidden) return;
+    const st = player.get();
+    const moving = st.playing || st.loading;
+    tick++;
+    if (!moving && tick % (STATE_POLL_IDLE_MS / STATE_POLL_MS) !== 0) return;
     void invoke<NativeAudioStateDto>('mobile_audio_get_state')
       .then((dto) => {
         if (dto.currentIndex >= 0 || player.get().playing) {
@@ -872,9 +884,12 @@ function startStatePolling() {
       .catch(() => {});
   };
   if (pollTimer !== null) window.clearInterval(pollTimer);
-  pollTimer = window.setInterval(pollOnce, 450);
+  pollTimer = window.setInterval(pollOnce, STATE_POLL_MS);
   document.addEventListener('visibilitychange', () => {
-    if (!document.hidden) pollOnce();
+    if (document.hidden) return;
+    void readNativeState().then((dto) => {
+      if (dto && (dto.currentIndex >= 0 || player.get().index >= 0)) applyNativeState(dto);
+    });
   });
   pollOnce();
 }

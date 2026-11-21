@@ -1,4 +1,4 @@
-import { memo, useState } from 'react';
+import { memo, useLayoutEffect, useRef, useState } from 'react';
 import { Icon } from './Icon';
 import { IconButton } from './ui';
 import { Cover } from './Cover';
@@ -107,6 +107,53 @@ export const MobileTrackRow = memo(function MobileTrackRow({
   );
 });
 
+const ROW_STRIDE_PX = 68;
+const VIRTUALIZE_THRESHOLD = 40;
+const OVERSCAN_ROWS = 8;
+
+function computeWindow(loaded: number, viewTop: number, viewBottom: number) {
+  if (loaded <= VIRTUALIZE_THRESHOLD) return { start: 0, end: loaded };
+  const start = Math.max(0, Math.floor(Math.max(0, viewTop) / ROW_STRIDE_PX) - OVERSCAN_ROWS);
+  const end = Math.min(loaded, Math.ceil(Math.max(0, viewBottom) / ROW_STRIDE_PX) + OVERSCAN_ROWS);
+  return { start, end: Math.max(start, end) };
+}
+
+/** Keeps only the rows inside the page scroller's viewport mounted. The list lives in the shared
+ *  App scroller, so the scroll host is discovered from the DOM instead of being a prop. */
+function useVisibleRows(loaded: number) {
+  const listRef = useRef<HTMLDivElement>(null);
+  const [range, setRange] = useState({ start: 0, end: loaded });
+
+  useLayoutEffect(() => {
+    const el = listRef.current;
+    if (!el) return;
+    let scroller: HTMLElement | null = null;
+    for (let node = el.parentElement; node; node = node.parentElement) {
+      const overflowY = getComputedStyle(node).overflowY;
+      if (overflowY === 'auto' || overflowY === 'scroll') {
+        scroller = node;
+        break;
+      }
+    }
+    const measure = () => {
+      const viewportHeight = scroller ? scroller.clientHeight : window.innerHeight;
+      const viewTop = -el.getBoundingClientRect().top;
+      const next = computeWindow(loaded, viewTop, viewTop + viewportHeight);
+      setRange((prev) => (prev.start === next.start && prev.end === next.end ? prev : next));
+    };
+    measure();
+    const target: HTMLElement | Window = scroller ?? window;
+    target.addEventListener('scroll', measure, { passive: true });
+    window.addEventListener('resize', measure);
+    return () => {
+      target.removeEventListener('scroll', measure);
+      window.removeEventListener('resize', measure);
+    };
+  }, [loaded]);
+
+  return { listRef, range };
+}
+
 export function MobileTrackList({
   tracks,
   emptyText,
@@ -117,6 +164,8 @@ export function MobileTrackList({
   const [limit, setLimit] = useState(60);
   const activeId = useStore(player, (s) => (s.index >= 0 ? s.queue[s.index] : undefined));
   const isPlaying = useStore(player, (s) => s.playing);
+  const visible = tracks.slice(0, limit);
+  const { listRef, range } = useVisibleRows(visible.length);
 
   if (tracks.length === 0) {
     return (
@@ -127,10 +176,15 @@ export function MobileTrackList({
     );
   }
 
-  const visible = tracks.slice(0, limit);
+  const virtualized = visible.length > VIRTUALIZE_THRESHOLD;
+  const rows = virtualized ? visible.slice(range.start, range.end) : visible;
   return (
-    <div className="flex flex-col gap-1">
-      {visible.map((tr) => (
+    <div
+      ref={listRef}
+      className="flex flex-col gap-1"
+      style={virtualized ? { paddingTop: range.start * ROW_STRIDE_PX, paddingBottom: (visible.length - range.end) * ROW_STRIDE_PX } : undefined}
+    >
+      {rows.map((tr) => (
         <MobileTrackRow
           key={tr.id}
           track={tr}
