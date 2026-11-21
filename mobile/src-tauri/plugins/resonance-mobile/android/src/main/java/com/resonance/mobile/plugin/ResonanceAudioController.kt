@@ -63,7 +63,7 @@ object ResonanceAudioController {
     private const val MAX_BUFFER_MS = 45_000
     private const val BUFFER_FOR_PLAYBACK_MS = 1_200
     private const val BUFFER_FOR_REBUFFER_MS = 2_500
-    private const val BACK_BUFFER_MS = 10_000L
+    private const val BACK_BUFFER_MS = 10_000
 
     private val mainHandler = Handler(Looper.getMainLooper())
     private var appContext: Context? = null
