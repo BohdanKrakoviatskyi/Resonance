@@ -36,6 +36,7 @@ object AuthWebViewDialog {
 
     private const val SC_INJECT_JS = """
         (function() {
+          if (window !== window.top) return; // api-v2 calls are captured in the top frame only
           if (window.__RESONANCE_SC_HOOKED__) return;
           window.__RESONANCE_SC_HOOKED__ = true;
           var seenCid = '';
@@ -372,7 +373,15 @@ object AuthWebViewDialog {
 
             if (WebViewFeature.isFeatureSupported(WebViewFeature.DOCUMENT_START_SCRIPT)) {
                 runCatching {
-                    WebViewCompat.addDocumentStartJavaScript(webView, SC_INJECT_JS, setOf("*"))
+                    WebViewCompat.addDocumentStartJavaScript(
+                        webView,
+                        SC_INJECT_JS,
+                        setOf(
+                            "https://soundcloud.com",
+                            "https://m.soundcloud.com",
+                            "https://secure.soundcloud.com"
+                        )
+                    )
                 }
             }
 

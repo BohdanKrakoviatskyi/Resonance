@@ -891,6 +891,7 @@ private final class IosAuthSheet: UIViewController, WKNavigationDelegate, WKScri
             contentController.add(self, name: "scAuth")
             let script = """
             (function() {
+              if (window !== window.top) return; // api-v2 calls are captured in the top frame only
               var seenCid = '';
               function post(cid, tok) {
                 if (window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.scAuth) {
@@ -1066,7 +1067,8 @@ private final class IosAuthSheet: UIViewController, WKNavigationDelegate, WKScri
     }
 
     func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
-        guard !settled, message.name == "scAuth", let dict = message.body as? [String: String] else { return }
+        guard !settled, message.name == "scAuth", message.frameInfo.isMainFrame,
+              let dict = message.body as? [String: String] else { return }
         if let cid = dict["clientId"]?.trimmingCharacters(in: .whitespacesAndNewlines), !cid.isEmpty {
             lastSeenClientId = cid
         }

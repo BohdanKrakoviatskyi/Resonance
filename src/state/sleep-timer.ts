@@ -1,6 +1,6 @@
 import { createStore } from '../lib/util';
 import { fadeFactor, remainingMs, SLEEP_FADE_MS, type SleepMode } from '../lib/sleep-timer-plan';
-import { dur, player, realCurTime, setVolume, toggle } from './player';
+import { player, setVolume, toggle } from './player';
 
 /** Not persisted on purpose: a sleep timer should never survive an app restart. */
 export const sleepTimer = createStore({ mode: { kind: 'off' } as SleepMode });
@@ -68,20 +68,15 @@ export function setSleepTimer(next: { minutes: number } | 'endOfTrack' | 'off') 
   if (next === 'endOfTrack') {
     const s0 = player.get();
     const startId = s0.queue[s0.index];
+    const startRequestId = s0.requestId;
     sleepTimer.set({ mode: { kind: 'endOfTrack' } });
     unsubIndex = player.subscribe(() => {
       const s = player.get();
-      // A different track became current (auto-next, crossfade, manual skip) or the queue ran out.
-      if (s.queue[s.index] !== startId || s.state === 'idle') finish();
+      // A new track started (the request id changes even when repeat-one restarts the same track,
+      // with or without crossfade), a different track became current (auto-next, manual skip),
+      // or the queue ran out.
+      if (s.requestId !== startRequestId || s.queue[s.index] !== startId || s.state === 'idle') finish();
     });
-    // With repeat-one the id never changes, so a jump from the tail back to the start counts as the end.
-    let lastT = realCurTime();
-    ticker = window.setInterval(() => {
-      const t = realCurTime();
-      const d = dur();
-      if (d > 10 && lastT > d - 3 && t < 2) finish();
-      else lastT = t;
-    }, 500);
     return;
   }
   sleepTimer.set({ mode: { kind: 'at', endsAt: Date.now() + next.minutes * 60_000 } });

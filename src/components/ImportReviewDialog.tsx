@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { memo, useEffect, useRef, useState } from 'react';
 import { Icon } from './Icon';
 import { Button, Chip, IconButton, Loader } from './ui';
 import { Cover } from './Cover';
@@ -33,17 +33,26 @@ const REASON_KEYS: Record<ImportReviewReason, Key> = {
 const INITIAL_BATCH = 30;
 const BATCH_STEP = 40;
 
-function ReviewCard({ item }: { item: ImportReviewItem }) {
-  const preview = useStore(importPreview, (s) => s);
+const ReviewCard = memo(function ReviewCard({
+  item,
+  previewTrackId,
+  previewPlaying,
+  previewLoading,
+}: {
+  item: ImportReviewItem;
+  previewTrackId: string | null;
+  previewPlaying: boolean;
+  previewLoading: boolean;
+}) {
   const [searchOpen, setSearchOpen] = useState(false);
   const [query, setQuery] = useState(`${item.sourceArtist} ${item.sourceTitle}`.trim());
   const [searching, setSearching] = useState(false);
   const [searchResults, setSearchResults] = useState<Track[] | null>(null);
 
   const selected = item.selectedTrack;
-  const isCurrentPreview = Boolean(selected && preview.trackId === selected.id);
-  const isPlayingPreview = isCurrentPreview && preview.playing;
-  const isLoadingPreview = isCurrentPreview && preview.loading;
+  const isCurrentPreview = Boolean(selected && previewTrackId === selected.id);
+  const isPlayingPreview = isCurrentPreview && previewPlaying;
+  const isLoadingPreview = isCurrentPreview && previewLoading;
 
   const runSearch = async () => {
     const q = query.trim();
@@ -215,12 +224,17 @@ function ReviewCard({ item }: { item: ImportReviewItem }) {
       )}
     </div>
   );
-}
+});
 
 export function ImportReviewDialog({ onClose }: { onClose: () => void }) {
   const job = useStore(importStore, (s) => s);
   const items = job.reviewItems;
+  const previewTrackId = useStore(importPreview, (s) => s.trackId);
+  const previewPlaying = useStore(importPreview, (s) => s.playing);
+  const previewLoading = useStore(importPreview, (s) => s.loading);
   const [visibleCount, setVisibleCount] = useState(() => Math.min(items.length, INITIAL_BATCH));
+  const listRef = useRef<HTMLDivElement>(null);
+  const sentinelRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => () => stopImportPreview(), []);
 
@@ -228,12 +242,26 @@ export function ImportReviewDialog({ onClose }: { onClose: () => void }) {
     setVisibleCount((c) => Math.max(Math.min(items.length, INITIAL_BATCH), Math.min(c, items.length)));
   }, [items.length]);
 
+  // Grow the slice only when the sentinel scrolls into view, so the dialog never mounts the whole list
   useEffect(() => {
     if (visibleCount >= items.length) return;
-    const raf = requestAnimationFrame(() => {
-      setVisibleCount((c) => Math.min(items.length, c + BATCH_STEP));
-    });
-    return () => cancelAnimationFrame(raf);
+    const sentinel = sentinelRef.current;
+    if (!sentinel || typeof IntersectionObserver === 'undefined') return;
+
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (entries.some((entry) => entry.isIntersecting)) {
+          setVisibleCount((c) => Math.min(items.length, c + BATCH_STEP));
+        }
+      },
+      {
+        root: listRef.current,
+        rootMargin: '0px 0px 280px 0px',
+        threshold: 0.01,
+      },
+    );
+    observer.observe(sentinel);
+    return () => observer.disconnect();
   }, [visibleCount, items.length]);
 
   const approvedReviewCount = items.filter((it) => it.accepted && it.selectedTrack).length;
@@ -261,10 +289,17 @@ export function ImportReviewDialog({ onClose }: { onClose: () => void }) {
         )}
       </div>
 
-      <div className="import-review-list">
+      <div ref={listRef} className="import-review-list">
         {slice.map((item) => (
-          <ReviewCard key={item.index} item={item} />
+          <ReviewCard
+            key={item.index}
+            item={item}
+            previewTrackId={previewTrackId}
+            previewPlaying={previewPlaying}
+            previewLoading={previewLoading}
+          />
         ))}
+        {visibleCount < items.length && <div ref={sentinelRef} className="h-4 w-full" aria-hidden="true" />}
       </div>
 
       <div className="mt-4 flex flex-wrap items-center justify-between gap-2 border-t border-[color-mix(in_oklab,var(--md-outline-variant)_45%,transparent)] pt-4">

@@ -31,7 +31,9 @@ pub struct VisitorIdentity {
 
 impl VisitorIdentity {
     pub fn new() -> Self {
-        let path = app_data_root_dir().join("visitor_id.json");
+        // The visitor id is the identity YouTube ties requests to, so it belongs in app data:
+        // app_data_root_dir() is the OS cache directory on mobile, which the system may clear.
+        let path = user_app_support_dir().join("visitor_id.json");
         let now = now_ms();
         let saved = std::fs::read(&path)
             .ok()

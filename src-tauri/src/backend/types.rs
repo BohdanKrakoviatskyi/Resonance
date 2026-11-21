@@ -1,6 +1,6 @@
 //! Wire types shared with the renderer. Field names and `omitempty` behaviour match the JSON the
 //! Go sidecar produced, so the TypeScript side keeps working unchanged. Several of these are also
-//! the on-disk format (`settings.json`, `auth.json`, `history.json`), so existing user data loads.
+//! the on-disk format (`settings.json`, `auth.json`), so existing user data loads.
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -9,30 +9,16 @@ use super::util::{is_empty_str, is_false, is_zero, normalize_artwork, track_urn_
 
 pub const APP_NAME: &str = "Resonance";
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase", default)]
 pub struct Settings {
-    pub accent: String,
-    pub volume: i64,
     pub client_id: String,
-    pub background_image: String,
-    pub background_blur: i64,
-}
-
-impl Default for Settings {
-    fn default() -> Self {
-        Self { accent: "#ff765d".into(), volume: 70, client_id: String::new(), background_image: String::new(), background_blur: 0 }
-    }
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct SettingsPatch {
-    pub accent: Option<String>,
-    pub volume: Option<i64>,
     pub client_id: Option<String>,
-    pub background_image: Option<String>,
-    pub background_blur: Option<i64>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]

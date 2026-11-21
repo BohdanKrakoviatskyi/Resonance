@@ -6,6 +6,7 @@
 
 use serde::Serialize;
 
+use crate::yt::audio_cache::AudioCache;
 use crate::yt::clients::is_valid_video_id;
 use crate::yt::proxy::YtStreamProxy;
 
@@ -55,6 +56,24 @@ pub async fn download(proxy: &YtStreamProxy, video_id: &str) -> Result<u64, Stri
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn remove_deletes_the_cached_file() {
+        let cache = crate::yt::audio_cache::AudioCache::new();
+        let id = "offlinetest";
+        let audio = cache.dir().join(format!("{id}.webm"));
+        let done = cache.dir().join(format!("{id}.webm.done"));
+        std::fs::write(&audio, vec![0u8; 128 * 1024]).unwrap();
+        std::fs::write(&done, b"ok").unwrap();
+        assert!(cache.pin(id).is_some());
+
+        super::remove_cached(&cache, id);
+
+        assert!(!audio.exists(), "audio bytes are deleted");
+        assert!(!done.exists(), "done marker is deleted");
+        assert!(!cache.dir().join(format!("{id}.pin")).exists(), "pin is deleted");
+        assert!(!cache.pinned().iter().any(|(v, _)| v == id));
+    }
+
     /// Network test against real YouTube: `cargo test --lib offline -- --ignored --nocapture`.
     #[test]
     #[ignore]
@@ -72,7 +91,17 @@ mod tests {
 
 #[tauri::command]
 pub fn offline_remove(proxy: tauri::State<'_, YtStreamProxy>, video_id: String) {
-    proxy.audio_cache.unpin(video_id.trim());
+    remove_cached(&proxy.audio_cache, video_id.trim());
+}
+
+/// Unpins a download and deletes its cached audio plus the `.done` marker, so the bytes leave the disk.
+fn remove_cached(cache: &AudioCache, video_id: &str) {
+    let path = cache.lookup_complete(video_id).map(|meta| meta.path);
+    cache.unpin(video_id);
+    if let Some(path) = path {
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(format!("{}.done", path.display()));
+    }
 }
 
 #[tauri::command]

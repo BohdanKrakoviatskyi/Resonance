@@ -1,4 +1,4 @@
-//! Native backend: SoundCloud API access, account/settings/history persistence and lyrics lookup.
+//! Native backend: SoundCloud API access, account/settings persistence and lyrics lookup.
 //!
 //! This replaces the Go sidecar (`api/`). The renderer used to spawn that binary and speak
 //! line-delimited JSON-RPC over its stdio; it now calls the single `backend_rpc` command with the
@@ -28,7 +28,7 @@ use tokio::sync::RwLock;
 
 use lyrics::CachedLyrics;
 use soundcloud::{OFFICIAL_API_BASE, Sc};
-use store::{Paths, State, remove_file_if_exists, to_pretty_json, valid_accent, valid_background_image, valid_client_id, write_secret_file, write_state_file};
+use store::{Paths, State, remove_file_if_exists, to_pretty_json, valid_client_id, write_secret_file, write_state_file};
 use types::*;
 use util::*;
 
@@ -81,7 +81,7 @@ impl Backend {
     }
 
     /// Snapshot of what a request needs, taken under a short read lock so a slow network call
-    /// never holds the state lock while writers (settings/auth/history) wait behind it.
+    /// never holds the state lock while writers (settings/auth) wait behind it.
     async fn sc(&self) -> Sc {
         let state = self.inner.state.read().await;
         Sc {
@@ -204,36 +204,12 @@ impl Backend {
     async fn settings_update(&self, patch: SettingsPatch) -> Result<Settings, String> {
         let mut state = self.inner.state.write().await;
         let mut updated = state.settings.clone();
-        if let Some(accent) = patch.accent {
-            if !valid_accent(&accent) {
-                return Err("акцент должен быть шестизначным цветом в формате hex".into());
-            }
-            updated.accent = accent.to_lowercase();
-        }
-        if let Some(volume) = patch.volume {
-            if !(0..=100).contains(&volume) {
-                return Err("громкость должна быть от 0 до 100".into());
-            }
-            updated.volume = volume;
-        }
         if let Some(client_id) = patch.client_id {
             let client_id = client_id.trim().to_string();
             if !valid_client_id(&client_id) {
                 return Err("client_id должен содержать от 8 до 128 латинских букв, цифр, дефисов или подчёркиваний".into());
             }
             updated.client_id = client_id;
-        }
-        if let Some(image) = patch.background_image {
-            if !valid_background_image(&image) {
-                return Err("фон должен быть изображением JPEG в формате data URL размером до 700 КБ".into());
-            }
-            updated.background_image = image;
-        }
-        if let Some(blur) = patch.background_blur {
-            if !(0..=24).contains(&blur) {
-                return Err("размытие фона должно быть от 0 до 24".into());
-            }
-            updated.background_blur = blur;
         }
         let data = to_pretty_json(&updated)?;
         write_secret_file(&self.inner.paths.settings, data).await.map_err(|e| format!("save settings: {e}"))?;
@@ -639,15 +615,12 @@ mod tests {
     #[tokio::test]
     async fn settings_round_trip_and_validation() {
         let backend = temp_backend();
-        let updated = backend.call("settings.update", serde_json::json!({"accent": "#ABCDEF", "volume": 40, "clientId": " abcdef123456 "})).await.unwrap();
-        assert_eq!(updated["accent"], "#abcdef");
-        assert_eq!(updated["volume"], 40);
+        let updated = backend.call("settings.update", serde_json::json!({"clientId": " abcdef123456 "})).await.unwrap();
         assert_eq!(updated["clientId"], "abcdef123456");
-        assert!(backend.call("settings.update", serde_json::json!({"volume": 101})).await.is_err());
-        assert!(backend.call("settings.update", serde_json::json!({"accent": "red"})).await.is_err());
+        assert!(backend.call("settings.update", serde_json::json!({"clientId": "short"})).await.is_err());
         // Settings survive a restart.
         let reloaded = State::load(&backend.inner.paths);
-        assert_eq!(reloaded.settings.volume, 40);
+        assert_eq!(reloaded.settings.client_id, "abcdef123456");
     }
 
     #[tokio::test]

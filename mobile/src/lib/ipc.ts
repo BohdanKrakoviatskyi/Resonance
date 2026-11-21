@@ -1,4 +1,5 @@
 import { invoke } from '@tauri-apps/api/core';
+import { RPC_TIMEOUT_MS } from './backend';
 
 function abortError() {
   return new DOMException('Aborted', 'AbortError');
@@ -12,22 +13,25 @@ export function invokeAbortable<T>(
   cmd: string,
   args: Record<string, unknown> = {},
   signal?: AbortSignal,
+  timeoutMs = RPC_TIMEOUT_MS,
 ): Promise<T> {
   throwIfAborted(signal);
-  const call = invoke<T>(cmd, args);
-  if (!signal) return call;
   return new Promise<T>((resolve, reject) => {
-    const onAbort = () => reject(abortError());
-    signal.addEventListener('abort', onAbort, { once: true });
-    call.then(
-      (value) => {
-        signal.removeEventListener('abort', onAbort);
-        resolve(value);
-      },
-      (err) => {
-        signal.removeEventListener('abort', onAbort);
-        reject(err);
-      },
+    let settled = false;
+    const finish = (settle: () => void) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      signal?.removeEventListener('abort', onAbort);
+      settle();
+    };
+    const onAbort = () => finish(() => reject(abortError()));
+    // Same limit as the desktop build: a hung command must not leave the UI spinning forever.
+    const timer = setTimeout(() => finish(() => reject(new Error('Request timed out'))), timeoutMs);
+    signal?.addEventListener('abort', onAbort, { once: true });
+    invoke<T>(cmd, args).then(
+      (value) => finish(() => resolve(value)),
+      (err) => finish(() => reject(err)),
     );
   });
 }

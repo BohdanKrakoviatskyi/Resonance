@@ -11,6 +11,7 @@ use super::stream_cache::parse_byte_range;
 const PROXY_CHUNK_BYTES: u64 = 2 * 1024 * 1024;
 const PREFETCH_HEAD_BYTES: u64 = 262_144;
 const STALL_TIMEOUT: Duration = Duration::from_secs(4);
+const MAX_STALL_RESUMES: u32 = 3;
 
 fn allowed_cors_origin(origin: &str) -> Option<&str> {
     if matches!(
@@ -299,6 +300,7 @@ pub async fn handle_proxy_connection(
     };
 
     let mut streamed_ok = true;
+    let mut stall_resumes = 0u32;
     loop {
         let mut chunk_written = 0u64;
         loop {
@@ -322,14 +324,22 @@ pub async fn handle_proxy_connection(
                             total_len.unwrap_or(0),
                         );
                     }
+                    stall_resumes = 0;
                     chunk_written += bytes.len() as u64;
                 }
                 Ok(Ok(None)) => break,
                 Ok(Err(_)) | Err(_) => {
                     // Stalled mid-chunk: resume from cur_start + chunk_written via swap.
                     cur_start += chunk_written;
+                    stall_resumes = if chunk_written == 0 { stall_resumes + 1 } else { 0 };
                     if let Some(end) = target_end {
                         if cur_start > end {
+                            break;
+                        }
+                        // An upstream that answers headers and then errors instantly never
+                        // moves cur_start; give up instead of resuming forever.
+                        if stall_resumes > MAX_STALL_RESUMES {
+                            streamed_ok = false;
                             break;
                         }
                         let next_end = end.min(cur_start + PROXY_CHUNK_BYTES - 1);

@@ -343,18 +343,43 @@ impl Sc {
                 ids.push(track.id);
             }
         }
+        let batches: Vec<Vec<i64>> = ids.chunks(50).map(|chunk| chunk.to_vec()).collect();
         let mut by_id = std::collections::HashMap::with_capacity(ids.len());
-        for (batch, chunk) in ids.chunks(50).enumerate() {
-            let full = self
-                .fetch_tracks_by_ids(base, chunk)
-                .await
-                .map_err(|e| BErr::msg(format!("не удалось дозагрузить треки плейлиста (пакет {}): {e}", batch + 1)))?;
-            for track in full {
-                if track.id > 0 && !track.title.is_empty() {
-                    by_id.insert(track.id, track);
+        let mut last_err: Option<BErr> = None;
+        let mut set = tokio::task::JoinSet::new();
+        let mut next = 0;
+        while next < batches.len() || !set.is_empty() {
+            while next < batches.len() && set.len() < 4 {
+                let sc = self.clone();
+                let base = base.to_string();
+                let batch = batches[next].clone();
+                let number = next + 1;
+                set.spawn(async move { (number, sc.fetch_tracks_by_ids(&base, &batch).await) });
+                next += 1;
+            }
+            match set.join_next().await {
+                Some(Ok((_, Ok(full)))) => {
+                    for track in full {
+                        if track.id > 0 && !track.title.is_empty() {
+                            by_id.insert(track.id, track);
+                        }
+                    }
                 }
+                Some(Ok((batch, Err(e)))) => {
+                    let e = BErr::msg(format!("не удалось дозагрузить треки плейлиста (пакет {batch}): {e}"));
+                    log::warn!("playlist.tracks stage=hydrate error={e}");
+                    last_err = Some(e);
+                }
+                Some(Err(e)) => {
+                    last_err = Some(BErr::msg(format!("не удалось дозагрузить треки плейлиста: {e}")));
+                }
+                None => break,
             }
         }
+        if by_id.is_empty()
+            && let Some(e) = last_err {
+                return Err(e);
+            }
         Ok(order_cards(&playlist_tracks, &by_id, false))
     }
 

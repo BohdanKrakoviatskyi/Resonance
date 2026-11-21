@@ -10,7 +10,6 @@ type SettingItem = {
   icon: IconName;
   title: string;
   subtitle: string;
-  badge?: boolean;
 };
 
 export default function Settings() {
@@ -68,14 +67,10 @@ export default function Settings() {
           >
             <span className="relative grid h-12 w-12 shrink-0 place-items-center rounded-[16px] bg-secondary-container text-on-secondary-container">
               <Icon name={item.icon} fill size={24} />
-              {item.badge && (
-                <span className="absolute -right-1 -top-1 h-3 w-3 rounded-full bg-[#ff3b30] ring-2 ring-[var(--md-surface-container-high)]" aria-hidden="true" />
-              )}
             </span>
             <div className="min-w-0 flex-1">
               <div className="flex items-center gap-2">
                 <span className="headline text-lg leading-tight">{item.title}</span>
-                {item.badge && <span className="h-2.5 w-2.5 shrink-0 rounded-full bg-[#ff3b30]" aria-hidden="true" />}
               </div>
               <div className="mt-0.5 text-sm text-on-surface-variant">{item.subtitle}</div>
             </div>

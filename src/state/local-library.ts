@@ -3,6 +3,7 @@ import { createStore, persist } from '../lib/util';
 import { t } from '../lib/i18n';
 import type { Playlist, Track } from '../types';
 import { library, registerTracks } from './library';
+import { snack } from './ui';
 
 /** Fixed id of the auto-maintained "Local files" playlist. */
 export const LOCAL_PLAYLIST_ID = 'local-library';
@@ -15,6 +16,11 @@ interface LocalTrackDto {
   album?: string | null;
   duration: number;
   hasCover: boolean;
+}
+
+interface LocalScanDto {
+  tracks: LocalTrackDto[];
+  truncated: boolean;
 }
 
 export const localLibrary = createStore({
@@ -61,8 +67,8 @@ export async function rescanLocal() {
   const { folders } = localLibrary.get();
   localLibrary.set({ scanning: true, error: '' });
   try {
-    const [dtos, [base, token]] = await Promise.all([invoke<LocalTrackDto[]>('local_scan', { folders }), getRelay()]);
-    const tracks = dtos.map((d) => toTrack(d, base, token));
+    const [scan, [base, token]] = await Promise.all([invoke<LocalScanDto>('local_scan', { folders }), getRelay()]);
+    const tracks = scan.tracks.map((d) => toTrack(d, base, token));
     registerTracks(tracks);
     library.set((s) => {
       const cache = { ...s.cache };
@@ -78,6 +84,7 @@ export async function rescanLocal() {
       return { cache, playlists };
     });
     localLibrary.set({ count: tracks.length });
+    if (scan.truncated) snack(t('localScanTruncated', { n: tracks.length }));
   } catch (e) {
     localLibrary.set({ error: String(e) });
   } finally {

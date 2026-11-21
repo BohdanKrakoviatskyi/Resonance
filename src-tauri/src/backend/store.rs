@@ -2,27 +2,22 @@
 //! pre-rename app), atomic secret files, input validators and the loaded `State`.
 //!
 //! The file layout is byte-compatible with what the Go sidecar wrote (`settings.json`,
-//! `auth.json`, `history.json`, `frontend-state.json`), so an existing profile keeps working.
+//! `auth.json`, `frontend-state.json`), so an existing profile keeps working.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-use base64::Engine as _;
-use base64::engine::GeneralPurpose;
-use base64::engine::general_purpose::GeneralPurposeConfig;
 use serde::Serialize;
 
-use super::types::{APP_NAME, AuthState, Settings, TrackCard};
+use super::types::{APP_NAME, AuthState, Settings};
 
 /// Where the app kept its files before the rename to Resonance. Only the migration reads it.
 const LEGACY_APP_NAME: &str = "BetterSoundCloud";
-pub const MAX_RECENT_TRACKS: usize = 20;
 
 #[derive(Debug, Default)]
 pub struct State {
     pub settings: Settings,
     pub auth: AuthState,
-    pub history: Vec<TrackCard>,
     pub frontend_backup: HashMap<String, String>,
 }
 
@@ -30,7 +25,6 @@ pub struct State {
 pub struct Paths {
     pub settings: PathBuf,
     pub auth: PathBuf,
-    pub history: PathBuf,
     pub frontend_backup: PathBuf,
 }
 
@@ -39,7 +33,6 @@ impl Paths {
         Self {
             settings: dir.join("settings.json"),
             auth: dir.join("auth.json"),
-            history: dir.join("history.json"),
             frontend_backup: dir.join("frontend-state.json"),
         }
     }
@@ -205,10 +198,6 @@ impl State {
             Ok(None) => {}
             Err(e) => log::warn!("local backend: auth state ignored: {e}"),
         }
-        match load_history(paths) {
-            Ok(history) => state.history = history,
-            Err(e) => log::warn!("local backend: playback history ignored: {e}"),
-        }
         if let Ok(data) = std::fs::read(&paths.frontend_backup)
             && let Ok(map) = serde_json::from_slice::<HashMap<String, String>>(&data) {
                 state.frontend_backup = map;
@@ -218,11 +207,7 @@ impl State {
 }
 
 fn settings_are_valid(s: &Settings) -> bool {
-    valid_accent(&s.accent)
-        && (0..=100).contains(&s.volume)
-        && (s.client_id.is_empty() || valid_client_id(&s.client_id))
-        && valid_background_image(&s.background_image)
-        && (0..=24).contains(&s.background_blur)
+    s.client_id.is_empty() || valid_client_id(&s.client_id)
 }
 
 fn load_settings(paths: &Paths) -> Result<Settings, String> {
@@ -262,129 +247,21 @@ fn load_auth(paths: &Paths) -> Result<Option<AuthState>, String> {
     Ok(Some(loaded))
 }
 
-fn load_history(paths: &Paths) -> Result<Vec<TrackCard>, String> {
-    let data = match std::fs::read(&paths.history) {
-        Ok(data) => data,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
-        Err(e) => return Err(format!("read history: {e}")),
-    };
-    let loaded: Vec<TrackCard> = serde_json::from_slice(&data).map_err(|e| format!("parse history: {e}"))?;
-    let mut seen = std::collections::HashSet::new();
-    let mut history = Vec::with_capacity(loaded.len().min(MAX_RECENT_TRACKS));
-    for track in &loaded {
-        if track.id <= 0 || track.title.trim().is_empty() || !seen.insert(track.id) {
-            continue;
-        }
-        history.push(track.clone());
-        if history.len() == MAX_RECENT_TRACKS {
-            break;
-        }
-    }
-    if history.len() != loaded.len() {
-        write_secret_file_sync(&paths.history, &to_pretty_json(&history)?).map_err(|e| e.to_string())?;
-    }
-    Ok(history)
-}
-
 // ---- validators -------------------------------------------------------------------------------
-
-pub fn valid_accent(value: &str) -> bool {
-    let bytes = value.as_bytes();
-    bytes.len() == 7 && bytes[0] == b'#' && bytes[1..].iter().all(|c| c.is_ascii_hexdigit())
-}
 
 pub fn valid_client_id(value: &str) -> bool {
     (8..=128).contains(&value.len()) && value.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
 }
 
-/// Largest animation accepted, in bytes of the original file. The table below stores a *character*
-/// count of the data URL, so the two are derived from each other (base64 spends 4 characters on
-/// every 3 bytes) instead of being two literals that could disagree.
-const ANIMATED_FILE_BYTES: usize = 12 * 1024 * 1024;
-
-fn max_animated_url_length() -> usize {
-    "data:image/gif;base64,".len() + ANIMATED_FILE_BYTES.div_ceil(3) * 4
-}
-
-struct BackgroundFormat {
-    prefix: &'static str,
-    magic: &'static [u8],
-    max_length: usize,
-}
-
-fn background_formats() -> [BackgroundFormat; 4] {
-    [
-        BackgroundFormat { prefix: "data:image/jpeg;base64,", magic: &[0xff, 0xd8, 0xff], max_length: 700_000 },
-        BackgroundFormat { prefix: "data:image/png;base64,", magic: &[0x89, b'P', b'N', b'G'], max_length: 700_000 },
-        BackgroundFormat { prefix: "data:image/webp;base64,", magic: b"RIFF", max_length: 700_000 },
-        BackgroundFormat { prefix: "data:image/gif;base64,", magic: b"GIF8", max_length: max_animated_url_length() },
-    ]
-}
-
-/// A background must be an image data URL whose bytes carry the declared signature, so a URL
-/// labelled `image/jpeg` cannot smuggle an arbitrary payload through settings.
-pub fn valid_background_image(value: &str) -> bool {
-    if value.is_empty() {
-        return true;
-    }
-    for format in background_formats() {
-        let Some(payload) = value.strip_prefix(format.prefix) else { continue };
-        if value.len() > format.max_length {
-            return false;
-        }
-        // Go's decoder skips line breaks; do the same so identical inputs stay valid.
-        let cleaned: String = payload.chars().filter(|c| *c != '\r' && *c != '\n').collect();
-        let engine = GeneralPurpose::new(&base64::alphabet::STANDARD, GeneralPurposeConfig::new().with_decode_allow_trailing_bits(true));
-        let Ok(image) = engine.decode(cleaned.as_bytes()) else { return false };
-        if image.len() < format.magic.len() || &image[..format.magic.len()] != format.magic {
-            return false;
-        }
-        // RIFF is shared by WAV, AVI and others, so WebP also needs its own marker at bytes 8-11.
-        if format.prefix == "data:image/webp;base64," && (image.len() < 12 || &image[8..12] != b"WEBP") {
-            return false;
-        }
-        // GIF87a and GIF89a are both real GIFs; the revision byte is deliberately ignored.
-        return true;
-    }
-    false
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use base64::engine::general_purpose::STANDARD;
 
     #[test]
-    fn accent_and_client_id_validation() {
-        assert!(valid_accent("#ff765d"));
-        assert!(valid_accent("#FF765D"));
-        assert!(!valid_accent("ff765d"));
-        assert!(!valid_accent("#ff765"));
-        assert!(!valid_accent("#gg765d"));
+    fn client_id_validation() {
         assert!(valid_client_id("abcd1234"));
         assert!(!valid_client_id("short"));
         assert!(!valid_client_id("has space 123"));
-    }
-
-    #[test]
-    fn background_requires_matching_signature() {
-        use base64::Engine as _;
-        let png = format!("data:image/png;base64,{}", STANDARD.encode([0x89, b'P', b'N', b'G', 1, 2, 3]));
-        assert!(valid_background_image(&png));
-        let lie = format!("data:image/jpeg;base64,{}", STANDARD.encode([0x89, b'P', b'N', b'G', 1, 2, 3]));
-        assert!(!valid_background_image(&lie));
-        let webp = format!("data:image/webp;base64,{}", STANDARD.encode(b"RIFF\0\0\0\0WEBPxx"));
-        assert!(valid_background_image(&webp));
-        let wav = format!("data:image/webp;base64,{}", STANDARD.encode(b"RIFF\0\0\0\0WAVEfmt "));
-        assert!(!valid_background_image(&wav));
-        assert!(valid_background_image(""));
-        assert!(!valid_background_image("https://example.com/a.png"));
-    }
-
-    #[test]
-    fn animated_ceiling_matches_file_limit() {
-        // 12 MiB of file is 16 MiB of base64 plus the prefix.
-        assert_eq!(max_animated_url_length(), "data:image/gif;base64,".len() + 16 * 1024 * 1024);
     }
 
     #[test]
@@ -398,17 +275,11 @@ mod tests {
             r#"{"token":"tok","profile":{"id":9,"username":"me","avatarUrl":"https://a/b.jpg","followersCount":4},"savedAt":"2026-01-02T03:04:05Z"}"#,
         )
         .unwrap();
-        std::fs::write(
-            &paths.history,
-            r#"[{"id":5,"trackUrn":"soundcloud:tracks:5","title":"T","duration":10,"user":{"username":"u"}},{"id":5,"title":"dup"},{"id":0,"title":"bad"}]"#,
-        )
-        .unwrap();
         std::fs::write(&paths.frontend_backup, r#"{"k":"v"}"#).unwrap();
 
         let state = State::load(&paths);
-        assert_eq!((state.settings.accent.as_str(), state.settings.volume, state.settings.background_blur), ("#112233", 55, 3));
+        assert_eq!(state.settings.client_id, "abcdef123456", "legacy keys are ignored, the client id survives");
         assert_eq!((state.auth.token.as_str(), state.auth.profile.id, state.auth.profile.followers_count), ("tok", 9, 4));
-        assert_eq!(state.history.len(), 1, "duplicates and invalid entries are dropped on load");
         assert_eq!(state.frontend_backup.get("k").map(String::as_str), Some("v"));
     }
 
@@ -417,7 +288,7 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("resonance-store-test-{}", uuid::Uuid::new_v4().simple()));
         std::fs::create_dir_all(&dir).unwrap();
         let paths = Paths::in_dir(&dir);
-        std::fs::write(&paths.settings, r#"{"accent":"nope","volume":55}"#).unwrap();
+        std::fs::write(&paths.settings, r#"{"clientId":"nope"}"#).unwrap();
         let state = State::load(&paths);
         assert_eq!(state.settings, Settings::default());
         assert!(dir.join("settings.json.bak").exists());

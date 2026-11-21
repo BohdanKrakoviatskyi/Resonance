@@ -4,7 +4,7 @@ import { Button, EmptyState, IconButton, Loader } from '../components/ui';
 import { FavCover, PlaylistCover } from '../components/Cover';
 import { TrackList } from '../components/TrackList';
 import { cx, useStore } from '../lib/util';
-import { durLabel, t, tracksLabel } from '../lib/i18n';
+import { durLabel, t, tracksLabel, useLang } from '../lib/i18n';
 import {
   getFavoriteIds,
   getTrack,
@@ -60,8 +60,7 @@ function RecognizeAllButton({ ids }: { ids: string[] }) {
 }
 
 /** Downloads every YouTube track in the list; shows progress while the queue runs. */
-function DownloadAllButton({ ids }: { ids: string[] }) {
-  const tracks = ids.map((id) => getLibTrack(id)).filter((tr) => canDownload(tr)) as NonNullable<ReturnType<typeof getLibTrack>>[];
+function DownloadAllButton({ tracks }: { tracks: NonNullable<ReturnType<typeof getLibTrack>>[] }) {
   const done = useStore(offline, (s) => tracks.filter((tr) => offlineId(tr)! in s.downloaded).length);
   const busy = useStore(offline, (s) => s.active !== null);
   if (!tracks.length) return null;
@@ -111,6 +110,7 @@ export default function Collection({ kind, id }: { kind: 'favorites' | 'playlist
   const searchWrapRef = useRef<HTMLDivElement>(null);
   const searchInputRef = useRef<HTMLInputElement>(null);
   const cache = useStore(library, (s) => s.cache);
+  const lang = useLang();
 
   useEffect(() => {
     setQuery('');
@@ -124,36 +124,31 @@ export default function Collection({ kind, id }: { kind: 'favorites' | 'playlist
     if (ytPlaylistId && !(ytPlaylistId in ytmusicArtCache)) void loadYtMusicPlaylistArtwork(ytPlaylistId);
   }, [ytPlaylistId, ytmusicArtCache]);
 
-  const ytPl =
-    ytCollection && (ytCollection.kind !== 'playlist' || ytPlaylist)
-      ? {
-          id: id!,
-          name: ytCollectionName ?? t('notFound'),
-          ids: ytCollectionTracks.map((track) => track.id),
-          created: 0,
-          artworkUrl: ytArt,
-        }
-      : undefined;
-
-  const scPl =
-    scCollection?.kind === 'liked'
-      ? {
-          id: id!,
-          name: t('soundcloudLiked'),
-          ids: soundcloudLiked.map((track) => track.id),
-          created: 0,
-        }
-      : remotePlaylist
-      ? {
-          id: `scpl:${remotePlaylist.id}`,
-          name: remotePlaylist.name,
-          ids: cachedRemoteTracks?.map((track) => track.id) ?? [],
-          created: 0,
-          artworkUrl: remotePlaylist.artworkUrl,
-        }
-      : undefined;
-
-  const pl = localPlaylist ?? scPl ?? ytPl;
+  const pl = useMemo(() => {
+    if (localPlaylist) return localPlaylist;
+    if (scCollection?.kind === 'liked') {
+      return { id: id!, name: t('soundcloudLiked'), ids: soundcloudLiked.map((track) => track.id), created: 0 };
+    }
+    if (remotePlaylist) {
+      return {
+        id: `scpl:${remotePlaylist.id}`,
+        name: remotePlaylist.name,
+        ids: cachedRemoteTracks?.map((track) => track.id) ?? [],
+        created: 0,
+        artworkUrl: remotePlaylist.artworkUrl,
+      };
+    }
+    if (ytCollection && (ytCollection.kind !== 'playlist' || ytPlaylist)) {
+      return {
+        id: id!,
+        name: ytCollectionName ?? t('notFound'),
+        ids: ytCollectionTracks.map((track) => track.id),
+        created: 0,
+        artworkUrl: ytArt,
+      };
+    }
+    return undefined;
+  }, [localPlaylist, id, scCollection?.kind, soundcloudLiked, remotePlaylist, cachedRemoteTracks, ytCollection?.kind, ytPlaylist, ytCollectionName, ytCollectionTracks, ytArt, lang]);
   const isProviderPlaylist = Boolean(scCollection) || Boolean(ytCollection);
   const importActive = useStore(importStore, (s) => s.active);
 
@@ -207,14 +202,24 @@ export default function Collection({ kind, id }: { kind: 'favorites' | 'playlist
   }, [kind, liked, soundcloudLiked, ytmusicLiked, disliked, cache, favProvider, pl]);
 
   const normalizedQuery = query.trim().toLowerCase();
-  const visibleIds = useMemo(() => {
-    if (!normalizedQuery) return ids;
-    return ids.filter((trackId) => {
-      const tr = getTrack(trackId);
-      if (!tr) return false;
-      return `${tr.title} ${tr.artist} ${tr.album ?? ''}`.toLowerCase().includes(normalizedQuery);
-    });
-  }, [ids, normalizedQuery]);
+  const { visibleIds, total, downloadable } = useMemo(() => {
+    const list = normalizedQuery
+      ? ids.filter((trackId) => {
+          const tr = getTrack(trackId);
+          if (!tr) return false;
+          return `${tr.title} ${tr.artist} ${tr.album ?? ''}`.toLowerCase().includes(normalizedQuery);
+        })
+      : ids;
+    let duration = 0;
+    const dl: NonNullable<ReturnType<typeof getLibTrack>>[] = [];
+    for (const trackId of list) {
+      const tr = getLibTrack(trackId);
+      if (!tr) continue;
+      duration += tr.duration ?? 0;
+      if (canDownload(tr)) dl.push(tr);
+    }
+    return { visibleIds: list, total: duration, downloadable: dl };
+  }, [ids, normalizedQuery, cache]);
 
   // При открытии плейлиста (с задержкой 300 мс) ставим в фоновый префетч (priority: false) только топ-2 первых трека
   useEffect(() => {
@@ -348,7 +353,6 @@ export default function Collection({ kind, id }: { kind: 'favorites' | 'playlist
   const animateRows =
     !normalizedQuery && (kind !== 'favorites' || (isFirstRenderRef.current && !hasSwitchedFilterRef.current));
 
-  const total = visibleIds.reduce((a, x) => a + (getTrack(x)?.duration ?? 0), 0);
   const name = kind === 'favorites' ? t('favorites') : pl!.name;
   const searchPlaceholder = t(kind === 'favorites' ? 'favoritesSearchPlaceholder' : 'playlistSearchPlaceholder');
   const knownRemoteCount =
@@ -503,7 +507,7 @@ export default function Collection({ kind, id }: { kind: 'favorites' | 'playlist
             <Button size="lg" variant="tonal" icon="shuffle" disabled={!visibleIds.length} onClick={() => shufflePlay(visibleIds)}>
               {t('shuffle')}
             </Button>
-            <DownloadAllButton ids={visibleIds} />
+            <DownloadAllButton tracks={downloadable} />
             <RecognizeAllButton ids={visibleIds} />
             {kind === 'playlist' && !isProviderPlaylist && (
               <>
