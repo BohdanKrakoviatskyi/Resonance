@@ -149,6 +149,18 @@ pub fn registry_snapshot() -> ClientRegistry {
         .unwrap_or_else(|e| e.into_inner().clone())
 }
 
+/// One pooled client for the app's small JSON/REST calls (Last.fm, settings-adjacent metadata):
+/// a fresh `reqwest::Client` per request rebuilds the TLS root store every time.
+pub fn shared_http_client() -> &'static Client {
+    static CLIENT: OnceLock<Client> = OnceLock::new();
+    CLIENT.get_or_init(|| {
+        Client::builder()
+            .timeout(Duration::from_secs(15))
+            .build()
+            .unwrap_or_else(|_| Client::new())
+    })
+}
+
 pub async fn refresh_remote_clients_if_stale(http: &Client) -> bool {
     let base = app_data_root_dir();
     let clients_path = base.join("clients.json");

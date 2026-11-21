@@ -24,9 +24,12 @@ use super::resolver::{
     is_bot_wall_reason, is_permanent_reason, resolve_via_profile, resolve_via_tv_samsung,
     resolve_via_web_embedded,
 };
-use super::stream_cache::{load_persisted_stream_cache, save_persisted_stream_cache};
+use super::stream_cache::{
+    clear_persisted_stream_cache, load_persisted_stream_cache, save_persisted_stream_cache,
+};
 
 const MAX_CACHED_STREAMS: usize = 256;
+const FAST_RACE_CLIENTS: usize = 2;
 const FRONTEND_LOG_MAX_BYTES: u64 = 1 << 20; // 1 MiB
 const CLIENT_TIMEOUT: Duration = Duration::from_millis(850);
 const TV_SAMSUNG_TIMEOUT: Duration = Duration::from_millis(1200);
@@ -241,7 +244,6 @@ impl YtStreamProxy {
             .into_iter()
             .cloned()
             .collect();
-        let tv_allowed = !self.gates.is_gated("TVHTML5") && !self.gates.is_gated("TVHTML5_SAMSUNG_FAST");
 
         // Never stall playback waiting for visitor_id minting; use cached value immediately if ready.
         let mut visitor_data = self.visitor.current();
@@ -257,15 +259,15 @@ impl YtStreamProxy {
             .ok()
             .flatten();
 
-        // Phase 1: Race the first 2 open InnerTube profiles (and TVHTML5_SAMSUNG when warm) in parallel
-        // so tracks resolve in the latency of the fastest healthy client (~100-350ms).
+        // Phase 1: Race just the first 2 open InnerTube profiles. Each extra racer is another
+        // /player POST, and a prefetch of a playlist multiplies that by the number of tracks, so
+        // the remaining profiles are only tried (phase 2) when these two both fail.
         if !open_profiles.is_empty() {
             if self.is_stale(epoch) {
                 return Err("Cancelled: superseded by newer track request.".to_string());
             }
-            let tv_warm = tv_allowed && self.player_js.current_sts().is_some();
             let mut set = JoinSet::new();
-            for prof in open_profiles.iter().take(3).cloned() {
+            for prof in open_profiles.iter().take(FAST_RACE_CLIENTS).cloned() {
                 let http1 = self.playback_http.clone();
                 let solver1 = self.player_js.clone();
                 let vid1 = video_id.to_string();
@@ -280,22 +282,6 @@ impl YtStreamProxy {
                     .await
                     .unwrap_or_else(|_| Err(format!("{}: timeout", prof.key)));
                     (format!("InnerTube: {}", prof.key), prof.key, prof.send_cookie, t0.elapsed().as_millis() as u64, res)
-                });
-            }
-
-            if tv_warm {
-                let http2 = self.playback_http.clone();
-                let solver = self.player_js.clone();
-                let vid2 = video_id.to_string();
-                set.spawn(async move {
-                    let t0 = Instant::now();
-                    let res = tokio::time::timeout(
-                        TV_SAMSUNG_TIMEOUT,
-                        resolve_via_tv_samsung(&http2, &solver, &vid2),
-                    )
-                    .await
-                    .unwrap_or_else(|_| Err("TVHTML5_SAMSUNG: timeout".to_string()));
-                    ("InnerTube: TVHTML5_SAMSUNG (fast)".to_string(), "TVHTML5_SAMSUNG_FAST".to_string(), false, t0.elapsed().as_millis() as u64, res)
                 });
             }
 
@@ -327,9 +313,7 @@ impl YtStreamProxy {
                         });
                         if is_bot_wall_reason(&err) {
                             saw_bot_wall = true;
-                            if key == "TVHTML5_SAMSUNG_FAST" {
-                                self.gates.record_player_gate("TVHTML5_SAMSUNG_FAST", BOT_WALL_GATE_TTL);
-                            } else if !send_cookie {
+                            if !send_cookie {
                                 // Only gate the specific profile that got bot-walled; ANDROID_MUSIC
                                 // returning "Please sign in" must not poison VISIONOS/ANDROID_VR.
                                 self.gates.record_player_gate(&key, BOT_WALL_GATE_TTL);
@@ -349,7 +333,7 @@ impl YtStreamProxy {
         }
 
         // Phase 2: Race remaining open InnerTube profiles concurrently in one shot (bounded by CLIENT_TIMEOUT).
-        let raced_keys: std::collections::HashSet<&str> = open_profiles.iter().take(3).map(|p| p.key.as_str()).collect();
+        let raced_keys: std::collections::HashSet<&str> = open_profiles.iter().take(FAST_RACE_CLIENTS).map(|p| p.key.as_str()).collect();
         let remaining_profiles: Vec<ClientProfile> = self
             .gates
             .open_only(&reg.stream_ladder)
@@ -597,7 +581,7 @@ impl YtStreamProxy {
             cache.clear();
             n
         };
-        let _ = std::fs::remove_file(&self.disk_cache_path);
+        clear_persisted_stream_cache(&self.disk_cache_path);
         let (audio_files, audio_bytes) = self.audio_cache.clear_all();
         (audio_files, audio_bytes, stream_count)
     }

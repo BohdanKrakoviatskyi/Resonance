@@ -5,7 +5,7 @@ use serde_json::Value;
 use url::Url;
 
 use super::soundcloud::Sc;
-use super::types::{TrackStreamOption, TrackStreamResult};
+use super::types::TrackStreamResult;
 use super::util::*;
 
 #[derive(Debug, Clone, Default)]
@@ -140,7 +140,6 @@ impl Sc {
         }
 
         let mut last_err: Option<BErr> = None;
-        let mut resolved: Vec<TrackStreamOption> = Vec::with_capacity(choices.len());
         let mut has_unsupported_drm = false;
         for (index, choice) in choices.iter().enumerate() {
             if choice.protocol.contains("encrypted-hls") {
@@ -150,6 +149,8 @@ impl Sc {
                 log::info!("track.stream stage=unsupported_drm track_urn={track_urn:?} protocol={:?}", choice.protocol);
                 continue;
             }
+            // Choices are already ordered by preference, and the player uses only the primary one,
+            // so the first transcoding that resolves wins instead of resolving every alternative.
             let resolved_url = match self.resolve_transcoding(&choice.url).await {
                 Ok(url) => url,
                 Err(e) => {
@@ -165,12 +166,13 @@ impl Sc {
                 last_err = Some(e);
                 continue;
             }
-            resolved.push(TrackStreamOption { url: resolved_url, preview: choice.preview, hls: choice.hls, quality: choice.quality.clone() });
-        }
-        if !resolved.is_empty() {
-            resolved.truncate(4);
-            let primary = resolved.remove(0);
-            return Ok(TrackStreamResult { url: primary.url, preview: primary.preview, hls: primary.hls, quality: primary.quality, alternatives: resolved });
+            return Ok(TrackStreamResult {
+                url: resolved_url,
+                preview: choice.preview,
+                hls: choice.hls,
+                quality: choice.quality.clone(),
+                alternatives: Vec::new(),
+            });
         }
         if has_unsupported_drm {
             return Err(BErr::msg("этот трек доступен только в DRM-защищённом потоке SoundCloud, который текущий плеер не поддерживает"));
