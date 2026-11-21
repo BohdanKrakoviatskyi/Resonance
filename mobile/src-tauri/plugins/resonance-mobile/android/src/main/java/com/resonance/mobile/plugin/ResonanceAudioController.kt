@@ -7,7 +7,6 @@ import android.content.Intent
 import android.media.audiofx.DynamicsProcessing
 import android.media.audiofx.Equalizer
 import android.net.Uri
-import android.net.wifi.WifiManager
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
@@ -60,6 +59,12 @@ private class DeckDsp {
 }
 
 object ResonanceAudioController {
+    private const val MIN_BUFFER_MS = 15_000
+    private const val MAX_BUFFER_MS = 45_000
+    private const val BUFFER_FOR_PLAYBACK_MS = 1_200
+    private const val BUFFER_FOR_REBUFFER_MS = 2_500
+    private const val BACK_BUFFER_MS = 10_000L
+
     private val mainHandler = Handler(Looper.getMainLooper())
     private var appContext: Context? = null
 
@@ -73,7 +78,6 @@ object ResonanceAudioController {
     private var controllerFuture: Future<MediaController>? = null
 
     private var wakeLock: PowerManager.WakeLock? = null
-    private var wifiLock: WifiManager.WifiLock? = null
 
     private var queueTracks: List<NativeQueueTrack> = emptyList()
     private var currentMediaItems: List<MediaItem> = emptyList()
@@ -124,6 +128,14 @@ object ResonanceAudioController {
     private fun dspForDeck(isDeckA: Boolean): DeckDsp =
         if (isDeckA) primaryDsp else secondaryDsp
 
+    private fun secondaryDeck(): ExoPlayer? {
+        secondaryPlayer?.let { return it }
+        val ctx = appContext ?: return null
+        val deck = buildDeck(ctx, isDeckA = !primaryIsDeckA)
+        secondaryPlayer = deck
+        return deck
+    }
+
     private fun buildDeck(ctx: Context, isDeckA: Boolean): ExoPlayer {
         val httpFactory = DefaultHttpDataSource.Factory()
             .setAllowCrossProtocolRedirects(true)
@@ -136,12 +148,12 @@ object ResonanceAudioController {
 
         val loadControl = DefaultLoadControl.Builder()
             .setBufferDurationsMs(
-                30_000,
-                120_000,
-                1_200,
-                2_500
+                MIN_BUFFER_MS,
+                MAX_BUFFER_MS,
+                BUFFER_FOR_PLAYBACK_MS,
+                BUFFER_FOR_REBUFFER_MS
             )
-            .setBackBuffer(30_000, true)
+            .setBackBuffer(BACK_BUFFER_MS, true)
             .build()
 
         val audioAttrs = AudioAttributes.Builder()
@@ -155,7 +167,6 @@ object ResonanceAudioController {
             .setLoadControl(loadControl)
             .setAudioAttributes(audioAttrs, false)
             .setHandleAudioBecomingNoisy(true)
-            .setWakeMode(C.WAKE_MODE_NETWORK)
             .build()
 
         val deckDsp = dspForDeck(isDeckA)
@@ -246,9 +257,7 @@ object ResonanceAudioController {
         initWakeLocks(ctx)
 
         val deckA = buildDeck(ctx, isDeckA = true)
-        val deckB = buildDeck(ctx, isDeckA = false)
         primaryPlayer = deckA
-        secondaryPlayer = deckB
         primaryIsDeckA = true
 
         // Enable automatic audio focus handling on active primary player
@@ -288,18 +297,6 @@ object ResonanceAudioController {
                 setReferenceCounted(false)
             }
         }
-        if (wifiLock == null) {
-            val wm = ctx.applicationContext.getSystemService(Context.WIFI_SERVICE) as? WifiManager
-            val mode = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                WifiManager.WIFI_MODE_FULL_LOW_LATENCY
-            } else {
-                @Suppress("DEPRECATION")
-                WifiManager.WIFI_MODE_FULL_HIGH_PERF
-            }
-            wifiLock = wm?.createWifiLock(mode, "ResonanceMobile::AudioWifi")?.apply {
-                setReferenceCounted(false)
-            }
-        }
     }
 
     private fun isActivelyPlayingOrBuffering(): Boolean {
@@ -312,23 +309,13 @@ object ResonanceAudioController {
         if (isActivelyPlayingOrBuffering()) {
             runCatching {
                 if (wakeLock?.isHeld == false) {
-                    wakeLock?.acquire(6 * 60 * 60 * 1000L)
-                }
-            }
-            runCatching {
-                if (wifiLock?.isHeld == false) {
-                    wifiLock?.acquire()
+                    wakeLock?.acquire()
                 }
             }
         } else {
             runCatching {
                 if (wakeLock?.isHeld == true) {
                     wakeLock?.release()
-                }
-            }
-            runCatching {
-                if (wifiLock?.isHeld == true) {
-                    wifiLock?.release()
                 }
             }
         }
@@ -613,7 +600,7 @@ object ResonanceAudioController {
     }
 
     private fun preloadStandbyDeck(nextIdx: Int) {
-        val standby = secondaryPlayer ?: return
+        val standby = secondaryDeck() ?: return
         if (currentMediaItems.isEmpty() || nextIdx !in currentMediaItems.indices) return
         preloadedIndex = nextIdx
         runCatching {
@@ -631,7 +618,7 @@ object ResonanceAudioController {
 
     private fun beginCrossfadeToPreloaded() {
         val outDeck = primaryPlayer ?: return
-        val inDeck = secondaryPlayer ?: return
+        val inDeck = secondaryDeck() ?: return
         if (preloadedIndex == C.INDEX_UNSET) return
 
         isCrossfading = true

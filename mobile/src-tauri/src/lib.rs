@@ -189,6 +189,14 @@ fn mobile_cache_set_limit(
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
+        .enable_all()
+        .build()
+        .expect("failed to build async runtime");
+    tauri::async_runtime::set(runtime.handle().clone());
+    std::mem::forget(runtime);
+
     tauri::Builder::default()
         .plugin(tauri_plugin_resonance_mobile::init())
         .setup(|app| {

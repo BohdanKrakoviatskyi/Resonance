@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react';
+import { Fragment, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import { Icon } from './Icon';
 import { IconButton, Loader, Shape, usePresence, type Vars } from './ui';
@@ -69,6 +69,15 @@ function findLine(lines: LyricLine[], time: number) {
   return ans;
 }
 
+const KARAOKE_CSS = `
+.lyric-word { position: relative; display: inline-block; }
+.lyric[data-state=active] .lyric-text[data-words] .lyric-word { background: none; -webkit-text-fill-color: color-mix(in oklab, currentColor 45%, transparent); }
+.lyric-word-fill { position: absolute; inset: -0.35em 0; pointer-events: none; clip-path: inset(0 100% 0 0); }
+.lyric-word-in { display: block; padding-top: 0.35em; color: currentColor; -webkit-text-fill-color: currentColor; }
+.lyric[data-state=active] .lyric-word-fill { will-change: clip-path; }
+.lyric:not([data-state=active]) .lyric-word-fill { display: none; }
+`;
+
 function SyncedLyrics({
   lines,
   variant,
@@ -109,17 +118,16 @@ function SyncedLyrics({
         setActive(i);
       }
       if (i >= 0 && lines[i].words) {
-        // Karaoke: fill each word by its own timing.
         const el = refs.current[i];
         if (el) {
-          if (wordEls.current.i !== i) wordEls.current = { i, els: Array.from(el.querySelectorAll<HTMLElement>('.lyric-word')), last: [] };
+          if (wordEls.current.i !== i) wordEls.current = { i, els: Array.from(el.querySelectorAll<HTMLElement>('.lyric-word-fill')), last: [] };
           const { els, last } = wordEls.current;
           wordProgress(lines[i].words!, time, wp.current);
           for (let k = 0; k < els.length; k++) {
-            const p = wp.current[k] ?? 0;
-            if (Math.abs(p - (last[k] ?? -1)) >= 0.004) {
-              last[k] = p;
-              els[k].style.setProperty('--wp', p.toFixed(3));
+            const r = clamp((wp.current[k] ?? 0) * 1.15 - 0.15, 0, 1);
+            if (Math.abs(r - (last[k] ?? -1)) >= 0.004) {
+              last[k] = r;
+              els[k].style.clipPath = `inset(0 ${((1 - r) * 100).toFixed(2)}% 0 0)`;
             }
           }
         }
@@ -188,6 +196,9 @@ function SyncedLyrics({
         touchY.current = cy;
       }}
     >
+      <style href="lyrics-karaoke" precedence="lyrics">
+        {KARAOKE_CSS}
+      </style>
       <div ref={list} className="lyrics-lines" style={{ '--y': `${-(y + manual)}px` } as Vars}>
         {lines.map((l, i) => {
           const d = i - active;
@@ -217,11 +228,20 @@ function SyncedLyrics({
                 </span>
               ) : l.words ? (
                 <span className="lyric-text" data-words="">
-                  {l.words.map((w, k) => (
-                    <span key={k} className="lyric-word">
-                      {w.text}
-                    </span>
-                  ))}
+                  {l.words.map((w, k) => {
+                    const text = w.text.trim();
+                    return (
+                      <Fragment key={k}>
+                        <span className="lyric-word">
+                          {text}
+                          <span className="lyric-word-fill" aria-hidden="true">
+                            <span className="lyric-word-in">{text}</span>
+                          </span>
+                        </span>
+                        {w.text.length > text.length ? ' ' : null}
+                      </Fragment>
+                    );
+                  })}
                 </span>
               ) : (
                 <span className="lyric-text">{l.text}</span>

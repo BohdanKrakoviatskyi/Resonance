@@ -5,6 +5,9 @@ import Tauri
 import UIKit
 import WebKit
 
+private let activeForwardBufferDurationSec: Double = 20.0
+private let standbyForwardBufferDurationSec: Double = 10.0
+
 private struct QueueItemArg: Decodable {
     let id: String
     let title: String
@@ -117,7 +120,6 @@ class ResonanceMobilePlugin: Plugin {
         super.load(webview: webview)
         primaryPlayer.automaticallyWaitsToMinimizeStalling = true
         secondaryPlayer.automaticallyWaitsToMinimizeStalling = true
-        configureAudioSession()
         configureSystemNotifications()
         configureRemoteCommands()
         observePrimaryPlayerStatus()
@@ -125,13 +127,15 @@ class ResonanceMobilePlugin: Plugin {
 
     private func configureAudioSession() {
         #if os(iOS)
-        do {
-            let session = AVAudioSession.sharedInstance()
-            try session.setCategory(.playback, mode: .default, options: [.allowBluetoothA2DP, .allowAirPlay])
-            try session.setActive(true)
-        } catch {
-            // Re-attempted when playback begins
-        }
+        let session = AVAudioSession.sharedInstance()
+        try? session.setCategory(.playback, mode: .default, options: [.allowBluetoothA2DP, .allowAirPlay])
+        try? session.setActive(true)
+        #endif
+    }
+
+    private func deactivateAudioSession() {
+        #if os(iOS)
+        try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
         #endif
     }
 
@@ -198,6 +202,7 @@ class ResonanceMobilePlugin: Plugin {
             } else {
                 primaryPlayer.pause()
             }
+            deactivateAudioSession()
             updateNowPlaying()
         }
     }
@@ -297,6 +302,7 @@ class ResonanceMobilePlugin: Plugin {
             } else {
                 self.primaryPlayer.pause()
             }
+            self.deactivateAudioSession()
             self.updateNowPlaying()
             return .success
         }
@@ -384,7 +390,7 @@ class ResonanceMobilePlugin: Plugin {
         guard let url = URL(string: items[index].streamUrl) else { return }
         preloadedIndex = index
         let avItem = AVPlayerItem(url: url)
-        avItem.preferredForwardBufferDuration = 30.0
+        avItem.preferredForwardBufferDuration = standbyForwardBufferDurationSec
         secondaryPlayer.pause()
         secondaryPlayer.volume = 0
         secondaryPlayer.replaceCurrentItem(with: avItem)
@@ -486,14 +492,14 @@ class ResonanceMobilePlugin: Plugin {
             NotificationCenter.default.removeObserver(obs)
             endObserver = nil
         }
-        #if os(iOS)
         if autoPlay {
+            #if os(iOS)
             beginTransitionBackgroundTask()
+            #endif
+            configureAudioSession()
         }
-        #endif
-        configureAudioSession()
         let avItem = AVPlayerItem(url: url)
-        avItem.preferredForwardBufferDuration = 45.0
+        avItem.preferredForwardBufferDuration = activeForwardBufferDurationSec
         endObserver = NotificationCenter.default.addObserver(
             forName: .AVPlayerItemDidPlayToEndTime,
             object: avItem,
@@ -533,6 +539,7 @@ class ResonanceMobilePlugin: Plugin {
             attachItem(at: nextIdx, autoPlay: autoPlay)
         } else {
             primaryPlayer.pause()
+            deactivateAudioSession()
             updateNowPlaying()
         }
     }
@@ -635,6 +642,7 @@ class ResonanceMobilePlugin: Plugin {
                 self.primaryPlayer.replaceCurrentItem(with: nil)
                 self.items = []
                 self.currentIndex = -1
+                self.deactivateAudioSession()
                 invoke.resolve(self.snapshotState())
                 return
             }
@@ -681,6 +689,7 @@ class ResonanceMobilePlugin: Plugin {
             } else {
                 self.primaryPlayer.pause()
             }
+            self.deactivateAudioSession()
             self.updateNowPlaying()
             invoke.resolve(self.snapshotState())
         }

@@ -2,9 +2,12 @@ import { useEffect, useRef, useState, type CSSProperties } from 'react';
 import { useStore } from '../lib/util';
 import { theme, type BgSpec } from '../state/theme';
 import { appearance } from '../state/appearance';
+import { player } from '../state/player';
 
 /** After this long without input, an animated background is frozen to a still frame. */
 const BG_IDLE_MS = 5 * 60_000;
+/** Playback paused this long: the drift animation is paused until playback resumes. */
+const BG_PAUSED_MS = 20_000;
 const isAnimatedImage = (src: string) => src.startsWith('data:image/gif');
 
 /**
@@ -139,8 +142,30 @@ function Layer({ spec, metallic, isTop, onDone, live, epoch }: { spec: BgSpec; m
 export function Background() {
   const bg = useStore(theme, (s) => s.bg);
   const metallic = useStore(appearance, (s) => s.metallic);
+  const playing = useStore(player, (s) => s.playing || s.loading);
   const [layers, setLayers] = useState<BgSpec[]>(() => (bg ? [bg] : []));
+  const [drifting, setDrifting] = useState(true);
   const { active, epoch } = useBackgroundActivity();
+
+  useEffect(() => {
+    if (playing) {
+      setDrifting(true);
+      return;
+    }
+    const timer = window.setTimeout(() => setDrifting(false), BG_PAUSED_MS);
+    return () => window.clearTimeout(timer);
+  }, [playing]);
+
+  const drift = active && drifting;
+  useEffect(() => {
+    const root = document.documentElement;
+    if (drift) delete root.dataset.bgStatic;
+    else root.dataset.bgStatic = '';
+    return () => {
+      delete root.dataset.bgStatic;
+    };
+  }, [drift]);
+
   useEffect(() => {
     if (!bg) return;
     setLayers((ls) => {

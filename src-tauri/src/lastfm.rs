@@ -71,10 +71,9 @@ async fn call(mut params: Vec<(String, String)>) -> Result<Value, String> {
     let sig = sign(&params, configured_secret()?);
     params.push(("api_sig".into(), sig));
     params.push(("format".into(), "json".into()));
-    let res = reqwest::Client::new()
+    let res = crate::yt::clients::shared_http_client()
         .post(API)
         .form(&params)
-        .timeout(std::time::Duration::from_secs(15))
         .send()
         .await
         .map_err(|e| format!("network: {e}"))?;
@@ -224,6 +223,7 @@ pub async fn lastfm_login(app: tauri::AppHandle) -> Result<String, String> {
 
     // Last.fm's desktop flow asks users to return to the app after granting access.
     let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(300);
+    let mut backoff = std::time::Duration::from_secs(2);
     loop {
         match fetch_authorized_session(token).await {
             Ok(session) => {
@@ -231,13 +231,12 @@ pub async fn lastfm_login(app: tauri::AppHandle) -> Result<String, String> {
                 save_session(session).await?;
                 return Ok(name);
             }
-            Err(error)
-                if error.contains("lastfm 14:") && tokio::time::Instant::now() < deadline =>
-            {
-                tokio::time::sleep(std::time::Duration::from_secs(3)).await;
-            }
             Err(error) if error.contains("lastfm 14:") => {
-                return Err("Last.fm authorization timed out. Please try again.".into());
+                if tokio::time::Instant::now() + backoff >= deadline {
+                    return Err("Last.fm authorization timed out. Please try again.".into());
+                }
+                tokio::time::sleep(backoff).await;
+                backoff = (backoff * 2).min(std::time::Duration::from_secs(15));
             }
             Err(error) => return Err(error),
         }

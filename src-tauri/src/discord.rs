@@ -11,6 +11,9 @@ use discord_rich_presence::activity::{Activity, ActivityType, Assets, Button, St
 use discord_rich_presence::{DiscordIpc, DiscordIpcClient};
 use serde::Deserialize;
 
+const RETRY_MIN: Duration = Duration::from_secs(2);
+const RETRY_MAX: Duration = Duration::from_secs(60);
+
 #[derive(Debug, Clone, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct PresenceTrack {
@@ -32,17 +35,32 @@ enum Msg {
 }
 
 pub struct DiscordPresence {
-    tx: Mutex<Sender<Msg>>,
+    tx: Mutex<Option<Sender<Msg>>>,
+}
+
+impl DiscordPresence {
+    /// The presence worker starts on the first track instead of at app launch.
+    fn sender(&self) -> Option<Sender<Msg>> {
+        let mut guard = self.tx.lock().unwrap_or_else(|e| e.into_inner());
+        if guard.is_none() {
+            let (tx, rx) = mpsc::channel();
+            if std::thread::Builder::new()
+                .name("discord-presence".into())
+                .spawn(move || worker(rx))
+                .is_err()
+            {
+                log::warn!("discord presence worker could not start");
+                return None;
+            }
+            *guard = Some(tx);
+        }
+        guard.clone()
+    }
 }
 
 impl Default for DiscordPresence {
     fn default() -> Self {
-        let (tx, rx) = mpsc::channel();
-        std::thread::Builder::new()
-            .name("discord-presence".into())
-            .spawn(move || worker(rx))
-            .expect("spawn discord presence worker");
-        Self { tx: Mutex::new(tx) }
+        Self { tx: Mutex::new(None) }
     }
 }
 
@@ -86,19 +104,25 @@ fn worker(rx: Receiver<Msg>) {
     let mut client: Option<(String, DiscordIpcClient)> = None;
     let mut wanted: Option<(String, PresenceTrack)> = None;
     let mut dirty = false;
+    let mut retry = RETRY_MIN;
     loop {
-        // Retry every few seconds while a state is pending (Discord may not be running yet).
-        let msg = if dirty { rx.recv_timeout(Duration::from_secs(5)) } else { rx.recv().map_err(|_| RecvTimeoutError::Disconnected) };
+        // While a state is pending (Discord may not be running yet) retry with a growing delay,
+        // capped at RETRY_MAX. With nothing pending the worker blocks until a track changes.
+        let msg = if dirty { rx.recv_timeout(retry) } else { rx.recv().map_err(|_| RecvTimeoutError::Disconnected) };
         match msg {
             Ok(Msg::Set { client_id, track }) => {
                 wanted = Some((client_id, track));
                 dirty = true;
+                retry = RETRY_MIN;
             }
             Ok(Msg::Clear) => {
                 wanted = None;
                 dirty = true;
+                retry = RETRY_MIN;
             }
-            Err(RecvTimeoutError::Timeout) => {}
+            Err(RecvTimeoutError::Timeout) => {
+                retry = (retry * 2).min(RETRY_MAX);
+            }
             Err(RecvTimeoutError::Disconnected) => break,
         }
         // Coalesce bursts: only the latest message matters.
@@ -115,6 +139,7 @@ fn worker(rx: Receiver<Msg>) {
                 let _ = c.close();
             }
             dirty = false;
+            retry = RETRY_MIN;
             continue;
         };
 
@@ -149,7 +174,8 @@ pub fn discord_set_presence(state: tauri::State<'_, DiscordPresence>, client_id:
         Some(_) => return Err("invalid Discord application id".into()),
         None => Msg::Clear,
     };
-    state.tx.lock().map_err(|e| e.to_string())?.send(msg).map_err(|e| e.to_string())
+    let tx = state.sender().ok_or("discord presence is unavailable")?;
+    tx.send(msg).map_err(|e| e.to_string())
 }
 
 #[cfg(test)]

@@ -33,7 +33,7 @@ const FREQ_TICKS: { hz: number; label: string }[] = [
 const dbToPercent = (db: number) => ((DB_RANGE - clamp(db, -DB_RANGE, DB_RANGE)) / (2 * DB_RANGE)) * 100;
 const formatDb = (db: number) => `${db > 0 ? '+' : ''}${db.toFixed(1)}`;
 
-/** Live spectrum behind the curve. Runs only while mounted and the window is visible. */
+/** Live spectrum behind the curve. Runs only while the panel is mounted, the window is visible and audio is playing. */
 function useSpectrumCanvas(canvasRef: React.RefObject<HTMLCanvasElement | null>) {
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -43,24 +43,35 @@ function useSpectrumCanvas(canvasRef: React.RefObject<HTMLCanvasElement | null>)
     const data = new Uint8Array(SPECTRUM_BINS);
     const target = new Float32Array(SPECTRUM_BARS);
     const shown = new Float32Array(SPECTRUM_BARS);
+    const root = document.documentElement;
     let raf = 0;
-    let tick = 0;
-    let color = 'rgb(255 255 255)';
+    let color = '';
+
+    const readColor = () => {
+      color = getComputedStyle(canvas).color;
+    };
 
     const resize = () => {
       const dpr = Math.min(2, window.devicePixelRatio || 1);
       canvas.width = Math.max(1, Math.round(canvas.clientWidth * dpr));
       canvas.height = Math.max(1, Math.round(canvas.clientHeight * dpr));
+      readColor();
     };
     const observer = new ResizeObserver(resize);
     observer.observe(canvas);
     resize();
 
+    const themes = new MutationObserver(readColor);
+    themes.observe(root, { attributes: true, attributeFilter: ['style', 'data-theme'] });
+    const onTransitionEnd = (event: TransitionEvent) => {
+      if (event.target === root) readColor();
+    };
+    root.addEventListener('transitionend', onTransitionEnd);
+
     const frame = () => {
-      raf = requestAnimationFrame(frame);
-      if (document.hidden) return;
-      if (tick++ % 40 === 0) color = getComputedStyle(canvas).color;
-      const sampleRate = readSpectrum(data);
+      raf = 0;
+      const playing = player.get().playing;
+      const sampleRate = playing ? readSpectrum(data) : 0;
       if (sampleRate > 0) binSpectrum(data, sampleRate, SPECTRUM_BARS, target);
       else target.fill(0);
       // Rise quickly, fall slowly: reads as a meter instead of flicker.
@@ -72,8 +83,10 @@ function useSpectrumCanvas(canvasRef: React.RefObject<HTMLCanvasElement | null>)
       const slot = width / SPECTRUM_BARS;
       const barWidth = slot * 0.7;
       const radius = Math.min(barWidth / 2, 6);
+      let peak = 0;
       for (let i = 0; i < SPECTRUM_BARS; i++) {
         const level = Math.pow(shown[i], 1.3);
+        if (level > peak) peak = level;
         const barHeight = level * height * 0.94;
         if (barHeight < 1) continue;
         ctx.globalAlpha = 0.16 + level * 0.42;
@@ -82,11 +95,31 @@ function useSpectrumCanvas(canvasRef: React.RefObject<HTMLCanvasElement | null>)
         ctx.fill();
       }
       ctx.globalAlpha = 1;
+
+      // Пока играет — кадры без пауз; на паузе дорисовываем затухание и останавливаемся.
+      if (!document.hidden && (playing || peak > 0.002)) raf = requestAnimationFrame(frame);
     };
-    raf = requestAnimationFrame(frame);
+
+    const start = () => {
+      if (!raf) raf = requestAnimationFrame(frame);
+    };
+
+    const onVisibility = () => {
+      if (!document.hidden) start();
+    };
+    document.addEventListener('visibilitychange', onVisibility);
+    const unsubscribe = player.subscribe(() => {
+      if (player.get().playing) start();
+    });
+    start();
+
     return () => {
       cancelAnimationFrame(raf);
       observer.disconnect();
+      themes.disconnect();
+      root.removeEventListener('transitionend', onTransitionEnd);
+      document.removeEventListener('visibilitychange', onVisibility);
+      unsubscribe();
       release();
     };
   }, [canvasRef]);

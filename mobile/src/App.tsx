@@ -47,6 +47,16 @@ function ActivePage({ route }: { route: Route }) {
   }
 }
 
+/** Runs startup work that nobody is waiting on once the first frame is committed. */
+function whenIdle(run: () => void, timeout = 2000): () => void {
+  if (typeof window.requestIdleCallback === 'function') {
+    const id = window.requestIdleCallback(() => run(), { timeout });
+    return () => window.cancelIdleCallback(id);
+  }
+  const id = window.setTimeout(run, 400);
+  return () => window.clearTimeout(id);
+}
+
 type TabItem = {
   id: 'home' | 'search' | 'library' | 'settings';
   icon: IconName;
@@ -93,29 +103,36 @@ export default function App() {
     scrollerRef.current?.scrollTo({ top: 0 });
   }, [key]);
 
-  useEffect(() => {
-    void loadSoundCloudLibrary();
-    void loadYtMusicLibrary();
-  }, []);
+  useEffect(
+    () =>
+      whenIdle(() => {
+        void loadSoundCloudLibrary();
+        void loadYtMusicLibrary();
+      }),
+    [],
+  );
 
   useEffect(() => {
     if (!isTauri()) return;
     let cancelled = false;
-    void checkForUpdate()
-      .then((update) => {
-        if (cancelled || !update) return;
-        snack(t('updateAvailableVer', { version: update.version }), {
-          label: t('updateInstallAction'),
-          run: () => {
-            void installUpdate(update).catch((e: unknown) =>
-              snack(t('updateFailed', { reason: e instanceof Error ? e.message : String(e) })),
-            );
-          },
-        });
-      })
-      .catch(() => {});
+    const cancel = whenIdle(() => {
+      void checkForUpdate()
+        .then((update) => {
+          if (cancelled || !update) return;
+          snack(t('updateAvailableVer', { version: update.version }), {
+            label: t('updateInstallAction'),
+            run: () => {
+              void installUpdate(update).catch((e: unknown) =>
+                snack(t('updateFailed', { reason: e instanceof Error ? e.message : String(e) })),
+              );
+            },
+          });
+        })
+        .catch(() => {});
+    });
     return () => {
       cancelled = true;
+      cancel();
     };
   }, []);
 

@@ -61,40 +61,20 @@ const NavItem = memo(function NavItem({ k, active, expanded, label, labelPrefix,
   );
 });
 
-const LOGO_SHAPES = [
-  blobPath(10, 0.025, 64),
-  blobPath(5, 0.14, 64),
-  blobPath(8, 0.09, 64),
-  blobPath(4, 0.17, 64),
-  blobPath(7, 0.11, 64),
-  blobPath(12, 0.06, 64),
-  blobPath(6, 0.13, 64),
-  blobPath(3, 0.15, 64),
-  blobPath(9, 0.08, 64),
-  blobPath(11, 0.07, 64),
-];
-let logoMorphInjected = false;
-function injectLogoMorph() {
-  if (logoMorphInjected) return;
-  logoMorphInjected = true;
-  const s = document.createElement('style');
-  s.textContent = `@keyframes rs-logo-morph{${LOGO_SHAPES.map((p, i) => `${((i / LOGO_SHAPES.length) * 100).toFixed(2)}%{d:path("${p}")}`).join('')}100%{d:path("${LOGO_SHAPES[0]}")}}`;
-  document.head.appendChild(s);
-}
+const LOGO_SHAPE = blobPath(10, 0.025, 64);
 
 export function Logo({ size, className }: { size?: number; className?: string } = {}) {
-  injectLogoMorph();
   const paletteStyle = useStore(appearance, (state) => state.bgMode === 'dynamic' && state.bgStyle === 'palette');
   const markColor = paletteStyle ? 'var(--md-on-secondary-container)' : 'var(--md-on-primary)';
   const markW = size ? Math.round(size * (19 / 40)) : undefined;
   const markH = size ? Math.round(size * (13 / 40)) : undefined;
   return (
     <span
-      className={cx('shape spin-slow', !size && 'h-10 w-10', paletteStyle ? 'text-secondary-container' : 'text-primary', className)}
+      className={cx('shape', !size && 'h-10 w-10', paletteStyle ? 'text-secondary-container' : 'text-primary', className)}
       style={size ? { width: size, height: size } : undefined}
     >
       <svg viewBox="0 0 1 1" aria-hidden="true">
-        <path d={LOGO_SHAPES[0]} style={{ animation: 'rs-logo-morph 18s var(--ease-emph) infinite' }} />
+        <path d={LOGO_SHAPE} />
       </svg>
       <span
         aria-hidden="true"

@@ -29,6 +29,7 @@ export type YtMusicProfile = { name?: string; handle?: string; picture?: string 
  * itself uses for large art gets real detail instead of a blurry upscale.
  */
 export const YTM_ARTWORK_PX = 544;
+export const YTM_THUMB_PX = 120;
 
 export function upscaleYtmArtwork(url?: string | null): string | undefined {
   if (!url) return undefined;
@@ -36,6 +37,20 @@ export function upscaleYtmArtwork(url?: string | null): string | undefined {
   return url.replace(/=w(\d+)-h(\d+)/, (match, w, h) =>
     Math.max(Number(w), Number(h)) >= YTM_ARTWORK_PX ? match : `=w${YTM_ARTWORK_PX}-h${YTM_ARTWORK_PX}`,
   );
+}
+
+/** Small variant of a cover for list rows and other thumbnail-sized surfaces. */
+export function thumbArtwork(url?: string | null): string | undefined {
+  if (!url) return undefined;
+  if (url.includes('googleusercontent.com')) {
+    return url.replace(/=w(\d+)-h(\d+)/, (match, w, h) =>
+      Math.min(Number(w), Number(h)) <= YTM_THUMB_PX ? match : `=w${YTM_THUMB_PX}-h${YTM_THUMB_PX}`,
+    );
+  }
+  return url
+    .replace(/-t500x500\./g, '-large.')
+    .replace(/\/t500x500\//g, '/large/')
+    .replace(/\/(?:maxres|sd|hq|mq)default\.jpg/g, '/default.jpg');
 }
 export type YtMusicLibrary = {
   profile: YtMusicProfile;

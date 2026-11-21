@@ -42,32 +42,47 @@ export function useStore<T, S>(store: Store<T>, sel: (s: T) => S): S {
 }
 
 const EXTRA_BACKUP_KEYS = ['resonance.shortcuts.v1', 'resonance.manual_lyrics.v1'];
+const BACKUP_DELAY_MS = 6000;
 const persistedStores = new Map<string, () => void>();
+const dirtyBackupKeys = new Set<string>();
+const backedUpValues = new Map<string, string>();
 let backupTimer = 0;
 const isSplashContext = () => typeof document !== 'undefined' && document.documentElement.dataset.splash === 'true';
 
-const syncBackupToBackend = () => {
+const queueBackup = (key: string) => {
+  dirtyBackupKeys.add(key);
+  if (!backupTimer) backupTimer = window.setTimeout(() => void syncBackupToBackend(), BACKUP_DELAY_MS);
+};
+
+const syncBackupToBackend = async () => {
+  clearTimeout(backupTimer);
+  backupTimer = 0;
   if (isSplashContext()) return;
-  void import('./providers-api')
-    .then(({ backupFrontendState }) => {
-      const entries: Record<string, string> = {};
-      for (const k of [...persistedStores.keys(), ...EXTRA_BACKUP_KEYS]) {
-        try {
-          const val = localStorage.getItem(k);
-          if (val !== null) entries[k] = val;
-        } catch {
-          /* ignore */
-        }
-      }
-      if (Object.keys(entries).length > 0) {
-        return backupFrontendState(entries);
-      }
-    })
-    .catch(() => {});
+  const keys = [...dirtyBackupKeys, ...EXTRA_BACKUP_KEYS];
+  dirtyBackupKeys.clear();
+  const entries: Record<string, string> = {};
+  for (const k of keys) {
+    try {
+      const val = localStorage.getItem(k);
+      if (val !== null && backedUpValues.get(k) !== val) entries[k] = val;
+    } catch {
+      /* ignore */
+    }
+  }
+  if (Object.keys(entries).length === 0) return;
+  try {
+    const { backupFrontendState } = await import('./providers-api');
+    await backupFrontendState(entries);
+    for (const k in entries) backedUpValues.set(k, entries[k]);
+  } catch {
+    for (const k in entries) dirtyBackupKeys.add(k);
+  }
 };
 
 export async function flushFrontendStateBackup(): Promise<void> {
   if (isSplashContext()) return;
+  clearTimeout(backupTimer);
+  backupTimer = 0;
   for (const save of persistedStores.values()) save();
   try {
     const { backupFrontendState } = await import('./providers-api');
@@ -181,8 +196,7 @@ export function persist<T extends object>(key: string, store: Store<T>, pick: (s
       if (serialized === lastWritten) return;
       lastWritten = serialized;
       localStorage.setItem(key, serialized);
-      clearTimeout(backupTimer);
-      backupTimer = window.setTimeout(syncBackupToBackend, 1000);
+      queueBackup(key);
     } catch {
       onError?.();
     }

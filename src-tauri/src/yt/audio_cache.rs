@@ -3,9 +3,9 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime};
 
-use tokio::fs::OpenOptions;
+use tokio::fs::{File, OpenOptions};
 use tokio::io::{AsyncSeekExt, AsyncWriteExt};
-use tokio::sync::{Notify, Semaphore};
+use tokio::sync::{Mutex as AsyncMutex, Notify, Semaphore};
 
 use super::clients::{app_data_root_dir, is_valid_video_id};
 
@@ -25,6 +25,7 @@ pub struct ActiveCacheWrite {
     pub temp_path: PathBuf,
     pub total_bytes: u64,
     pub content_type: String,
+    file: AsyncMutex<Option<File>>,
     written: Mutex<u64>,
     finished: Mutex<Option<Result<(), String>>>,
     notify: Notify,
@@ -37,6 +38,39 @@ impl ActiveCacheWrite {
 
     pub fn is_done(&self) -> Option<Result<(), String>> {
         self.finished.lock().unwrap_or_else(|e| e.into_inner()).clone()
+    }
+
+    async fn write_at(&self, offset: u64, data: &[u8]) -> bool {
+        let mut slot = self.file.lock().await;
+        if slot.is_none() {
+            match OpenOptions::new()
+                .create(true)
+                .truncate(false)
+                .write(true)
+                .open(&self.temp_path)
+                .await
+            {
+                Ok(file) => *slot = Some(file),
+                Err(_) => return false,
+            }
+        }
+        let written = match slot.as_mut() {
+            Some(file) => {
+                file.seek(std::io::SeekFrom::Start(offset)).await.is_ok()
+                    && file.write_all(data).await.is_ok()
+            }
+            None => false,
+        };
+        if !written {
+            *slot = None;
+        }
+        written
+    }
+
+    async fn close(&self) {
+        if let Some(mut file) = self.file.lock().await.take() {
+            let _ = file.flush().await;
+        }
     }
 }
 
@@ -141,6 +175,7 @@ impl AudioCache {
             temp_path,
             total_bytes,
             content_type: content_type.to_string(),
+            file: AsyncMutex::new(None),
             written: Mutex::new(0),
             finished: Mutex::new(None),
             notify: Notify::new(),
@@ -160,28 +195,21 @@ impl AudioCache {
             let cap = data.len().min(HEAD_PREFETCH_BYTES as usize);
             self.store_head_bytes(video_id, &entry.content_type, &data[..cap], entry.total_bytes);
         }
-        if let Ok(mut file) = OpenOptions::new()
-            .create(true)
-            .truncate(false)
-            .write(true)
-            .open(&entry.temp_path)
-            .await
-            && file.seek(std::io::SeekFrom::Start(offset)).await.is_ok()
-                && file.write_all(data).await.is_ok()
-            {
-                let end = offset + data.len() as u64;
-                if let Ok(mut w) = entry.written.lock()
-                    && end > *w {
-                        *w = end;
-                    }
-                entry.notify.notify_waiters();
-            }
+        if entry.write_at(offset, data).await {
+            let end = offset + data.len() as u64;
+            if let Ok(mut w) = entry.written.lock()
+                && end > *w {
+                    *w = end;
+                }
+            entry.notify.notify_waiters();
+        }
     }
 
     pub async fn finalize_download(&self, video_id: &str, entry: &Arc<ActiveCacheWrite>, ok: bool) {
         if let Ok(mut active) = self.active.lock() {
             active.remove(video_id);
         }
+        entry.close().await;
         let entry = entry.clone();
         let dir = self.dir.clone();
         let _ = tokio::task::spawn_blocking(move || finish_cache_write(&dir, &entry, ok)).await;

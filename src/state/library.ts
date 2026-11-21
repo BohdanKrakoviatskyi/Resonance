@@ -97,7 +97,6 @@ export const library = createStore({
   ytmusicProfile: null as YtMusicProfile | null,
   cache: {} as Record<string, Track>,
   recent: [] as string[],
-  _libraryCachedAt: 0,
 });
 
 const EXCLUDED_YTMUSIC_PLAYLIST_TITLES = new Set(['episodes for later', 'sounds from shorts', 'liked music']);
@@ -128,15 +127,45 @@ function sanitizeStoredTrack(tr: Track): Track {
   return tr;
 }
 
-/** Only keep external track metadata that is still referenced somewhere. */
-function pruned(s: ReturnType<typeof library.get>) {
-  const keep = new Set<string>([...s.liked, ...s.disliked, ...s.recent, ...s.playlists.flatMap((p) => p.ids), ...player.get().queue]);
+const CACHE_SNAPSHOT_KEY = 'lyra.lib.cache.v1';
+const CACHE_SNAPSHOT_LIMIT = 120;
+const CACHE_SNAPSHOT_DELAY = 10000;
+
+function readCacheSnapshot(): Record<string, Track> {
+  try {
+    const parsed: unknown = JSON.parse(localStorage.getItem(CACHE_SNAPSHOT_KEY) ?? 'null');
+    return parsed && typeof parsed === 'object' ? (parsed as Record<string, Track>) : {};
+  } catch {
+    return {};
+  }
+}
+
+function cacheSnapshot(s = library.get()) {
+  const p = player.get();
+  const keep = [...new Set([p.queue[p.index], ...s.recent, ...p.queue])].filter(Boolean).slice(0, CACHE_SNAPSHOT_LIMIT);
   const out: Record<string, Track> = {};
-  for (const id in s.cache) if (keep.has(id) && !id.startsWith('sp:')) out[id] = s.cache[id];
+  for (const id of keep) {
+    const tr = s.cache[id] ?? volatile.get(id);
+    if (tr && !id.startsWith('sp:')) out[id] = tr;
+  }
   return out;
 }
+
+let cacheSnapshotTimer = 0;
+let cacheSnapshotLast = '';
+const saveCacheSnapshot = () => {
+  try {
+    const serialized = JSON.stringify(cacheSnapshot());
+    if (serialized === cacheSnapshotLast) return;
+    cacheSnapshotLast = serialized;
+    localStorage.setItem(CACHE_SNAPSHOT_KEY, serialized);
+  } catch {
+    /* ignore */
+  }
+};
+
 persist('lyra.lib.v1', library, (s) => ({
-  liked: s.liked, disliked: s.disliked, playlists: s.playlists, cache: pruned(s), recent: s.recent,
+  liked: s.liked, disliked: s.disliked, playlists: s.playlists, recent: s.recent,
   soundcloudLiked: s.soundcloudLiked,
   soundcloudPlaylists: s.soundcloudPlaylists,
   soundcloudPlaylistTracks: s.soundcloudPlaylistTracks,
@@ -146,18 +175,23 @@ persist('lyra.lib.v1', library, (s) => ({
   ytmusicPlaylistTracks: s.ytmusicPlaylistTracks,
   ytmusicAuthorized: s.ytmusicAuthorized,
   ytmusicProfile: s.ytmusicProfile,
-  _libraryCachedAt: Date.now(),
 }), 350, () => {
   if (librarySaveErrorShown) return;
   librarySaveErrorShown = true;
   snack(t('librarySaveError'));
 });
 
+library.subscribe(() => {
+  clearTimeout(cacheSnapshotTimer);
+  cacheSnapshotTimer = window.setTimeout(saveCacheSnapshot, CACHE_SNAPSHOT_DELAY);
+});
+window.addEventListener('pagehide', saveCacheSnapshot);
+
 export const CORRUPTED_REPLACED_FAVORITE_IDS = new Set(['yt:hfMqB_XAH6k', 'yt:zHdQniNNTu0']);
 
 const storedLibrary = library.get();
 const sanitizedCache: Record<string, Track> = {};
-for (const [k, v] of Object.entries(storedLibrary.cache ?? {})) {
+for (const [k, v] of Object.entries({ ...readCacheSnapshot(), ...(storedLibrary.cache ?? {}) })) {
   if (v && !k.startsWith('sp:')) sanitizedCache[k] = sanitizeStoredTrack(v);
 }
 const sanitizedYtPlaylistTracks: Record<string, Track[]> = {};

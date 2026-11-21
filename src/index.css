@@ -568,6 +568,9 @@ html[data-theme=light] { color-scheme: light; }
   .lyric[data-wait] { animation: lyric-wait 1.6s ease-in-out infinite; }
   @keyframes lyric-wait { 50% { opacity: .7; } }
   .lyric[data-state=active] .lyric-pulse { animation: lyrics-pulse 1.2s var(--ease-emph) infinite; background: var(--md-primary); }
+  html[data-idle] .lyric[data-state=active] .lyric-dots,
+  html[data-idle] .lyric[data-state=active] .lyric-pulse,
+  html[data-idle] .lyric[data-wait] { animation-play-state: paused; }
   .lyrics-plain { touch-action: auto; }
   .lyrics-plain > div { height: 100%; overflow-y: auto; padding: 18% 6px 30%; }
   .plain-line { font-size: var(--lfs, 19px); font-weight: 700; line-height: 1.35; margin: 0 0 6px; opacity: .85; animation: rise .5s var(--ease-decel) backwards; animation-delay: calc(min(var(--i, 0), 16) * 25ms); }
@@ -921,6 +924,7 @@ html[data-theme=light] { color-scheme: light; }
   .hero-art { position: relative; width: clamp(140px, 24cqw, 250px); aspect-ratio: 1; }
   .hero-shape { position: absolute; inset: -12%; width: 124%; height: 124%; color: color-mix(in oklab, var(--md-primary) 38%, transparent); }
   .hero-shape > svg { animation: spin 30s linear infinite; }
+  html[data-idle] .hero-shape > svg { animation-play-state: paused; }
   .hero-cover { position: absolute; inset: 0; border-radius: 32px; transform: rotate(-5deg); box-shadow: 0 24px 50px -18px rgb(0 0 0 / .6); transition: transform var(--sp-def-d) var(--sp-bounce), border-radius var(--sp-def-d) var(--sp-def); }
   .hero:hover .hero-cover { transform: rotate(0deg) scale(1.03); border-radius: 44px; }
   @container main (max-width: 560px) { .hero { grid-template-columns: 1fr; } .hero-art { display: none; } }
@@ -1076,19 +1080,18 @@ html[data-theme=light] { color-scheme: light; }
   .bg-image-drift { animation: bg-img-float 26s ease-in-out infinite alternate; }
   .bg-ambient {
     position: absolute; inset: -14%; overflow: hidden;
-    filter: blur(68px) saturate(1.28);
     transform: translateZ(0);
     backface-visibility: hidden;
-    will-change: filter, opacity;
-    transition: filter .6s var(--ease-emph), opacity .6s var(--ease-emph);
-  }
-  .bg-ambient[data-metallic=true] { filter: blur(68px) saturate(0.22) brightness(0.76) contrast(1.18); }
-  .bg-blob {
-    position: absolute; border-radius: 50%; opacity: .82; mix-blend-mode: screen;
-    will-change: transform, opacity; backface-visibility: hidden;
+    will-change: opacity;
     transition: opacity .6s var(--ease-emph);
   }
-  .bg-ambient[data-metallic=true] .bg-blob { opacity: .52; }
+  .bg-blob {
+    position: absolute; border-radius: 50%; opacity: .82; mix-blend-mode: screen;
+    filter: blur(68px) saturate(1.28);
+    will-change: transform, opacity; backface-visibility: hidden;
+    transition: opacity .6s var(--ease-emph), filter .6s var(--ease-emph);
+  }
+  .bg-ambient[data-metallic=true] .bg-blob { opacity: .52; filter: blur(68px) saturate(0.22) brightness(0.76) contrast(1.18); }
   .bg-blob-1 { width: 68%; height: 68%; left: -8%; top: -10%; animation: bg-drift-1 22s ease-in-out infinite alternate; }
   .bg-blob-2 { width: 62%; height: 62%; right: -10%; top: -6%; animation: bg-drift-2 27s ease-in-out infinite alternate; }
   .bg-blob-3 { width: 66%; height: 66%; right: -6%; bottom: -12%; animation: bg-drift-3 25s ease-in-out infinite alternate; }
@@ -1099,6 +1102,9 @@ html[data-theme=light] { color-scheme: light; }
    * своего 22-30-секундного пути — пауза глазом неотличима, а кадр заметно легче. */
   html[data-resizing] .bg-blob,
   html[data-resizing] .bg-image-drift { animation-play-state: paused; }
+  /* Пауза / скрытое окно / низкий заряд: дрейф фона замирает совсем (data-idle из App). */
+  html[data-idle] .bg-blob,
+  html[data-idle] .bg-image-drift { animation-play-state: paused; }
 
   /* Pre-warmed metallic + neon overlay (zero remount, pure GPU opacity crossfade) */
   .bg-metal-fx {

@@ -2,22 +2,26 @@ import { memo, useEffect, useMemo, useRef, useState, type CSSProperties } from '
 import { Icon, type IconName } from './Icon';
 import { Shape } from './ui';
 import { cx } from '../lib/util';
+import { thumbArtwork } from '../lib/ytmusic-library';
 import { getTrack } from '../state/library';
 import type { Playlist } from '../types';
 
 const loadedCoverUrls = new Set<string>();
 
+const THUMB_BOX = /\b[hw]-(8|9|10|11|12)\b/;
+
 export const Cover = memo(function Cover({ src, className, style, icon = 'music_note' }: { src?: string; className?: string; style?: CSSProperties; icon?: IconName }) {
-  const [okSrc, setOk] = useState<string | null>(() => (src && loadedCoverUrls.has(src) ? src : null));
+  const url = className && THUMB_BOX.test(className) ? thumbArtwork(src) : src;
+  const [okSrc, setOk] = useState<string | null>(() => (url && loadedCoverUrls.has(url) ? url : null));
   const [errSrc, setErr] = useState<string | null>(null);
-  const alreadyLoaded = Boolean(src && (okSrc === src || loadedCoverUrls.has(src)));
+  const alreadyLoaded = Boolean(url && (okSrc === url || loadedCoverUrls.has(url)));
   return (
     <div className={cx('cover', className)} style={style}>
       <Icon name={icon} className="cover-ph" />
-      {src && errSrc !== src && (
+      {url && errSrc !== url && (
         <img
-          key={src}
-          src={src}
+          key={url}
+          src={url}
           alt=""
           loading={alreadyLoaded ? 'eager' : 'lazy'}
           decoding={alreadyLoaded ? 'sync' : 'async'}
@@ -26,15 +30,15 @@ export const Cover = memo(function Cover({ src, className, style, icon = 'music_
           className={alreadyLoaded ? 'ok instant' : ''}
           ref={(el) => {
             if (el?.complete && el.naturalWidth) {
-              loadedCoverUrls.add(src);
-              if (okSrc !== src) setOk(src);
+              loadedCoverUrls.add(url);
+              if (okSrc !== url) setOk(url);
             }
           }}
           onLoad={() => {
-            loadedCoverUrls.add(src);
-            setOk(src);
+            loadedCoverUrls.add(url);
+            setOk(url);
           }}
-          onError={() => setErr(src)}
+          onError={() => setErr(url)}
         />
       )}
     </div>
@@ -112,7 +116,7 @@ export const PlaylistCover = memo(function PlaylistCover({ p, className, style }
     return (
       <div className={cx('cover mosaic', className)} style={style}>
         {covers.map((c) => (
-          <img key={c} src={c} alt="" loading="lazy" decoding="async" referrerPolicy="no-referrer" draggable={false} />
+          <img key={c} src={className && THUMB_BOX.test(className) ? thumbArtwork(c) : c} alt="" loading="lazy" decoding="async" referrerPolicy="no-referrer" draggable={false} />
         ))}
       </div>
     );
