@@ -71,7 +71,6 @@ async function fetchConnection(id: ProviderId): Promise<Connection> {
 
 function ProviderCard({ provider, index }: { provider: ProviderConfig; index: number }) {
   const [connection, setConnection] = useState<Connection | null>(null);
-  const [token, setToken] = useState('');
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState('');
   const [error, setError] = useState('');
@@ -108,13 +107,6 @@ function ProviderCard({ provider, index }: { provider: ProviderConfig; index: nu
     }
   };
 
-  const login = () => run(async () => {
-    if (!token.trim()) throw new Error(t('scTokenRequired'));
-    await soundCloudAuthLogin(token.trim());
-    await loadSoundCloudLibrary(true);
-    setToken('');
-  }, t('scConnectedMsg'));
-
   const soundCloudBrowserLogin = async () => {
     setBusy(true);
     setError('');
@@ -148,7 +140,6 @@ function ProviderCard({ provider, index }: { provider: ProviderConfig; index: nu
         await loadSoundCloudLibrary(true);
         await loadStatus();
         setMessage(t('scConnectedMsg'));
-        setToken('');
       } catch (requestError) {
         setError(errorMessage(requestError));
         setMessage('');
@@ -272,10 +263,7 @@ function ProviderCard({ provider, index }: { provider: ProviderConfig; index: nu
 
       <div className="mt-4 flex flex-wrap gap-2">
         {provider.id === 'soundcloud' ? (
-          <>
-            <Button variant="filled" disabled={busy} onClick={() => void soundCloudBrowserLogin()}>{busy ? t('scWaitingBtn') : t('scLoginBtn')}</Button>
-            {token && <Button variant="outlined" disabled={busy} onClick={() => void login()}>{t('scUseTokenBtn')}</Button>}
-          </>
+          <Button variant="filled" disabled={busy} onClick={() => void soundCloudBrowserLogin()}>{busy ? t('scWaitingBtn') : t('scLoginBtn')}</Button>
         ) : (
           <Button variant="filled" disabled={busy} onClick={() => void ytMusicBrowserLogin()}>{busy ? t('ytWaitingBtn') : t('ytLoginBtn')}</Button>
         )}

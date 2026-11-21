@@ -6,7 +6,7 @@ import { clamp, cx, useStore } from '../lib/util';
 import { t, type Key } from '../lib/i18n';
 import { buildScheme, VARIANTS, type Role } from '../lib/color';
 import { appearance, DEFAULTS, processImage, setBgImage, type Appearance as A, type GlassMode } from '../state/appearance';
-import { endLiveColorPreview, markThemeDragging, previewLiveColor, recordThemeRerender, theme } from '../state/theme';
+import { endLiveColorPreview, markThemeDragging, previewLiveColor, theme } from '../state/theme';
 import { go, snack } from '../state/ui';
 import { addSnippet, CSS_SNIPPETS, customCss } from '../state/custom-css';
 
@@ -115,7 +115,6 @@ const Swatches = memo(function Swatches({
   onLivePreview?: (c: string) => void;
   label: string;
 }) {
-  recordThemeRerender();
   const [open, setOpen] = useState(false);
   const isPickingRef = useRef<'sv' | 'hue' | null>(null);
   const hsvRef = useRef<{ h: number; s: number; v: number }>(hexToHsv(value));

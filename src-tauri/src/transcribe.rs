@@ -3,10 +3,11 @@
 //! job at a time, with a user-chosen thread count and lowered OS priority so playback and the
 //! rest of the system stay responsive. A newer job (track change) cancels the running one.
 
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use serde::Serialize;
 use tauri::Emitter;
@@ -56,7 +57,12 @@ pub fn whisper_models() -> Vec<ModelInfo> {
         .collect()
 }
 
-static DOWNLOAD_CANCEL: AtomicBool = AtomicBool::new(false);
+/// One cancel flag per model id, so a second download no longer clears a cancel queued for the first.
+static DOWNLOAD_CANCELS: OnceLock<Mutex<HashMap<String, Arc<AtomicBool>>>> = OnceLock::new();
+
+fn download_cancels() -> &'static Mutex<HashMap<String, Arc<AtomicBool>>> {
+    DOWNLOAD_CANCELS.get_or_init(|| Mutex::new(HashMap::new()))
+}
 
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -71,7 +77,8 @@ pub async fn whisper_download(app: tauri::AppHandle, model: String) -> Result<()
     let file = model_file(&model).ok_or("unknown model")?;
     let dest = models_dir().join(file);
     let part = dest.with_extension("bin.part");
-    DOWNLOAD_CANCEL.store(false, Ordering::SeqCst);
+    let cancel = Arc::new(AtomicBool::new(false));
+    download_cancels().lock().unwrap_or_else(|e| e.into_inner()).insert(model.clone(), cancel.clone());
     let mut resp = reqwest::Client::new()
         .get(format!("{MODEL_BASE_URL}{file}"))
         .send()
@@ -85,7 +92,7 @@ pub async fn whisper_download(app: tauri::AppHandle, model: String) -> Result<()
     let mut received = 0u64;
     let mut last_emit = 0u64;
     while let Some(chunk) = resp.chunk().await.map_err(|e| format!("download interrupted: {e}"))? {
-        if DOWNLOAD_CANCEL.load(Ordering::SeqCst) {
+        if cancel.load(Ordering::SeqCst) {
             drop(out);
             let _ = tokio::fs::remove_file(&part).await;
             return Err("cancelled".into());
@@ -109,7 +116,12 @@ pub async fn whisper_download(app: tauri::AppHandle, model: String) -> Result<()
 
 #[tauri::command]
 pub fn whisper_cancel_download() {
-    DOWNLOAD_CANCEL.store(true, Ordering::SeqCst);
+    // The UI downloads one model at a time; a fresh flag is installed by every start, so setting
+    // the stored flags only stops a download that is actually running.
+    let flags = download_cancels().lock().unwrap_or_else(|e| e.into_inner());
+    for flag in flags.values() {
+        flag.store(true, Ordering::SeqCst);
+    }
 }
 
 #[tauri::command]

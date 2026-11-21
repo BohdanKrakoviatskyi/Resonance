@@ -239,50 +239,6 @@ let previewRaf = 0;
 let previewPending: { bgColor?: string; accentColor?: string } | null = null;
 let previewTransitionPaused = false;
 let themeDragTimer = 0;
-let lastFrameTs = 0;
-let lastInputLogTs = 0;
-
-export interface ColorInputLogEntry {
-  timestamp: number;
-  dt: number;
-  rawHex: string;
-  rgb: [number, number, number];
-}
-
-const dragStats = {
-  events: 0,
-  frames: 0,
-  rerenders: 0,
-  domElementCount: 0,
-  varsUpdatedPerFrame: 0,
-  totalFrameMs: 0,
-  maxFrameMs: 0,
-  totalFrameDeltaMs: 0,
-  maxFrameDeltaMs: 0,
-  deltaSamples: 0,
-  totalRecalcStyleMs: 0,
-  maxRecalcStyleMs: 0,
-  recentInputs: [] as ColorInputLogEntry[],
-};
-
-export function logColorPickerInput(rawHex: string) {
-  const ts = performance.now();
-  const dt = lastInputLogTs > 0 ? +(ts - lastInputLogTs).toFixed(2) : 0;
-  lastInputLogTs = ts;
-  const n = parseInt(rawHex.slice(1), 16) || 0;
-  const entry: ColorInputLogEntry = {
-    timestamp: +ts.toFixed(2),
-    dt,
-    rawHex,
-    rgb: [(n >> 16) & 255, (n >> 8) & 255, n & 255],
-  };
-  if (dragStats.recentInputs.length >= 60) dragStats.recentInputs.shift();
-  dragStats.recentInputs.push(entry);
-}
-
-export function recordThemeRerender() {
-  if (previewTransitionPaused) dragStats.rerenders += 1;
-}
 
 /**
  * Marks `html[data-theme-dragging="true"]` and `.is-picking` during active palette/slider dragging
@@ -291,8 +247,6 @@ export function recordThemeRerender() {
 export function markThemeDragging(holdMs = 150) {
   if (!previewTransitionPaused) {
     previewTransitionPaused = true;
-    lastFrameTs = 0;
-    dragStats.domElementCount = document.querySelectorAll('*').length;
     document.documentElement.dataset.themeDragging = 'true';
     document.documentElement.classList.add('is-picking');
     setColorTransition(0);
@@ -328,22 +282,11 @@ function ensurePickingSafetyListeners() {
  */
 export function previewLiveColor(patch: { bgColor?: string; accentColor?: string }) {
   ensurePickingSafetyListeners();
-  dragStats.events += 1;
-  if (patch.bgColor) logColorPickerInput(patch.bgColor);
-  if (patch.accentColor) logColorPickerInput(patch.accentColor);
   previewPending = { ...previewPending, ...patch };
   // Hold picking state without auto-expiring mid-drag (safety listeners + explicit commit clear it)
   markThemeDragging(0);
   if (previewRaf) return;
-  previewRaf = requestAnimationFrame((now) => {
-    const t0 = performance.now();
-    if (lastFrameTs > 0) {
-      const frameDeltaMs = now - lastFrameTs;
-      dragStats.deltaSamples += 1;
-      dragStats.totalFrameDeltaMs += frameDeltaMs;
-      if (frameDeltaMs > dragStats.maxFrameDeltaMs) dragStats.maxFrameDeltaMs = frameDeltaMs;
-    }
-    lastFrameTs = now;
+  previewRaf = requestAnimationFrame(() => {
     previewRaf = 0;
     const p = previewPending;
     previewPending = null;
@@ -351,7 +294,6 @@ export function previewLiveColor(patch: { bgColor?: string; accentColor?: string
     const a = { ...appearance.get(), ...p };
     const dark = a.theme === 'system' ? mq.matches : a.theme === 'dark';
     const st = document.documentElement.style;
-    let varsSet = 0;
 
     const accentArgb = a.accentMode === 'custom' ? argbFromHex(a.accentColor) : theme.get().source;
     const bgArgb = a.bgMode === 'color' ? argbFromHex(a.bgColor) : accentArgb;
@@ -366,7 +308,6 @@ export function previewLiveColor(patch: { bgColor?: string; accentColor?: string
       st.setProperty('--md-surface', roles.surface);
       st.setProperty('--md-surface-container-low', roles.surfaceContainerLow);
       st.setProperty('--md-surface-container-lowest', roles.surfaceContainerLowest);
-      varsSet += 4;
     }
 
     if (p.accentColor !== undefined && a.accentMode === 'custom') {
@@ -374,25 +315,10 @@ export function previewLiveColor(patch: { bgColor?: string; accentColor?: string
       st.setProperty('--md-primary', roles.primary);
       st.setProperty('--md-primary-container', roles.primaryContainer);
       st.setProperty('--md-secondary-container', roles.secondaryContainer);
-      varsSet += 3;
       if (a.metallic && a.metallicNeon) {
         st.setProperty('--metal-neon', computeNeonHex(accentArgb, dark));
-        varsSet += 1;
       }
     }
-
-    const tBeforeStyle = performance.now();
-    const probeEl = document.querySelector('.app-shell') || document.body;
-    if (probeEl) void getComputedStyle(probeEl).color;
-    const recalcMs = performance.now() - tBeforeStyle;
-
-    const workMs = performance.now() - t0;
-    dragStats.varsUpdatedPerFrame = varsSet;
-    dragStats.frames += 1;
-    dragStats.totalFrameMs += workMs;
-    if (workMs > dragStats.maxFrameMs) dragStats.maxFrameMs = workMs;
-    dragStats.totalRecalcStyleMs += recalcMs;
-    if (recalcMs > dragStats.maxRecalcStyleMs) dragStats.maxRecalcStyleMs = recalcMs;
   });
 }
 

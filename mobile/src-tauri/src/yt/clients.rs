@@ -170,7 +170,6 @@ pub async fn refresh_remote_clients_if_stale(http: &Client) -> bool {
         }
     }
 
-    let _ = std::fs::write(&stamp_path, now.to_string());
     let Ok(resp) = tokio::time::timeout(Duration::from_secs(5), http.get(REMOTE_CLIENTS_URL).send()).await else {
         return false;
     };
@@ -193,6 +192,9 @@ pub async fn refresh_remote_clients_if_stale(http: &Client) -> bool {
     if std::fs::write(&tmp, &body).is_ok() {
         let _ = std::fs::rename(tmp, &clients_path);
     }
+    // Stamped only after a successful fetch and rename: an offline start must not suppress the
+    // next refresh for REMOTE_CLIENTS_MAX_AGE_SECS.
+    let _ = std::fs::write(&stamp_path, now.to_string());
     if let Ok(mut guard) = registry_cell().write() {
         *guard = parsed;
     }

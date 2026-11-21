@@ -31,6 +31,13 @@ pub struct LocalTrack {
     pub has_cover: bool,
 }
 
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LocalScanResult {
+    pub tracks: Vec<LocalTrack>,
+    pub truncated: bool,
+}
+
 fn registry() -> &'static Mutex<HashMap<String, PathBuf>> {
     static R: OnceLock<Mutex<HashMap<String, PathBuf>>> = OnceLock::new();
     R.get_or_init(|| Mutex::new(HashMap::new()))
@@ -68,11 +75,15 @@ fn is_audio(path: &Path) -> bool {
         .is_some_and(|e| AUDIO_EXTS.contains(&e.to_ascii_lowercase().as_str()))
 }
 
-fn collect(dir: &Path, depth: usize, out: &mut Vec<PathBuf>) {
-    if depth > MAX_DEPTH || out.len() >= MAX_FILES {
-        return;
+/// Returns true when it stopped early because MAX_FILES was reached.
+fn collect(dir: &Path, depth: usize, out: &mut Vec<PathBuf>) -> bool {
+    if out.len() >= MAX_FILES {
+        return true;
     }
-    let Ok(rd) = std::fs::read_dir(dir) else { return };
+    if depth > MAX_DEPTH {
+        return false;
+    }
+    let Ok(rd) = std::fs::read_dir(dir) else { return false };
     let mut entries: Vec<_> = rd.flatten().collect();
     entries.sort_by_key(|e| e.file_name());
     for e in entries {
@@ -80,16 +91,17 @@ fn collect(dir: &Path, depth: usize, out: &mut Vec<PathBuf>) {
         let Ok(ft) = e.file_type() else { continue };
         if ft.is_dir() {
             // Skip hidden folders (".git", "._resources" …).
-            if !e.file_name().to_string_lossy().starts_with('.') {
-                collect(&p, depth + 1, out);
+            if !e.file_name().to_string_lossy().starts_with('.') && collect(&p, depth + 1, out) {
+                return true;
             }
         } else if ft.is_file() && is_audio(&p) {
             out.push(p);
             if out.len() >= MAX_FILES {
-                return;
+                return true;
             }
         }
     }
+    false
 }
 
 /// "Artist - Title.mp3" → (Some(artist), title); anything else → (None, stem).
@@ -153,13 +165,15 @@ pub fn cover_bytes(path: &Path) -> Option<(String, Vec<u8>)> {
 
 /// Scans folders, registers every file and returns their metadata. Blocking work runs off the async runtime.
 #[tauri::command]
-pub async fn local_scan(folders: Vec<String>) -> Result<Vec<LocalTrack>, String> {
+pub async fn local_scan(folders: Vec<String>) -> Result<LocalScanResult, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let mut files = Vec::new();
+        let mut truncated = false;
         for f in &folders {
             let p = PathBuf::from(f);
-            if p.is_dir() {
-                collect(&p, 0, &mut files);
+            if p.is_dir() && collect(&p, 0, &mut files) {
+                truncated = true;
+                break;
             }
         }
         let tracks: Vec<LocalTrack> = files.iter().map(|p| read_track(p)).collect();
@@ -169,7 +183,7 @@ pub async fn local_scan(folders: Vec<String>) -> Result<Vec<LocalTrack>, String>
                 reg.insert(t.id.clone(), p);
             }
         }
-        tracks
+        LocalScanResult { tracks, truncated }
     })
     .await
     .map_err(|e| e.to_string())
@@ -237,9 +251,11 @@ mod tests {
         write_wav(&hidden.join("skip.wav"), 1);
         std::fs::write(sub.join("cover.jpg"), b"x").unwrap();
 
-        let tracks = tauri::async_runtime::block_on(local_scan(vec![dir.to_string_lossy().into_owned()])).unwrap();
+        let scan = tauri::async_runtime::block_on(local_scan(vec![dir.to_string_lossy().into_owned()])).unwrap();
         std::fs::remove_dir_all(&dir).ok();
 
+        assert!(!scan.truncated);
+        let tracks = scan.tracks;
         assert_eq!(tracks.len(), 1, "hidden folders and non-audio files are skipped");
         let t = &tracks[0];
         assert_eq!(t.artist, "Some Artist");

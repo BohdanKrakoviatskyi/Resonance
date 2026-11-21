@@ -370,11 +370,9 @@ async fn fetch_user_playlists(http: &Client) -> Result<Vec<YtMusicPlaylistDto>, 
 }
 
 async fn fetch_liked_songs(http: &Client) -> Result<Vec<YtMusicTrackDto>, String> {
-    let mut tracks = fetch_browse_tracks(http, "VLLM", 12)
-        .await
-        .unwrap_or_default();
+    let mut tracks = fetch_browse_tracks(http, "VLLM").await.unwrap_or_default();
     if tracks.is_empty() {
-        tracks = fetch_browse_tracks(http, "FEmusic_liked_videos", 12)
+        tracks = fetch_browse_tracks(http, "FEmusic_liked_videos")
             .await
             .unwrap_or_default();
     }
@@ -384,10 +382,10 @@ async fn fetch_liked_songs(http: &Client) -> Result<Vec<YtMusicTrackDto>, String
 async fn fetch_browse_tracks(
     http: &Client,
     browse_id: &str,
-    max_pages: usize,
 ) -> Result<Vec<YtMusicTrackDto>, String> {
     let mut tracks = Vec::new();
     let mut seen = HashSet::new();
+    let mut seen_tokens = HashSet::new();
     let mut data = post_music(
         http,
         MUSIC_BROWSE_URL,
@@ -396,7 +394,7 @@ async fn fetch_browse_tracks(
     )
     .await?;
 
-    for page_idx in 0..max_pages {
+    loop {
         let mut parsed = 0;
         for r in track_renderers(&data) {
             if let Some(t) = parse_responsive_track(r) {
@@ -412,12 +410,14 @@ async fn fetch_browse_tracks(
         if parsed == 0 {
             break;
         }
-        if page_idx + 1 >= max_pages {
-            break;
-        }
         let Some(token) = find_continuation_token(&data) else {
             break;
         };
+        // A repeated token means the server is stuck on the same page, so
+        // paging further would loop forever.
+        if !seen_tokens.insert(token.clone()) {
+            break;
+        }
         data = post_music(
             http,
             MUSIC_BROWSE_URL,
@@ -455,7 +455,8 @@ pub async fn fetch_playlist_tracks_native(
     let mut artwork_url = extract_header_artwork(&data);
 
     let mut tracks = Vec::new();
-    for page_idx in 0..20 {
+    let mut seen_tokens = HashSet::new();
+    loop {
         let mut parsed = 0;
         for r in track_renderers(&data) {
             if let Some(t) = parse_responsive_track(r) {
@@ -468,12 +469,14 @@ pub async fn fetch_playlist_tracks_native(
         if parsed == 0 {
             break;
         }
-        if page_idx >= 19 {
-            break;
-        }
         let Some(token) = find_continuation_token(&data) else {
             break;
         };
+        // A repeated token means the server is stuck on the same page, so
+        // paging further would loop forever.
+        if !seen_tokens.insert(token.clone()) {
+            break;
+        }
         data = post_music(
             http,
             MUSIC_BROWSE_URL,

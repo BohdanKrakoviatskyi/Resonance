@@ -198,7 +198,7 @@ fn extract_meta_content(html: &str, name: &str) -> Option<String> {
         for quote in ['"', '\''] {
             let pat = format!("{attr}={quote}{name}{quote}");
             if let Some(pos) = html.find(&pat) {
-                let slice = &html[pos..pos.saturating_add(600).min(html.len())];
+                let slice: String = html[pos..].chars().take(600).collect();
                 if let Some(c_pos) = slice.find("content=") {
                     let after = &slice[c_pos + 8..];
                     let q = after.chars().next()?;
@@ -392,14 +392,17 @@ async fn fetch_deezer_playlist(
         }
     }
 
+    let mut page_failure: Option<String> = None;
     for _page in 0..30 {
         let Some(url_str) = next_url.take() else {
             break;
         };
         let Ok(page_url) = Url::parse(&url_str) else {
+            page_failure = Some("a page link was invalid".to_string());
             break;
         };
         if !is_safe_deezer_api_url(&page_url) {
+            page_failure = Some("a page link was unsafe".to_string());
             break;
         }
         let Ok(page_resp) = http
@@ -408,18 +411,23 @@ async fn fetch_deezer_playlist(
             .send()
             .await
         else {
+            page_failure = Some("a page request failed".to_string());
             break;
         };
         if !page_resp.status().is_success() {
+            page_failure = Some(format!("Deezer returned HTTP {}", page_resp.status().as_u16()));
             break;
         }
         let Ok(page_bytes) = read_response_limited(page_resp, 4 << 20).await else {
+            page_failure = Some("a page response could not be read".to_string());
             break;
         };
         let Ok(page_json) = serde_json::from_slice::<Value>(&page_bytes) else {
+            page_failure = Some("a page returned invalid JSON".to_string());
             break;
         };
         let Some(arr) = page_json.get("data").and_then(|v| v.as_array()) else {
+            page_failure = Some("a page carried no track list".to_string());
             break;
         };
         if arr.is_empty() {
@@ -438,6 +446,18 @@ async fn fetch_deezer_playlist(
 
     if tracks.is_empty() {
         return Err("Deezer playlist is empty or private.".to_string());
+    }
+    if let Some(reason) = page_failure {
+        return Err(format!(
+            "Deezer import stopped early after {} tracks: {reason}.",
+            tracks.len()
+        ));
+    }
+    if next_url.is_some() {
+        return Err(format!(
+            "Deezer import stopped early after {} tracks: the playlist is longer than the 30-page import limit.",
+            tracks.len()
+        ));
     }
 
     Ok(ExternalPlaylistDto {
@@ -744,6 +764,13 @@ mod tests {
     fn insecure_playlist_input_is_rejected() {
         assert!(normalize_input_url("http://open.spotify.com/playlist/abc").is_err());
         assert!(normalize_input_url("open.spotify.com/playlist/abc").is_ok());
+    }
+
+    #[test]
+    fn meta_content_survives_multibyte_text_on_the_slice_edge() {
+        // the cyrillic run ends on an odd byte, so a 600-byte slice from the match would split a character
+        let html = format!("<meta property=\"og:title\"{} content=\"Значение\">", "я".repeat(300));
+        assert_eq!(extract_meta_content(&html, "og:title"), Some("Значение".to_string()));
     }
 }
 

@@ -1770,7 +1770,8 @@ async function load(i: number, autoplay: boolean, opts?: LoadOptions) {
     }
 
     if (reqId !== currentRequestId) return;
-    if (tr.source === 'soundcloud' || isYouTubeTrack(tr)) void prefetchRelated(tr);
+    // only radio shuffle reads recommendations
+    if (s.shuffle && s.shuffleRadio && (tr.source === 'soundcloud' || isYouTubeTrack(tr))) void prefetchRelated(tr);
     topUpShuffleQueue(tr);
     scheduleLowPriorityUpcomingPrefetch(reqId, player.get().index);
     pushRecent(id);
@@ -1911,7 +1912,8 @@ async function load(i: number, autoplay: boolean, opts?: LoadOptions) {
     return;
   }
   if (reqId !== currentRequestId) return;
-  if (tr.source === 'soundcloud' || isYouTubeTrack(tr)) void prefetchRelated(tr);
+  // only radio shuffle reads recommendations
+  if (s.shuffle && s.shuffleRadio && (tr.source === 'soundcloud' || isYouTubeTrack(tr))) void prefetchRelated(tr);
   topUpShuffleQueue(tr);
   scheduleLowPriorityUpcomingPrefetch(reqId, player.get().index);
   pushRecent(id);
@@ -2201,7 +2203,8 @@ async function extendShuffleQueue(track: Track): Promise<number> {
 async function appendRelatedAndContinue(track: Track) {
   const appended = await extendShuffleQueue(track);
   if (appended <= 0) {
-    setPlayerMachineState('paused');
+    // a late fetch must not pause a track the user already moved on to
+    if (currentTrack()?.id === track.id) setPlayerMachineState('paused');
     return;
   }
   const queue = player.get().queue;
@@ -2256,8 +2259,12 @@ export function toggle() {
     pendingSeek = keep > 0 && id ? createPendingAudioSeek(id, keep) : null;
     return;
   }
-  // Во время 'loading' не дёргаем <audio> до готовности потока
-  if (s.state === 'loading' || s.loading) return;
+  // a mid-track buffer stall also reports 'loading', but pause there is a real request
+  if (s.state === 'loading' || s.loading) {
+    activeEl.pause();
+    setPlayerMachineState('paused');
+    return;
+  }
   if (activeEl.paused) {
     resumeAudioContextIfNeeded();
     resumeCrossfadeIfPaused();
@@ -2287,6 +2294,10 @@ function step(dir: 1 | -1, auto: boolean) {
     const el = getActiveDeck().el;
     el.currentTime = 0;
     el.play().catch(() => {});
+    // a restart is a fresh track start: bump the request id so watchers see it with the same queue id
+    const restartId = ++currentRequestId;
+    getActiveDeck().requestId = restartId;
+    setPlayerMachineState(s.state, { requestId: restartId });
     return;
   }
   const target = resolveNextQueueIndex(dir, auto);
@@ -2757,7 +2768,7 @@ function bindDeckEvents(deck: Deck) {
 
     const remaining = duration - el.currentTime;
 
-    if (player.get().shuffle && track && (track.source === 'soundcloud' || isYouTubeTrack(track)) && duration > 0 && remaining <= 20) {
+    if (player.get().shuffle && player.get().shuffleRadio && track && (track.source === 'soundcloud' || isYouTubeTrack(track)) && duration > 0 && remaining <= 20) {
       void prefetchRelated(track);
     }
 

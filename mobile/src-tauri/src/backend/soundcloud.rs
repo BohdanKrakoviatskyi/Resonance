@@ -116,6 +116,9 @@ impl Sc {
                     log::warn!("soundcloud.api stage=error_body host={host} body={:?}", scrub_token(&detail, &self.token));
                 }
             }
+            if matches!(status, StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN) && !self.token.trim().is_empty() {
+                return Err(BErr::Rejected(format!("{TOKEN_REJECTED} (HTTP {})", status.as_u16())));
+            }
             return Err(BErr::msg(format!("SoundCloud вернул ошибку HTTP {}", status.as_u16())));
         }
         let body = read_limited(response, max_bytes)

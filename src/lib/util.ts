@@ -54,6 +54,8 @@ const queueBackup = (key: string) => {
   if (!backupTimer) backupTimer = window.setTimeout(() => void syncBackupToBackend(), BACKUP_DELAY_MS);
 };
 
+// The backend merges the entries it receives into the stored map, so a save ships only the keys that
+// changed instead of every persisted key. A failed save puts its keys back in the queue.
 const syncBackupToBackend = async () => {
   clearTimeout(backupTimer);
   backupTimer = 0;
@@ -89,7 +91,10 @@ export async function flushFrontendStateBackup(): Promise<void> {
     const entries: Record<string, string> = {};
     for (const k of [...persistedStores.keys(), ...EXTRA_BACKUP_KEYS]) {
       const val = localStorage.getItem(k);
-      if (val !== null) entries[k] = val;
+      if (val !== null) {
+        entries[k] = val;
+        backedUpValues.set(k, val);
+      }
     }
     if (Object.keys(entries).length > 0) {
       await backupFrontendState(entries);

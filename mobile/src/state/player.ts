@@ -246,7 +246,8 @@ function buildNativeQueuePayload(ids: string[], proxy: LocalProxyInfo | null): N
 async function restartNativePlayback(cur: ReturnType<typeof player.get>) {
   const proxy = await ensureProxyInfo();
   const items = buildNativeQueuePayload(cur.queue, proxy);
-  const startIndex = items.findIndex((item) => item.id === cur.queue[cur.index]);
+  const currentIndex = cur.queue.length ? Math.min(Math.max(cur.index, 0), cur.queue.length - 1) : cur.index;
+  const startIndex = items.findIndex((item) => item.id === cur.queue[currentIndex]);
   if (startIndex < 0) throw new Error(t('cantPlay'));
   applyNativeState(
     await invoke<NativeAudioStateDto>('mobile_audio_set_queue', {

@@ -398,6 +398,11 @@ async fn fetch_with_swap(
 
     for _attempt in 0..2 {
         let mut res = send_upstream(proxy, resolved, Some(&range)).await;
+        if res.is_err() {
+            // A stall or a reset connection is not the CDN refusing the URL, so
+            // retry the exact same request once before concluding anything.
+            res = send_upstream(proxy, resolved, Some(&range)).await;
+        }
         let mut status = res.as_ref().ok().map(|r| r.status().as_u16());
 
         // Fresh TVHTML5 googlevideo URLs can return 403 briefly while CDN propagation settles.
@@ -415,18 +420,19 @@ async fn fetch_with_swap(
             }
         }
 
-        let needs_swap = match &res {
-            Ok(r) => matches!(r.status().as_u16(), 401 | 403),
-            Err(_) => true,
-        };
-        if !needs_swap {
-            return res.map_err(|e| e.to_string());
+        match status {
+            Some(401 | 403) => {
+                proxy.gates.record_refusal(
+                    &resolved.client_key,
+                    &resolved.direct_url,
+                    resolved.link_age(),
+                );
+            }
+            Some(_) => return res.map_err(|e| e.to_string()),
+            // Transport failed even after the retry: swap the stream below, but
+            // leave the gate map alone since no refusal was observed.
+            None => {}
         }
-        proxy.gates.record_refusal(
-            &resolved.client_key,
-            &resolved.direct_url,
-            resolved.link_age(),
-        );
         let failed_key = resolved.client_key.clone();
         if let Ok(swapped) = proxy.swap_refused_stream(video_id, resolved).await {
             if swapped.direct_url == resolved.direct_url && swapped.client_key == failed_key {

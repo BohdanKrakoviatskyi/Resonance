@@ -386,7 +386,7 @@ function ensureLyricsOverridesRestored(): Promise<void> {
       const restored = JSON.parse(raw) as Record<string, ManualLyricsChoice>;
       if (!restored || typeof restored !== 'object') return;
       const current = loadLyricsOverrides();
-      const merged = { ...restored, ...current };
+      const merged = capLyricsOverrides({ ...restored, ...current });
       lyricsOverrides = merged;
       try {
         localStorage.setItem(MANUAL_LYRICS_STORAGE_KEY, JSON.stringify(merged));
@@ -398,12 +398,22 @@ function ensureLyricsOverridesRestored(): Promise<void> {
   return lyricsOverridesRestored;
 }
 
+function capLyricsOverrides(map: Record<string, ManualLyricsChoice>) {
+  const keys = Object.keys(map);
+  if (keys.length <= MAX_LYRICS_CACHE) return map;
+  // Object keys iterate in insertion order: drop the oldest entries past the cap.
+  const trimmed: Record<string, ManualLyricsChoice> = {};
+  for (const k of keys.slice(keys.length - MAX_LYRICS_CACHE)) trimmed[k] = map[k];
+  return trimmed;
+}
+
 function saveLyricsOverrides(map: Record<string, ManualLyricsChoice>) {
-  lyricsOverrides = map;
+  lyricsOverrides = capLyricsOverrides(map);
   try {
-    localStorage.setItem(MANUAL_LYRICS_STORAGE_KEY, JSON.stringify(map));
+    localStorage.setItem(MANUAL_LYRICS_STORAGE_KEY, JSON.stringify(lyricsOverrides));
   } catch {
-    /* ignore quota errors */
+    // storage is full: the map still works this session but the set did not persist
+    console.warn('lyrics overrides could not be saved to localStorage');
   }
   void import('./util')
     .then(({ flushFrontendStateBackup }) => flushFrontendStateBackup())
