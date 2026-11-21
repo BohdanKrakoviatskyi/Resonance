@@ -74,6 +74,29 @@ jobs:
           npm run typecheck
           npm run build
 
+      - name: Route Gradle through a Maven Central mirror
+        run: |
+          mkdir -p "$HOME/.gradle"
+          cat > "$HOME/.gradle/init.gradle" <<'GRADLE'
+          # Maven Central answers GitHub-hosted runners with 429 Too Many Requests under load,
+          # which fails dependency resolution before a single line compiles. This mirror of the
+          # same artifacts is added first; Gradle falls through to the original repositories for
+          # anything the mirror does not carry, so a plugin that only lives on the Gradle Plugin
+          # Portal is unaffected.
+          def mirror = 'https://maven-central.storage-download.googleapis.com/maven2/'
+          beforeSettings { settings ->
+            settings.pluginManagement.repositories {
+              maven { url mirror }
+            }
+            settings.dependencyResolutionManagement.repositories {
+              maven { url mirror }
+            }
+          }
+          GRADLE
+          printf '%s\n' \
+            'org.gradle.internal.repository.max.tentatives=5' \
+            'org.gradle.internal.repository.initial.backoff=500' >> "$HOME/.gradle/gradle.properties"
+
       - name: Initialize & Configure Android Project
         working-directory: mobile
         run: |
