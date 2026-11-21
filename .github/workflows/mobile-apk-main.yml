@@ -74,34 +74,39 @@ jobs:
           npm run typecheck
           npm run build
 
-      - name: Route Gradle through a Maven Central mirror
-        run: |
-          mkdir -p "$HOME/.gradle"
-          cat > "$HOME/.gradle/init.gradle" <<'GRADLE'
-          # Maven Central answers GitHub-hosted runners with 429 Too Many Requests under load,
-          # which fails dependency resolution before a single line compiles. This mirror of the
-          # same artifacts is added first; Gradle falls through to the original repositories for
-          # anything the mirror does not carry, so a plugin that only lives on the Gradle Plugin
-          # Portal is unaffected.
-          def mirror = 'https://maven-central.storage-download.googleapis.com/maven2/'
-          beforeSettings { settings ->
-            settings.pluginManagement.repositories {
-              maven { url mirror }
-            }
-            settings.dependencyResolutionManagement.repositories {
-              maven { url mirror }
-            }
-          }
-          GRADLE
-          printf '%s\n' \
-            'org.gradle.internal.repository.max.tentatives=5' \
-            'org.gradle.internal.repository.initial.backoff=500' >> "$HOME/.gradle/gradle.properties"
-
       - name: Initialize & Configure Android Project
         working-directory: mobile
         run: |
           npx tauri android init --ci --skip-targets-install
           node scripts/configure-android.mjs
+
+      - name: Route Gradle through a Maven Central mirror
+        working-directory: mobile/src-tauri/gen/android
+        run: |
+          python3 - <<'PY'
+          import pathlib
+          import re
+
+          MIRROR = 'maven("https://maven-central.storage-download.googleapis.com/maven2/")'
+
+
+          def add_mirror(match):
+              return f"{match.group(0)}\n{match.group(1)}    {MIRROR}"
+
+
+          patched = []
+          for path in sorted(pathlib.Path(".").rglob("*.gradle.kts")):
+              text = path.read_text()
+              updated = re.sub(r"(?m)^(\s*)repositories\s*\{", add_mirror, text)
+              if updated != text:
+                  path.write_text(updated)
+                  patched.append(str(path))
+          print("repositories patched:", *(patched or ["none"]), sep="\n  ")
+          PY
+          mkdir -p "$HOME/.gradle"
+          printf '%s\n' \
+            'org.gradle.internal.repository.max.tentatives=5' \
+            'org.gradle.internal.repository.initial.backoff=500' >> "$HOME/.gradle/gradle.properties"
 
       - name: Build Release APK (arm64-v8a)
         working-directory: mobile
