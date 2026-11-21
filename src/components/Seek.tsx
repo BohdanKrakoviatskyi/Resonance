@@ -3,7 +3,7 @@ import { Icon } from './Icon';
 import { IconButton, Slider, type Vars } from './ui';
 import { clamp, cx, fmtTime, useStore } from '../lib/util';
 import { t } from '../lib/i18n';
-import { adjustVolumePos, cycleRepeat, dur, next, onFrame, player, prev, seek, seekBy, setVolumePos, volumeToPos, toggle, toggleMute, toggleShuffle, usePlaybackControlLocked, useSecond } from '../state/player';
+import { adjustVolumePos, cycleRepeat, dur, next, onFrame, player, prev, realCurTime, seek, seekBy, setVolumePos, volumeToPos, toggle, toggleMute, toggleShuffle, usePlaybackControlLocked, useSecond } from '../state/player';
 
 /** M3 Expressive wavy progress: the played part is a travelling sine wave that flattens when paused. */
 export function Seek({ big }: { big?: boolean }) {
@@ -17,6 +17,7 @@ export function Seek({ big }: { big?: boolean }) {
   const bubble = useRef<HTMLDivElement>(null);
   const drag = useRef<number | null>(null);
   const wRef = useRef(0);
+  const edgeRef = useRef(-1);
   const [dragging, setDragging] = useState(false);
   const playing = useStore(player, (s) => s.playing);
   const has = useStore(player, (s) => s.index >= 0);
@@ -62,12 +63,13 @@ export function Seek({ big }: { big?: boolean }) {
     (f: number) => {
       const w = wRef.current;
       const x = clamp(f, 0, 1) * w;
+      if (thumb.current) thumb.current.style.transform = `translate3d(${x}px, 0, 0)`;
+      if (Math.abs(x - edgeRef.current) < 1) return;
+      edgeRef.current = x;
       clip.current?.setAttribute('width', String(Math.max(0, x - GAP)));
       const x1 = Math.min(w - 4, x + GAP);
       rest.current?.setAttribute('x1', String(x1));
       rest.current?.setAttribute('opacity', x1 >= w - 5 ? '0' : '1');
-      if (thumb.current) thumb.current.style.transform = `translateX(${x}px)`;
-      if (bubble.current) bubble.current.style.transform = `translateX(${x}px) translateX(-50%)`;
     },
     [GAP],
   );
@@ -78,10 +80,22 @@ export function Seek({ big }: { big?: boolean }) {
   };
   const show = (f: number) => {
     paint(f);
-    if (bubble.current) bubble.current.textContent = fmtTime(f * dur());
+    if (bubble.current) {
+      bubble.current.style.transform = `translate3d(${clamp(f, 0, 1) * wRef.current}px, 0, 0) translateX(-50%)`;
+      bubble.current.textContent = fmtTime(f * dur());
+    }
   };
 
-  useEffect(() => onFrame((ct, d) => drag.current == null && paint(d ? ct / d : 0)), [paint]);
+  useEffect(() => {
+    if (playing) return onFrame((ct, d) => drag.current == null && paint(d ? ct / d : 0));
+    const fromPlayer = () => {
+      if (drag.current != null) return;
+      const d = dur();
+      paint(d ? realCurTime() / d : 0);
+    };
+    fromPlayer();
+    return player.subscribe(fromPlayer);
+  }, [paint, playing]);
 
   return (
     <div

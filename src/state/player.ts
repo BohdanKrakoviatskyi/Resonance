@@ -698,9 +698,7 @@ function stepCrossfadeFrame(now: number, schedule = true) {
     session.endFadeFraction = clamp(session.durationSec / toDur, 0, 0.95);
   }
 
-  // Подписчиков у fadeProgress нет: стор дёргаем только когда шаг визуально заметен.
-  const rounded = Math.round(progress * 100) / 100;
-  if (player.get().fadeProgress !== rounded) player.set({ fadeProgress: rounded });
+  // Подписчиков у fadeProgress нет: прогресс фейда не пишем в стор каждый кадр (см. startCrossfadeRamp).
   emitFrame();
   emitTime();
 
@@ -1243,6 +1241,7 @@ const kick = () => {
   if (!raf) scheduleTick();
 };
 const revive = () => {
+  if (document.hidden) return;
   try {
     if (frameSubs.size && !getActiveDeck().el.paused) kick();
   } catch {

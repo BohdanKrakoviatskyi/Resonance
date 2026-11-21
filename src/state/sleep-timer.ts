@@ -1,11 +1,12 @@
 import { createStore } from '../lib/util';
-import { fadeFactor, SLEEP_FADE_MS, type SleepMode } from '../lib/sleep-timer-plan';
+import { fadeFactor, remainingMs, SLEEP_FADE_MS, type SleepMode } from '../lib/sleep-timer-plan';
 import { dur, player, realCurTime, setVolume, toggle } from './player';
 
 /** Not persisted on purpose: a sleep timer should never survive an app restart. */
 export const sleepTimer = createStore({ mode: { kind: 'off' } as SleepMode });
 
 let ticker: number | null = null;
+let fadeTimeout: number | null = null;
 let unsubIndex: (() => void) | null = null;
 /** Volume before the fade started; restored after we pause or when the timer is cancelled. */
 let savedVolume: number | null = null;
@@ -18,6 +19,8 @@ function restoreVolume() {
 function stopWatchers() {
   if (ticker !== null) clearInterval(ticker);
   ticker = null;
+  if (fadeTimeout !== null) clearTimeout(fadeTimeout);
+  fadeTimeout = null;
   unsubIndex?.();
   unsubIndex = null;
 }
@@ -39,6 +42,20 @@ function tick() {
     if (savedVolume === null) savedVolume = player.get().volume;
     setVolume(savedVolume * f);
   }
+}
+
+/** One timeout for the wait before the ramp; the 250 ms ticker runs only inside the fade window. */
+function watchFade() {
+  const { mode } = sleepTimer.get();
+  if (mode.kind !== 'at') return;
+  const left = remainingMs(mode, Date.now()) ?? 0;
+  if (left > SLEEP_FADE_MS) {
+    fadeTimeout = window.setTimeout(watchFade, left - SLEEP_FADE_MS);
+    return;
+  }
+  fadeTimeout = null;
+  ticker = window.setInterval(tick, 250);
+  tick();
 }
 
 export function setSleepTimer(next: { minutes: number } | 'endOfTrack' | 'off') {
@@ -68,5 +85,5 @@ export function setSleepTimer(next: { minutes: number } | 'endOfTrack' | 'off') 
     return;
   }
   sleepTimer.set({ mode: { kind: 'at', endsAt: Date.now() + next.minutes * 60_000 } });
-  ticker = window.setInterval(tick, 250);
+  watchFade();
 }

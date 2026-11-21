@@ -170,19 +170,43 @@ function tickLastfm() {
   }
 }
 
+let discordTimer: number | null = null;
+let lastfmTimer: number | null = null;
+let flushTimer: number | null = null;
+
+function retime(id: number | null, active: boolean, ms: number, fn: () => void): number | null {
+  if (!active) {
+    if (id !== null) clearInterval(id);
+    return null;
+  }
+  return id ?? window.setInterval(fn, ms);
+}
+
+/** Each timer runs only while its integration is on and the app is not idle in the background. */
+function syncTimers() {
+  const s = integrations.get();
+  const asleep = document.hidden && !player.get().playing;
+  discordTimer = retime(discordTimer, s.discordEnabled && !asleep, 3000, syncDiscord);
+  const lastfmOn = lastfmReady() && !asleep;
+  if (lastfmOn && lastfmTimer === null) lastTick = performance.now();
+  lastfmTimer = retime(lastfmTimer, lastfmOn, 1000, tickLastfm);
+  flushTimer = retime(flushTimer, lastfmOn, 120_000, () => void flushScrobbles());
+}
+
 export function initIntegrations() {
   if (!inTauri()) return;
   player.subscribe(syncDiscord);
   integrations.subscribe(syncDiscord);
+  player.subscribe(syncTimers);
+  integrations.subscribe(syncTimers);
+  document.addEventListener('visibilitychange', syncTimers);
   // Catches seeks and late-arriving durations; presenceKey keeps this from spamming Discord.
-  window.setInterval(syncDiscord, 3000);
+  syncTimers();
   syncDiscord();
 
   invoke<string | null>('lastfm_status')
     .then((name) => integrations.set({ lastfmUser: name ?? null }))
     .then(() => flushScrobbles())
     .catch(() => {});
-  window.setInterval(tickLastfm, 1000);
-  window.setInterval(() => void flushScrobbles(), 120_000);
   window.addEventListener('online', () => void flushScrobbles());
 }
