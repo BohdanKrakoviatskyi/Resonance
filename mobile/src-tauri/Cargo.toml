@@ -3,7 +3,7 @@ name = "resonance-mobile"
 version = "0.1.4"
 description = "Resonance Mobile Player for Android and iOS"
 authors = ["Resonance"]
-license = "MIT"
+license = "GPL-3.0-or-later"
 edition = "2024"
 rust-version = "1.90"
 

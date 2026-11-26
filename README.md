@@ -95,3 +95,15 @@ The release workflow signs and notarizes the macOS build when these repository s
 | `APPLE_CERTIFICATE_PASSWORD` | password of that `.p12` |
 | `APPLE_SIGNING_IDENTITY` | e.g. `Developer ID Application: Your Name (TEAMID)` |
 | `APPLE_ID`, `APPLE_PASSWORD`, `APPLE_TEAM_ID` | Apple ID, an app-specific password, and your team ID (for notarization) |
+
+## Contributing
+
+Issues and pull requests are welcome. Read [CONTRIBUTING.md](CONTRIBUTING.md) before you open one: it covers setup, branch and commit format, the checks to run, and what a reviewable PR looks like.
+
+## License
+
+Copyright (C) 2026 ifritov-dev, maxim-paradise, BohdanKrakoviatskyi
+
+Resonance is free software: you can redistribute it and/or modify it under the terms of the GNU General Public License as published by the Free Software Foundation, either version 3 of the License, or (at your option) any later version.
+
+Resonance is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the [GNU General Public License](LICENSE) for more details.
